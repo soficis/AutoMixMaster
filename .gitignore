@@ -1,0 +1,65 @@
+# Build artifacts
+build/
+build_clean/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+DartConfiguration.tcl
+
+# IDE and editor files
+.vscode/
+.vs/
+*.vcxproj.user
+*.slnx.user
+
+# Analysis and cache files
+.cache/
+.clangd/
+*.sarif
+*.analysis
+assets/**/analysis_data/
+
+# Documentation
+docs/
+
+# Personal data and sensitive files
+.env
+personal/
+*.key
+*.pem
+.ssh/
+*.id_rsa
+*.id_dsa
+config.ini
+
+# Temporary files and directories
+tmp/
+*.tmp
+*.log
+
+# Operating system files
+Thumbs.db
+.DS_Store
+Desktop.ini
+
+# Compiled binaries and libraries
+*.exe
+*.dll
+*.lib
+*.pdb
+*.ilk
+*.obj
+*.o
+
+# Test artifacts
+Testing/
+*.xml
+
+# Dependencies (if any)
+_deps/
+
+# Artifacts directory (if exists)
+artefacts/

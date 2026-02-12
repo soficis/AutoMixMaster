@@ -1,0 +1,38 @@
+{
+  "fixtures": [
+    {
+      "name": "synthetic_dual_tone",
+      "pipelines": {
+        "heuristic": {
+          "integratedLufs": -14.0,
+          "truePeakDbtp": -3.96,
+          "spectrumLow": 0.55,
+          "spectrumMid": 0.25,
+          "spectrumHigh": 0.20,
+          "stereoCorrelation": 1.0
+        },
+        "ai": {
+          "integratedLufs": -13.51,
+          "truePeakDbtp": -5.57,
+          "spectrumLow": 0.55,
+          "spectrumMid": 0.25,
+          "spectrumHigh": 0.20,
+          "stereoCorrelation": 1.0
+        }
+      },
+      "tolerances": {
+        "integratedLufs": 1.5,
+        "truePeakDbtp": 0.35,
+        "spectrumLow": 0.35,
+        "spectrumMid": 0.35,
+        "spectrumHigh": 0.35,
+        "stereoCorrelation": 0.20
+      },
+      "overrides": {
+        "ai": {
+          "integratedLufs": 2.0
+        }
+      }
+    }
+  ]
+}

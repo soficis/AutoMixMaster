@@ -1,5 +1,5 @@
 # Build artifacts
-build/
+build*/
 build_clean/
 
 # CMake generated files
@@ -37,6 +37,9 @@ config.ini
 
 # Temporary files and directories
 tmp/
+tmpclaude-*/
+tmpclaude-*
+nul
 *.tmp
 *.log
 

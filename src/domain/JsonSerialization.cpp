@@ -51,7 +51,14 @@ void to_json(Json& j, const RenderSettings& value) {
            {"blockSize", value.blockSize},
            {"outputBitDepth", value.outputBitDepth},
            {"outputPath", value.outputPath},
-           {"rendererName", value.rendererName}};
+           {"outputFormat", value.outputFormat},
+           {"lossyBitrateKbps", value.lossyBitrateKbps},
+           {"lossyQuality", value.lossyQuality},
+           {"processingThreads", value.processingThreads},
+           {"preferHardwareAcceleration", value.preferHardwareAcceleration},
+           {"rendererName", value.rendererName},
+           {"externalRendererPath", value.externalRendererPath},
+           {"externalRendererTimeoutMs", value.externalRendererTimeoutMs}};
 }
 
 void from_json(const Json& j, RenderSettings& value) {
@@ -59,7 +66,14 @@ void from_json(const Json& j, RenderSettings& value) {
   value.blockSize = j.value("blockSize", 1024);
   value.outputBitDepth = j.value("outputBitDepth", 24);
   value.outputPath = j.value("outputPath", "");
+  value.outputFormat = j.value("outputFormat", "auto");
+  value.lossyBitrateKbps = std::clamp(j.value("lossyBitrateKbps", 192), 48, 512);
+  value.lossyQuality = std::clamp(j.value("lossyQuality", 7), 0, 10);
+  value.processingThreads = std::max(0, j.value("processingThreads", 0));
+  value.preferHardwareAcceleration = j.value("preferHardwareAcceleration", true);
   value.rendererName = j.value("rendererName", "BuiltIn");
+  value.externalRendererPath = j.value("externalRendererPath", "");
+  value.externalRendererTimeoutMs = j.value("externalRendererTimeoutMs", 300000);
 }
 
 void to_json(Json& j, const StemMixDecision& value) {
@@ -108,6 +122,7 @@ void from_json(const Json& j, MixPlan& value) {
 
 void to_json(Json& j, const MasterPlan& value) {
   j = Json{{"preset", toString(value.preset)},
+           {"presetName", value.presetName},
            {"targetLufs", value.targetLufs},
            {"truePeakDbtp", value.truePeakDbtp},
            {"preGainDb", value.preGainDb},
@@ -115,12 +130,26 @@ void to_json(Json& j, const MasterPlan& value) {
            {"glueThresholdDb", value.glueThresholdDb},
            {"glueRatio", value.glueRatio},
            {"limiterCeilingDb", value.limiterCeilingDb},
+           {"limiterTruePeakEnabled", value.limiterTruePeakEnabled},
+           {"limiterLookaheadMs", value.limiterLookaheadMs},
+           {"limiterAttackMs", value.limiterAttackMs},
+           {"limiterReleaseMs", value.limiterReleaseMs},
            {"ditherBitDepth", value.ditherBitDepth},
+           {"enableDeEsser", value.enableDeEsser},
+           {"deEsserStrength", value.deEsserStrength},
+           {"enableDeHarshEq", value.enableDeHarshEq},
+           {"deHarshStrength", value.deHarshStrength},
+           {"enableLowMono", value.enableLowMono},
+           {"lowMonoHz", value.lowMonoHz},
+           {"stereoWidth", value.stereoWidth},
+           {"enableSoftClipper", value.enableSoftClipper},
+           {"softClipDrive", value.softClipDrive},
            {"decisionLog", value.decisionLog}};
 }
 
 void from_json(const Json& j, MasterPlan& value) {
   value.preset = masterPresetFromString(j.value("preset", "default_streaming"));
+  value.presetName = j.value("presetName", "DefaultStreaming");
   value.targetLufs = j.value("targetLufs", -14.0);
   value.truePeakDbtp = j.value("truePeakDbtp", -1.0);
   value.preGainDb = j.value("preGainDb", 0.0);
@@ -128,7 +157,20 @@ void from_json(const Json& j, MasterPlan& value) {
   value.glueThresholdDb = j.value("glueThresholdDb", -18.0);
   value.glueRatio = j.value("glueRatio", 2.0);
   value.limiterCeilingDb = j.value("limiterCeilingDb", -1.0);
+  value.limiterTruePeakEnabled = j.value("limiterTruePeakEnabled", true);
+  value.limiterLookaheadMs = j.value("limiterLookaheadMs", 7.0);
+  value.limiterAttackMs = j.value("limiterAttackMs", 1.0);
+  value.limiterReleaseMs = j.value("limiterReleaseMs", 80.0);
   value.ditherBitDepth = j.value("ditherBitDepth", 24);
+  value.enableDeEsser = j.value("enableDeEsser", false);
+  value.deEsserStrength = j.value("deEsserStrength", 0.35);
+  value.enableDeHarshEq = j.value("enableDeHarshEq", false);
+  value.deHarshStrength = j.value("deHarshStrength", 0.30);
+  value.enableLowMono = j.value("enableLowMono", false);
+  value.lowMonoHz = j.value("lowMonoHz", 120.0);
+  value.stereoWidth = j.value("stereoWidth", 1.0);
+  value.enableSoftClipper = j.value("enableSoftClipper", false);
+  value.softClipDrive = j.value("softClipDrive", 1.15);
   value.decisionLog = j.value("decisionLog", std::vector<std::string>{});
 }
 

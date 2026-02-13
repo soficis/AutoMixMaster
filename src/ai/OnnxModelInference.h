@@ -1,6 +1,7 @@
 #pragma once
 
-#ifdef ENABLE_ONNX
+#include <optional>
+#include <vector>
 
 #include "ai/IModelInference.h"
 
@@ -14,8 +15,9 @@ class OnnxModelInference final : public IModelInference {
 
  private:
   bool loaded_ = false;
+  std::filesystem::path modelPath_;
+  std::optional<size_t> expectedFeatureCount_;
+  std::vector<std::string> allowedTasks_;
 };
 
 } // namespace automix::ai
-
-#endif

@@ -9,6 +9,7 @@ namespace automix::regression {
 struct RenderMetrics {
   double integratedLufs = -120.0;
   double truePeakDbtp = 0.0;
+  double monoCorrelation = 1.0;
   double spectrumLow = 0.0;
   double spectrumMid = 0.0;
   double spectrumHigh = 0.0;

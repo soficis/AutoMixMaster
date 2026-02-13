@@ -1,0 +1,15 @@
+{
+  "version": "1.0.0",
+  "features": [
+    "rms_db",
+    "low_energy_ratio",
+    "mid_energy_ratio",
+    "high_energy_ratio",
+    "artifact_risk"
+  ],
+  "output_types": [
+    "role_classifier",
+    "mix_parameters",
+    "master_parameters"
+  ]
+}

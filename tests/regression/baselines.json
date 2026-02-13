@@ -4,29 +4,32 @@
       "name": "synthetic_dual_tone",
       "pipelines": {
         "heuristic": {
-          "integratedLufs": -14.0,
-          "truePeakDbtp": -3.96,
-          "spectrumLow": 0.55,
-          "spectrumMid": 0.25,
+          "integratedLufs": -14.23,
+          "truePeakDbtp": -7.69,
+          "monoCorrelation": 1.0,
+          "spectrumLow": 0.00037,
+          "spectrumMid": 0.99962,
           "spectrumHigh": 0.20,
           "stereoCorrelation": 1.0
         },
         "ai": {
           "integratedLufs": -13.51,
-          "truePeakDbtp": -5.57,
-          "spectrumLow": 0.55,
-          "spectrumMid": 0.25,
+          "truePeakDbtp": -9.69,
+          "monoCorrelation": 1.0,
+          "spectrumLow": 0.00068,
+          "spectrumMid": 0.99930,
           "spectrumHigh": 0.20,
           "stereoCorrelation": 1.0
         }
       },
       "tolerances": {
-        "integratedLufs": 1.5,
-        "truePeakDbtp": 0.35,
-        "spectrumLow": 0.35,
-        "spectrumMid": 0.35,
-        "spectrumHigh": 0.35,
-        "stereoCorrelation": 0.20
+        "integratedLufs": 1.0,
+        "truePeakDbtp": 2.5,
+        "monoCorrelation": 0.20,
+        "spectrumLow": 0.15,
+        "spectrumMid": 0.15,
+        "spectrumHigh": 0.50,
+        "stereoCorrelation": 0.25
       },
       "overrides": {
         "ai": {

@@ -8,6 +8,8 @@ std::string toString(const MasterPreset preset) {
       return "default_streaming";
     case MasterPreset::Broadcast:
       return "broadcast";
+    case MasterPreset::UdioOptimized:
+      return "udio_optimized";
     case MasterPreset::Custom:
       return "custom";
   }
@@ -17,6 +19,9 @@ std::string toString(const MasterPreset preset) {
 MasterPreset masterPresetFromString(const std::string& value) {
   if (value == "broadcast") {
     return MasterPreset::Broadcast;
+  }
+  if (value == "udio_optimized") {
+    return MasterPreset::UdioOptimized;
   }
   if (value == "custom") {
     return MasterPreset::Custom;

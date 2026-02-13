@@ -9,7 +9,14 @@ struct RenderSettings {
   int blockSize = 1024;
   int outputBitDepth = 24;
   std::string outputPath;
+  std::string outputFormat = "auto";
+  int lossyBitrateKbps = 192;
+  int lossyQuality = 7;
+  int processingThreads = 0;
+  bool preferHardwareAcceleration = true;
   std::string rendererName = "BuiltIn";
+  std::string externalRendererPath;
+  int externalRendererTimeoutMs = 300000;
 };
 
 } // namespace automix::domain

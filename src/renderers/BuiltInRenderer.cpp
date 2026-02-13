@@ -70,20 +70,36 @@ RenderResult BuiltInRenderer::render(const domain::Session& session,
 
   util::WavWriter writer;
   const std::filesystem::path outputPath = settings.outputPath.empty() ? "export_master.wav" : settings.outputPath;
-  writer.write(outputPath, mastered, settings.outputBitDepth);
+  writer.write(outputPath,
+               mastered,
+               settings.outputBitDepth,
+               settings.outputFormat,
+               settings.lossyBitrateKbps,
+               settings.lossyQuality);
 
   const std::filesystem::path reportPath = outputPath.string() + ".report.json";
   nlohmann::json report = {
       {"renderer", "BuiltIn"},
       {"outputAudioPath", outputPath.string()},
       {"integratedLufs", masteringReport.integratedLufs},
+      {"shortTermLufs", masteringReport.shortTermLufs},
+      {"loudnessRange", masteringReport.loudnessRange},
+      {"samplePeakDbfs", masteringReport.samplePeakDbfs},
       {"truePeakDbtp", masteringReport.truePeakDbtp},
+      {"crestDb", masteringReport.crestDb},
+      {"monoCorrelation", masteringReport.monoCorrelation},
       {"spectrumLow", spectrumMetrics.lowEnergy},
       {"spectrumMid", spectrumMetrics.midEnergy},
       {"spectrumHigh", spectrumMetrics.highEnergy},
       {"stereoCorrelation", spectrumMetrics.stereoCorrelation},
+      {"masterPreset", plan.presetName},
+      {"outputFormat", settings.outputFormat},
+      {"lossyBitrateKbps", settings.lossyBitrateKbps},
+      {"lossyQuality", settings.lossyQuality},
       {"targetLufs", plan.targetLufs},
       {"targetTruePeakDbtp", plan.truePeakDbtp},
+      {"limiterCeilingDb", plan.limiterCeilingDb},
+      {"activeModules", masteringReport.activeModules},
       {"decisionLog", plan.decisionLog},
       {"renderLogs", renderState.logs},
   };

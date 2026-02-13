@@ -5,6 +5,7 @@
 #include <fstream>
 #include <iostream>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -13,10 +14,9 @@
 #include <nlohmann/json.hpp>
 
 #include "ai/IModelInference.h"
+#include "ai/FeatureSchema.h"
 #include "ai/ModelPackLoader.h"
-#ifdef ENABLE_ONNX
 #include "ai/OnnxModelInference.h"
-#endif
 #include "ai/RtNeuralInference.h"
 #include "analysis/StemAnalyzer.h"
 #include "domain/Stem.h"
@@ -84,6 +84,167 @@ std::string taskFromModelType(const std::string& type) {
   return "mix_parameters";
 }
 
+struct SupportedModelPack {
+  std::string id;
+  std::string type;
+  std::string description;
+};
+
+struct SupportedLimiter {
+  std::string id;
+  std::string name;
+  std::string description;
+  std::string licenseId;
+};
+
+const std::vector<SupportedModelPack>& supportedModelPacks() {
+  static const std::vector<SupportedModelPack> packs = {
+      {"demo-role-v1", "role_classifier", "Deterministic demo role-classifier pack."},
+      {"demo-mix-v1", "mix_parameters", "Deterministic demo mix-parameter pack."},
+      {"demo-master-v1", "master_parameters", "Deterministic demo mastering pack."},
+  };
+  return packs;
+}
+
+const std::vector<SupportedLimiter>& supportedLimiters() {
+  static const std::vector<SupportedLimiter> limiters = {
+      {"phaselimiter", "PhaseLimiter", "Phase limiter external renderer package.", "See assets/phaselimiter/licenses"},
+      {"external-template", "ExternalLimiterTemplate", "Template external limiter descriptor for custom tools.", "User-supplied"},
+  };
+  return limiters;
+}
+
+std::optional<std::filesystem::path> findRepoPath(const std::filesystem::path& relativePath) {
+  std::error_code error;
+  auto current = std::filesystem::absolute(std::filesystem::current_path(error), error);
+  if (error) {
+    return std::nullopt;
+  }
+  for (int depth = 0; depth < 6; ++depth) {
+    const auto candidate = current / relativePath;
+    if (std::filesystem::exists(candidate, error) && !error) {
+      return candidate;
+    }
+    if (!current.has_parent_path()) {
+      break;
+    }
+    current = current.parent_path();
+  }
+  return std::nullopt;
+}
+
+void copyDirectory(const std::filesystem::path& source, const std::filesystem::path& destination) {
+  std::error_code error;
+  std::filesystem::create_directories(destination, error);
+  if (error) {
+    throw std::runtime_error("Failed to create destination directory: " + destination.string());
+  }
+  std::filesystem::copy(source,
+                        destination,
+                        std::filesystem::copy_options::recursive | std::filesystem::copy_options::overwrite_existing,
+                        error);
+  if (error) {
+    throw std::runtime_error("Failed to copy directory: " + source.string() + " -> " + destination.string());
+  }
+}
+
+int commandListSupportedModels() {
+  std::cout << "Supported model packs:\n";
+  for (const auto& pack : supportedModelPacks()) {
+    std::cout << "  - " << pack.id << " [" << pack.type << "] " << pack.description << "\n";
+  }
+  return 0;
+}
+
+int commandInstallSupportedModel(const std::vector<std::string>& args) {
+  const auto idArg = argValue(args, "--id");
+  if (!idArg.has_value()) {
+    std::cerr << "install-supported-model requires --id <model_id>\n";
+    return 2;
+  }
+  const std::filesystem::path destinationRoot = argValue(args, "--dest").value_or("assets/models");
+
+  const auto it = std::find_if(supportedModelPacks().begin(), supportedModelPacks().end(),
+                               [&](const SupportedModelPack& pack) { return pack.id == *idArg; });
+  if (it == supportedModelPacks().end()) {
+    std::cerr << "Unknown supported model id: " << *idArg << "\n";
+    return 2;
+  }
+
+  const auto source = findRepoPath(std::filesystem::path("tools/catalog/modelpacks") / it->id);
+  if (!source.has_value()) {
+    std::cerr << "Catalog source not found for model: " << it->id << "\n";
+    return 1;
+  }
+
+  const auto destination = destinationRoot / it->id;
+  copyDirectory(source.value(), destination);
+  std::cout << "Installed model pack '" << it->id << "' to " << destination.string() << "\n";
+  return 0;
+}
+
+int commandListSupportedLimiters() {
+  std::cout << "Supported limiters:\n";
+  for (const auto& limiter : supportedLimiters()) {
+    std::cout << "  - " << limiter.id << " [" << limiter.name << "] " << limiter.description << "\n";
+  }
+  return 0;
+}
+
+int commandInstallSupportedLimiter(const std::vector<std::string>& args) {
+  const auto idArg = argValue(args, "--id");
+  if (!idArg.has_value()) {
+    std::cerr << "install-supported-limiter requires --id <limiter_id>\n";
+    return 2;
+  }
+  const std::filesystem::path destinationRoot = argValue(args, "--dest").value_or("assets/limiters");
+  std::filesystem::create_directories(destinationRoot);
+
+  if (*idArg == "phaselimiter") {
+    const auto source = findRepoPath("assets/phaselimiter");
+    if (!source.has_value()) {
+      std::cerr << "PhaseLimiter source package not found under assets/phaselimiter\n";
+      return 1;
+    }
+    const auto destination = destinationRoot / "phaselimiter";
+    std::filesystem::create_directories(destination);
+    copyDirectory(source.value(), destination / "runtime");
+
+    nlohmann::json descriptor = {
+        {"id", "PhaseLimiterPack"},
+        {"name", "PhaseLimiter (pack)"},
+        {"version", "external"},
+        {"licenseId", "See assets/phaselimiter/licenses"},
+        {"binaryPath", "runtime/phase_limiter"},
+        {"bundledByDefault", false},
+    };
+    std::ofstream out(destination / "renderer.json");
+    out << descriptor.dump(2);
+    std::cout << "Installed limiter '" << *idArg << "' to " << destination.string() << "\n";
+    return 0;
+  }
+
+  if (*idArg == "external-template") {
+    const auto destination = destinationRoot / "external-template";
+    std::filesystem::create_directories(destination);
+    nlohmann::json descriptor = {
+        {"id", "ExternalTemplate"},
+        {"name", "External Limiter Template"},
+        {"version", "1.0"},
+        {"licenseId", "User-supplied"},
+        {"binaryPath", "your_limiter_binary_here"},
+        {"bundledByDefault", false},
+    };
+    std::ofstream out(destination / "renderer.json");
+    out << descriptor.dump(2);
+    std::cout << "Installed limiter template to " << destination.string() << "\n";
+    return 0;
+  }
+
+  std::cerr << "Unknown supported limiter id: " << *idArg << "\n";
+  return 2;
+}
+
 int commandExportFeatures(const std::vector<std::string>& args) {
   const auto sessionPathArg = argValue(args, "--session");
   const auto outPathArg = argValue(args, "--out");
@@ -124,7 +285,24 @@ int commandExportFeatures(const std::vector<std::string>& args) {
         {"silenceRatio", entry.metrics.silenceRatio},
         {"stereoCorrelation", entry.metrics.stereoCorrelation},
         {"stereoWidth", entry.metrics.stereoWidth},
+        {"dcOffset", entry.metrics.dcOffset},
+        {"subEnergy", entry.metrics.subEnergy},
+        {"bassEnergy", entry.metrics.bassEnergy},
+        {"lowMidEnergy", entry.metrics.lowMidEnergy},
+        {"highMidEnergy", entry.metrics.highMidEnergy},
+        {"presenceEnergy", entry.metrics.presenceEnergy},
+        {"airEnergy", entry.metrics.airEnergy},
+        {"spectralCentroidHz", entry.metrics.spectralCentroidHz},
+        {"spectralSpreadHz", entry.metrics.spectralSpreadHz},
+        {"spectralFlatness", entry.metrics.spectralFlatness},
+        {"spectralFlux", entry.metrics.spectralFlux},
+        {"channelBalanceDb", entry.metrics.channelBalanceDb},
         {"artifactRisk", entry.metrics.artifactRisk},
+        {"artifactSwirlRisk", entry.metrics.artifactProfile.swirlRisk},
+        {"artifactSmearRisk", entry.metrics.artifactProfile.smearRisk},
+        {"artifactNoiseDominance", entry.metrics.artifactProfile.noiseDominance},
+        {"artifactHarmonicity", entry.metrics.artifactProfile.harmonicity},
+        {"artifactPhaseInstability", entry.metrics.artifactProfile.phaseInstability},
     };
 
     const auto it = stemsById.find(entry.stemId);
@@ -225,11 +403,7 @@ int commandValidateModelPack(const std::vector<std::string>& args) {
 
   std::unique_ptr<automix::ai::IModelInference> inference = std::make_unique<automix::ai::NullModelInference>();
   if (pack.engine == "onnxruntime") {
-#ifdef ENABLE_ONNX
     inference = std::make_unique<automix::ai::OnnxModelInference>();
-#else
-    std::cout << "Warning: ONNX backend not enabled in this build. Schema-only validation performed.\n";
-#endif
   } else if (pack.engine == "rtneural") {
     inference = std::make_unique<automix::ai::RtNeuralInference>();
     if (!inference->isAvailable()) {
@@ -250,7 +424,7 @@ int commandValidateModelPack(const std::vector<std::string>& args) {
     return 1;
   }
 
-  const size_t featureCount = pack.inputFeatureCount.value_or(5u);
+  const size_t featureCount = pack.inputFeatureCount.value_or(automix::ai::FeatureSchemaV1::featureCount());
   const automix::ai::InferenceRequest request{
       .task = taskFromModelType(pack.type),
       .features = deterministicFeatures(featureCount),
@@ -277,6 +451,10 @@ void printUsage() {
   std::cout << "  automix_dev_tools export-features --session <session.json> --out <features.jsonl>\n";
   std::cout << "  automix_dev_tools export-segments --session <session.json> --out-dir <dir> [--segment-seconds <sec>]\n";
   std::cout << "  automix_dev_tools validate-modelpack --pack <modelpack_dir>\n";
+  std::cout << "  automix_dev_tools list-supported-models\n";
+  std::cout << "  automix_dev_tools install-supported-model --id <model_id> [--dest <assets/models>]\n";
+  std::cout << "  automix_dev_tools list-supported-limiters\n";
+  std::cout << "  automix_dev_tools install-supported-limiter --id <limiter_id> [--dest <assets/limiters>]\n";
 }
 
 } // namespace
@@ -303,6 +481,18 @@ int main(int argc, char** argv) {
     }
     if (command == "validate-modelpack") {
       return commandValidateModelPack(args);
+    }
+    if (command == "list-supported-models") {
+      return commandListSupportedModels();
+    }
+    if (command == "install-supported-model") {
+      return commandInstallSupportedModel(args);
+    }
+    if (command == "list-supported-limiters") {
+      return commandListSupportedLimiters();
+    }
+    if (command == "install-supported-limiter") {
+      return commandInstallSupportedLimiter(args);
     }
 
     printUsage();

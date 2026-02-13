@@ -1,0 +1,8 @@
+{
+  "id": "ExternalTemplate",
+  "name": "External Limiter Template",
+  "version": "1.0",
+  "licenseId": "User-supplied",
+  "binaryPath": "your_limiter_binary_here",
+  "bundledByDefault": false
+}

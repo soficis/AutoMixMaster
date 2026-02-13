@@ -12,6 +12,7 @@
 #include <juce_core/juce_core.h>
 #include <nlohmann/json.hpp>
 
+#include "ai/MasteringCompliance.h"
 #include "analysis/StemAnalyzer.h"
 #include "automaster/HeuristicAutoMasterStrategy.h"
 #include "engine/AudioFileIO.h"
@@ -145,7 +146,13 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
       rawMix = resampler.resampleLinear(rawMix, static_cast<double>(kPhaseLimiterSampleRate));
     }
 
+    automaster::HeuristicAutoMasterStrategy strategy;
+    const auto plan = session.masterPlan.has_value()
+                          ? session.masterPlan.value()
+                          : strategy.buildPlan(domain::MasterPreset::DefaultStreaming, rawMix);
+
     const std::filesystem::path outputPath = settings.outputPath.empty() ? "export_master.wav" : settings.outputPath;
+    const auto outputFormat = util::WavWriter::resolveFormat(outputPath, settings.outputFormat);
     if (outputPath.has_parent_path()) {
       std::filesystem::create_directories(outputPath.parent_path());
     }
@@ -154,6 +161,9 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
     const std::filesystem::path tempRoot = binaryInfo->installRoot / "tmp";
     const std::filesystem::path tempWorkDir = tempRoot / ("work_" + suffix);
     const std::filesystem::path tempInputPath = tempRoot / ("input_" + suffix + ".wav");
+    const std::filesystem::path tempPhaseOutputPath = outputFormat == "wav"
+                                                          ? outputPath
+                                                          : (tempRoot / ("phase_output_" + suffix + ".wav"));
     const std::filesystem::path relativeTempWorkDir = std::filesystem::path("tmp") / ("work_" + suffix);
     const std::filesystem::path relativeTempInputPath = std::filesystem::path("tmp") / ("input_" + suffix + ".wav");
     std::filesystem::create_directories(tempWorkDir);
@@ -166,13 +176,13 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
     juce::StringArray command;
     command.add(binaryInfo->executablePath.generic_string());
     command.add("-input=" + relativeTempInputPath.generic_string());
-    command.add("-output=" + outputPath.generic_string());
+    command.add("-output=" + tempPhaseOutputPath.generic_string());
     command.add("-disable_input_encode=true");
     command.add("-output_format=wav");
     command.add("-sample_rate=44100");
-    command.add("-bit_depth=16");
-    command.add("-ceiling=-1");
-    command.add("-mastering=false");
+    command.add("-bit_depth=" + std::to_string(std::clamp(settings.outputBitDepth, 16, 24)));
+    command.add("-ceiling=" + std::to_string(plan.limiterCeilingDb));
+    command.add("-mastering=true");
     command.add("-tmp=" + relativeTempWorkDir.generic_string());
 
     juce::ChildProcess process;
@@ -199,7 +209,7 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
     drainProcessOutput(process, processOutput);
 
     const auto exitCode = process.getExitCode();
-    if (exitCode != 0 || !pathExists(outputPath)) {
+    if (exitCode != 0 || !pathExists(tempPhaseOutputPath)) {
       const std::string outputHint = processOutput.empty()
                                          ? ""
                                          : (" output=" + processOutput.substr(0, 240));
@@ -212,12 +222,20 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
     }
 
     engine::AudioFileIO fileIO;
-    const auto mastered = fileIO.readAudioFile(outputPath);
+    auto mastered = fileIO.readAudioFile(tempPhaseOutputPath);
 
-    automaster::HeuristicAutoMasterStrategy strategy;
+    ai::MasteringCompliance compliance;
+    const auto boundedPlan = compliance.enforcePlanBounds(plan);
+    automaster::MasteringReport complianceReport;
+    mastered = compliance.enforceOutput(mastered, boundedPlan, strategy, &complianceReport);
+    writer.write(outputPath,
+                 mastered,
+                 settings.outputBitDepth,
+                 settings.outputFormat,
+                 settings.lossyBitrateKbps,
+                 settings.lossyQuality);
+
     analysis::StemAnalyzer analyzer;
-    const double integratedLufs = strategy.measureIntegratedLufs(mastered);
-    const double truePeakDbtp = strategy.estimateTruePeakDbtp(mastered, 4);
     const auto spectrumMetrics = analyzer.analyzeBuffer(mastered);
 
     const std::filesystem::path reportPath = outputPath.string() + ".report.json";
@@ -225,12 +243,27 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
         {"renderer", "PhaseLimiter"},
         {"phaseLimiterBinary", binaryInfo->executablePath.string()},
         {"outputAudioPath", outputPath.string()},
-        {"integratedLufs", integratedLufs},
-        {"truePeakDbtp", truePeakDbtp},
+        {"integratedLufs", complianceReport.integratedLufs},
+        {"shortTermLufs", complianceReport.shortTermLufs},
+        {"loudnessRange", complianceReport.loudnessRange},
+        {"samplePeakDbfs", complianceReport.samplePeakDbfs},
+        {"truePeakDbtp", complianceReport.truePeakDbtp},
+        {"monoCorrelation", complianceReport.monoCorrelation},
         {"spectrumLow", spectrumMetrics.lowEnergy},
         {"spectrumMid", spectrumMetrics.midEnergy},
         {"spectrumHigh", spectrumMetrics.highEnergy},
         {"stereoCorrelation", spectrumMetrics.stereoCorrelation},
+        {"outputFormat", outputFormat},
+        {"lossyBitrateKbps", settings.lossyBitrateKbps},
+        {"lossyQuality", settings.lossyQuality},
+        {"preGainDb", boundedPlan.preGainDb},
+        {"targetLufs", boundedPlan.targetLufs},
+        {"targetTruePeakDbtp", boundedPlan.truePeakDbtp},
+        {"limiterCeilingDb", boundedPlan.limiterCeilingDb},
+        {"limiterLookaheadMs", boundedPlan.limiterLookaheadMs},
+        {"limiterAttackMs", boundedPlan.limiterAttackMs},
+        {"limiterReleaseMs", boundedPlan.limiterReleaseMs},
+        {"limiterTruePeakEnabled", boundedPlan.limiterTruePeakEnabled},
         {"renderLogs", renderState.logs},
     };
 
@@ -240,6 +273,9 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
     std::error_code ignore;
     std::filesystem::remove(tempInputPath, ignore);
     std::filesystem::remove_all(tempWorkDir, ignore);
+    if (tempPhaseOutputPath != outputPath) {
+      std::filesystem::remove(tempPhaseOutputPath, ignore);
+    }
 
     RenderResult result;
     result.success = true;

@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "ai/FeatureSchema.h"
+
 namespace automix::ai {
 namespace {
 
@@ -22,11 +24,7 @@ domain::MasterPlan AutoMasterStrategyAI::buildPlan(const analysis::AnalysisResul
 
   const InferenceRequest request{
       .task = "master_parameters",
-      .features = {mixBusMetrics.rmsDb,
-                   mixBusMetrics.crestDb,
-                   mixBusMetrics.lowEnergy,
-                   mixBusMetrics.midEnergy,
-                   mixBusMetrics.highEnergy},
+      .features = FeatureSchemaV1::extract(mixBusMetrics),
   };
   const InferenceResult result = inference->run(request);
   if (!result.usedModel) {
@@ -35,22 +33,24 @@ domain::MasterPlan AutoMasterStrategyAI::buildPlan(const analysis::AnalysisResul
   }
 
   const double confidence = std::clamp(result.outputs.contains("confidence") ? result.outputs.at("confidence") : 0.5, 0.0, 1.0);
+  const double conservativeFactor = mixBusMetrics.artifactRisk > 0.6 ? 0.6 : 1.0;
+  const double effectiveConfidence = std::clamp(confidence * conservativeFactor, 0.0, 1.0);
   if (result.outputs.contains("target_lufs")) {
-    plan.targetLufs = blend(plan.targetLufs, result.outputs.at("target_lufs"), confidence);
+    plan.targetLufs = blend(plan.targetLufs, result.outputs.at("target_lufs"), effectiveConfidence);
   }
   if (result.outputs.contains("pre_gain_db")) {
-    plan.preGainDb = blend(plan.preGainDb, result.outputs.at("pre_gain_db"), confidence);
+    plan.preGainDb = blend(plan.preGainDb, result.outputs.at("pre_gain_db"), effectiveConfidence);
   }
   if (result.outputs.contains("limiter_ceiling_db")) {
-    const double blendedCeiling = blend(plan.limiterCeilingDb, result.outputs.at("limiter_ceiling_db"), confidence);
+    const double blendedCeiling = blend(plan.limiterCeilingDb, result.outputs.at("limiter_ceiling_db"), effectiveConfidence);
     plan.limiterCeilingDb = blendedCeiling;
     plan.truePeakDbtp = blendedCeiling;
   }
   if (result.outputs.contains("glue_ratio")) {
-    plan.glueRatio = blend(plan.glueRatio, result.outputs.at("glue_ratio"), confidence);
+    plan.glueRatio = blend(plan.glueRatio, result.outputs.at("glue_ratio"), effectiveConfidence);
   }
   if (result.outputs.contains("glue_threshold_db")) {
-    plan.glueThresholdDb = blend(plan.glueThresholdDb, result.outputs.at("glue_threshold_db"), confidence);
+    plan.glueThresholdDb = blend(plan.glueThresholdDb, result.outputs.at("glue_threshold_db"), effectiveConfidence);
   }
 
   plan.decisionLog.push_back("AI master strategy blended decisions with confidence=" + std::to_string(confidence));

@@ -6,7 +6,26 @@
 
 #include <nlohmann/json.hpp>
 
+#include "ai/FeatureSchema.h"
+
 namespace automix::ai {
+namespace {
+
+std::vector<std::string> readStringArray(const nlohmann::json& json, const char* keyA, const char* keyB = nullptr) {
+  if (json.contains(keyA) && json.at(keyA).is_array()) {
+    return json.at(keyA).get<std::vector<std::string>>();
+  }
+  if (keyB != nullptr && json.contains(keyB) && json.at(keyB).is_array()) {
+    return json.at(keyB).get<std::vector<std::string>>();
+  }
+  return {};
+}
+
+bool hasRequiredMetadata(const ModelPack& pack) {
+  return !pack.licenseId.empty() && !pack.source.empty() && !pack.featureSchemaVersion.empty();
+}
+
+} // namespace
 
 std::optional<ModelPack> ModelPackLoader::load(const std::filesystem::path& directory) const {
   const auto metadataPath = directory / "model.json";
@@ -26,6 +45,10 @@ std::optional<ModelPack> ModelPackLoader::load(const std::filesystem::path& dire
   pack.engine = json.value("engine", "unknown");
   pack.minAppVersion = json.value("min_app_version", json.value("minAppVersion", "0.0.0"));
   pack.version = json.value("version", "0.0.0");
+  pack.licenseId = json.value("license", json.value("licenseId", ""));
+  pack.source = json.value("source", "");
+  pack.intendedUse = json.value("intended_use", json.value("intendedUse", ""));
+  pack.featureSchemaVersion = json.value("feature_schema_version", json.value("featureSchemaVersion", ""));
   pack.modelFile = json.value("modelFile", json.value("model_file", "model.onnx"));
   pack.checksum = json.value("checksum", "");
   if (json.contains("inputFeatureCount")) {
@@ -36,14 +59,31 @@ std::optional<ModelPack> ModelPackLoader::load(const std::filesystem::path& dire
     pack.inputFeatureCount.reset();
   }
 
-  if (json.contains("expectedOutputKeys") && json.at("expectedOutputKeys").is_array()) {
-    pack.expectedOutputKeys = json.at("expectedOutputKeys").get<std::vector<std::string>>();
-  } else if (json.contains("output_keys") && json.at("output_keys").is_array()) {
-    pack.expectedOutputKeys = json.at("output_keys").get<std::vector<std::string>>();
-  } else {
-    pack.expectedOutputKeys.clear();
+  pack.expectedOutputKeys = readStringArray(json, "expectedOutputKeys", "output_keys");
+  pack.inputNames = readStringArray(json, "inputNames", "input_names");
+  pack.outputNames = readStringArray(json, "outputNames", "output_names");
+
+  if (pack.expectedOutputKeys.empty() && json.contains("output_schema") && json.at("output_schema").is_object()) {
+    for (const auto& entry : json.at("output_schema").items()) {
+      pack.expectedOutputKeys.push_back(entry.key());
+    }
   }
+
+  if (pack.featureSchemaVersion.empty() && json.contains("feature_schema") && json.at("feature_schema").is_object()) {
+    pack.featureSchemaVersion = json.at("feature_schema").value("version", "");
+  }
+
   pack.rootPath = directory;
+
+  if (!hasRequiredMetadata(pack)) {
+    return std::nullopt;
+  }
+  if (!FeatureSchemaV1::isCompatible(pack.featureSchemaVersion)) {
+    return std::nullopt;
+  }
+  if (pack.inputFeatureCount.has_value() && pack.inputFeatureCount.value() == 0) {
+    return std::nullopt;
+  }
 
   const auto modelPath = directory / pack.modelFile;
   if (!std::filesystem::exists(modelPath)) {

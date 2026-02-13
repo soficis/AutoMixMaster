@@ -12,6 +12,11 @@ TEST_CASE("Session serialization round trip preserves required fields", "[sessio
   session.sessionName = "round_trip";
   session.originalMixPath = "C:/audio/original_mix.wav";
   session.residualBlend = 7.5;
+  session.renderSettings.outputFormat = "mp3";
+  session.renderSettings.lossyBitrateKbps = 256;
+  session.renderSettings.lossyQuality = 8;
+  session.renderSettings.processingThreads = 4;
+  session.renderSettings.preferHardwareAcceleration = true;
 
   automix::domain::Stem stem;
   stem.id = "s1";
@@ -38,6 +43,10 @@ TEST_CASE("Session serialization round trip preserves required fields", "[sessio
   REQUIRE(decoded.stems.front().origin == automix::domain::StemOrigin::Separated);
   REQUIRE(decoded.mixPlan.has_value());
   REQUIRE(decoded.mixPlan->dryWet == Catch::Approx(0.8));
+  REQUIRE(decoded.renderSettings.outputFormat == "mp3");
+  REQUIRE(decoded.renderSettings.lossyBitrateKbps == 256);
+  REQUIRE(decoded.renderSettings.lossyQuality == 8);
+  REQUIRE(decoded.renderSettings.processingThreads == 4);
 }
 
 TEST_CASE("Session deserialization handles missing optional fields", "[session]") {
@@ -54,6 +63,10 @@ TEST_CASE("Session deserialization handles missing optional fields", "[session]"
   REQUIRE(decoded.originalMixPath.has_value() == false);
   REQUIRE(decoded.residualBlend == Catch::Approx(0.0));
   REQUIRE(decoded.renderSettings.blockSize == 1024);
+  REQUIRE(decoded.renderSettings.outputFormat == "auto");
+  REQUIRE(decoded.renderSettings.lossyBitrateKbps == 192);
+  REQUIRE(decoded.renderSettings.lossyQuality == 7);
+  REQUIRE(decoded.renderSettings.preferHardwareAcceleration == true);
   REQUIRE(decoded.stems.front().enabled == true);
   REQUIRE(decoded.stems.front().origin == automix::domain::StemOrigin::Recorded);
 }

@@ -4,6 +4,8 @@
 #include <array>
 #include <cctype>
 
+#include "ai/FeatureSchema.h"
+
 namespace automix::ai {
 namespace {
 
@@ -53,7 +55,7 @@ RolePrediction StemRoleClassifierAI::predict(const std::string& stemName,
   if (inference_ != nullptr && inference_->isAvailable()) {
     InferenceRequest request{
         .task = "role_classifier",
-        .features = {metrics.rmsDb, metrics.lowEnergy, metrics.midEnergy, metrics.highEnergy, metrics.artifactRisk},
+        .features = FeatureSchemaV1::extract(metrics),
     };
     const auto result = inference_->run(request);
     if (result.usedModel && !result.outputs.empty()) {

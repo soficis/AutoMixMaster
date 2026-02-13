@@ -5,6 +5,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "ai/IModelInference.h"
+#include "ai/FeatureSchema.h"
 #include "ai/ModelManager.h"
 #include "ai/ModelPackLoader.h"
 #include "ai/ModelStrategy.h"
@@ -52,7 +53,7 @@ TEST_CASE("Model pack loader parses schema and defaults", "[ai]") {
 
   {
     std::ofstream meta(tempDir / "model.json");
-    meta << R"({"schema_version":1,"id":"mix-v1","name":"Mix V1","type":"mix_parameters","engine":"onnxruntime","version":"1.0.0","model_file":"model.onnx"})";
+    meta << R"({"schema_version":1,"id":"mix-v1","name":"Mix V1","type":"mix_parameters","engine":"onnxruntime","version":"1.0.0","model_file":"model.onnx","license":"MIT","source":"unit-test","feature_schema_version":"1.0.0","output_schema":{"target_lufs":"float"}})";
   }
 
   const auto pack = loader.load(tempDir);
@@ -75,22 +76,50 @@ TEST_CASE("Model manager scans packs and stores active selections", "[ai]") {
     std::ofstream model(roleDir / "model.onnx", std::ios::binary);
     model << "role";
     std::ofstream meta(roleDir / "model.json");
-    meta << R"({"id":"role-classifier-v1","type":"role_classifier","model_file":"model.onnx"})";
+    meta << R"({"id":"role-classifier-v1","type":"role_classifier","model_file":"model.onnx","license":"MIT","source":"unit-test","feature_schema_version":"1.0.0","output_schema":{"prob_vocals":"float"}})";
   }
   {
     std::ofstream model(mixDir / "model.onnx", std::ios::binary);
     model << "mix";
     std::ofstream meta(mixDir / "model.json");
-    meta << R"({"id":"mix-params-v1","type":"mix_parameters","model_file":"model.onnx"})";
+    meta << R"({"id":"mix-params-v1","type":"mix_parameters","model_file":"model.onnx","license":"MIT","source":"unit-test","feature_schema_version":"1.0.0","output_schema":{"target_lufs":"float"}})";
   }
 
   automix::ai::ModelManager manager(root);
   const auto packs = manager.scan();
-  REQUIRE(packs.size() == 2);
-  REQUIRE(manager.packsForType("role_classifier").size() == 1);
+  REQUIRE(packs.size() >= 2);
+  bool foundRole = false;
+  bool foundMix = false;
+  for (const auto& pack : packs) {
+    foundRole = foundRole || pack.id == "role-classifier-v1";
+    foundMix = foundMix || pack.id == "mix-params-v1";
+  }
+  REQUIRE(foundRole);
+  REQUIRE(foundMix);
+  const auto rolePacks = manager.packsForType("role_classifier");
+  REQUIRE(rolePacks.empty() == false);
 
   manager.setActivePackId("role", "role-classifier-v1");
   REQUIRE(manager.activePackId("role") == "role-classifier-v1");
+
+  std::filesystem::remove_all(root);
+}
+
+TEST_CASE("Model pack loader rejects packs missing licensing metadata", "[ai]") {
+  const auto root = std::filesystem::temp_directory_path() / "automix_model_pack_invalid_meta";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+
+  {
+    std::ofstream model(root / "model.onnx", std::ios::binary);
+    model << "dummy";
+    std::ofstream meta(root / "model.json");
+    meta << R"({"id":"invalid-meta-pack","type":"mix_parameters","engine":"onnxruntime","model_file":"model.onnx","feature_schema_version":"1.0.0"})";
+  }
+
+  automix::ai::ModelPackLoader loader;
+  const auto pack = loader.load(root);
+  REQUIRE_FALSE(pack.has_value());
 
   std::filesystem::remove_all(root);
 }
@@ -126,4 +155,26 @@ TEST_CASE("Model strategy applies overrides when model inference is available", 
 
   REQUIRE(mixOut.dryWet == Catch::Approx(0.77));
   REQUIRE(masterOut.targetLufs == Catch::Approx(-12.5));
+}
+
+TEST_CASE("Feature schema exposes rich feature vector for AI plans", "[ai]") {
+  REQUIRE(automix::ai::FeatureSchemaV1::featureCount() >= 20);
+}
+
+TEST_CASE("Model manager scans demo packs from assets roots", "[ai]") {
+  automix::ai::ModelManager manager("missing_root_for_test");
+  const auto packs = manager.scan();
+
+  bool foundDemoRole = false;
+  bool foundDemoMix = false;
+  bool foundDemoMaster = false;
+  for (const auto& pack : packs) {
+    foundDemoRole = foundDemoRole || pack.id == "demo-role-v1";
+    foundDemoMix = foundDemoMix || pack.id == "demo-mix-v1";
+    foundDemoMaster = foundDemoMaster || pack.id == "demo-master-v1";
+  }
+
+  REQUIRE(foundDemoRole);
+  REQUIRE(foundDemoMix);
+  REQUIRE(foundDemoMaster);
 }

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "example-mix-pack-v1",
+  "name": "Example Mix Pack",
+  "type": "mix_parameters",
+  "engine": "onnxruntime",
+  "version": "1.0.0",
+  "model_file": "model.onnx",
+  "license": "MIT",
+  "source": "https://example.com/model-card",
+  "intended_use": "Local mix parameter suggestion",
+  "feature_schema_version": "1.0.0",
+  "input_feature_count": 5,
+  "output_schema": {
+    "global_gain_db": "float",
+    "global_pan_bias": "float",
+    "confidence": "float"
+  }
+}

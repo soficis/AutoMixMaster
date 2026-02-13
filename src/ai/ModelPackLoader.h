@@ -15,10 +15,16 @@ struct ModelPack {
   std::string engine;
   std::string minAppVersion;
   std::string version;
+  std::string licenseId;
+  std::string source;
+  std::string intendedUse;
+  std::string featureSchemaVersion;
   std::string modelFile;
   std::string checksum;
   std::optional<size_t> inputFeatureCount;
   std::vector<std::string> expectedOutputKeys;
+  std::vector<std::string> inputNames;
+  std::vector<std::string> outputNames;
   std::filesystem::path rootPath;
 };
 

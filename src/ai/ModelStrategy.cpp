@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "ai/FeatureSchema.h"
+
 namespace automix::ai {
 
 std::pair<domain::MixPlan, domain::MasterPlan> ModelStrategy::applyOverrides(
@@ -17,12 +19,10 @@ std::pair<domain::MixPlan, domain::MasterPlan> ModelStrategy::applyOverrides(
   }
 
   std::vector<double> features;
-  features.reserve(analysisEntries.size() * 4);
+  features.reserve(analysisEntries.size() * FeatureSchemaV1::featureCount());
   for (const auto& entry : analysisEntries) {
-    features.push_back(entry.metrics.rmsDb);
-    features.push_back(entry.metrics.lowEnergy);
-    features.push_back(entry.metrics.midEnergy);
-    features.push_back(entry.metrics.highEnergy);
+    const auto stemFeatures = FeatureSchemaV1::extract(entry.metrics);
+    features.insert(features.end(), stemFeatures.begin(), stemFeatures.end());
   }
 
   const InferenceRequest request{

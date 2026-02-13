@@ -1,4 +1,5 @@
 #include <cmath>
+#include <algorithm>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -21,6 +22,16 @@ automix::engine::AudioBuffer makeBusySignal() {
   return buffer;
 }
 
+double peakLinear(const automix::engine::AudioBuffer& buffer) {
+  double peak = 0.0;
+  for (int ch = 0; ch < buffer.getNumChannels(); ++ch) {
+    for (int i = 0; i < buffer.getNumSamples(); ++i) {
+      peak = std::max(peak, static_cast<double>(std::abs(buffer.getSample(ch, i))));
+    }
+  }
+  return peak;
+}
+
 } // namespace
 
 TEST_CASE("Mastering enforces true peak ceiling", "[master]") {
@@ -35,6 +46,8 @@ TEST_CASE("Mastering enforces true peak ceiling", "[master]") {
 
   REQUIRE(output.getNumSamples() == input.getNumSamples());
   REQUIRE(report.truePeakDbtp <= -0.8);
+  REQUIRE(report.monoCorrelation <= 1.0);
+  REQUIRE(report.monoCorrelation >= -1.0);
 }
 
 TEST_CASE("Mastering lands near target loudness", "[master]") {
@@ -46,4 +59,17 @@ TEST_CASE("Mastering lands near target loudness", "[master]") {
   strategy.applyPlan(input, plan, &report);
 
   REQUIRE(report.integratedLufs == Catch::Approx(plan.targetLufs).margin(1.2));
+}
+
+TEST_CASE("Mastering dither stage remains peak safe", "[master]") {
+  automix::automaster::HeuristicAutoMasterStrategy strategy;
+  const auto input = makeBusySignal();
+
+  auto plan = strategy.buildPlan(automix::domain::MasterPreset::DefaultStreaming, input);
+  plan.ditherBitDepth = 16;
+  plan.truePeakDbtp = -1.0;
+  plan.limiterCeilingDb = -1.0;
+
+  const auto output = strategy.applyPlan(input, plan, nullptr);
+  REQUIRE(peakLinear(output) <= Catch::Approx(std::pow(10.0, -1.0 / 20.0)).epsilon(0.1));
 }

@@ -1,0 +1,8 @@
+{
+  "id": "PhaseLimiterPack",
+  "name": "PhaseLimiter (pack)",
+  "version": "external",
+  "licenseId": "See assets/phaselimiter/licenses",
+  "binaryPath": "../../phaselimiter/phase_limiter",
+  "bundledByDefault": false
+}

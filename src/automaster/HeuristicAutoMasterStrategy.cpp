@@ -2,14 +2,21 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <optional>
 #include <random>
+#include <unordered_map>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #include "analysis/StemAnalyzer.h"
 #include "dsp/DeEsser.h"
 #include "dsp/DynamicDeHarshEq.h"
 #include "dsp/LookaheadLimiter.h"
 #include "dsp/MidSideProcessor.h"
+#include "dsp/MultibandProcessor.h"
 #include "dsp/SoftClipper.h"
 #include "dsp/TruePeakDetector.h"
 #include "engine/LoudnessMeter.h"
@@ -22,6 +29,12 @@ constexpr double kDcHighPassHz = 20.0;
 constexpr double kTonalTiltDb = 1.0;
 constexpr double kLoudnessToleranceLu = 0.5;
 constexpr int kMaxLoudnessIterations = 5;
+
+struct PlatformPresetTarget {
+  double targetLufs = -14.0;
+  double truePeakDbtp = -1.0;
+  bool enableMultiband = false;
+};
 
 double dbToLinear(const double db) { return std::pow(10.0, db / 20.0); }
 
@@ -171,26 +184,105 @@ double computeMonoCorrelation(const engine::AudioBuffer& buffer) {
   return std::clamp(cov / std::sqrt(varL * varR), -1.0, 1.0);
 }
 
+std::vector<std::filesystem::path> presetConfigPaths() {
+  std::vector<std::filesystem::path> paths;
+  std::error_code error;
+  auto current = std::filesystem::absolute(std::filesystem::current_path(error), error);
+  if (error) {
+    return paths;
+  }
+
+  for (int depth = 0; depth < 6; ++depth) {
+    paths.push_back(current / "assets" / "mastering" / "platform_presets.json");
+    if (!current.has_parent_path()) {
+      break;
+    }
+    const auto parent = current.parent_path();
+    if (parent == current) {
+      break;
+    }
+    current = parent;
+  }
+  return paths;
+}
+
+const std::unordered_map<std::string, PlatformPresetTarget>& platformPresetTargets() {
+  static const std::unordered_map<std::string, PlatformPresetTarget> cache = [] {
+    std::unordered_map<std::string, PlatformPresetTarget> targets;
+
+    for (const auto& candidate : presetConfigPaths()) {
+      std::error_code error;
+      if (!std::filesystem::is_regular_file(candidate, error) || error) {
+        continue;
+      }
+
+      std::ifstream in(candidate);
+      if (!in.is_open()) {
+        continue;
+      }
+
+      try {
+        nlohmann::json json;
+        in >> json;
+
+        if (!json.contains("presets") || !json.at("presets").is_object()) {
+          continue;
+        }
+
+        for (const auto& [presetKey, value] : json.at("presets").items()) {
+          if (!value.is_object()) {
+            continue;
+          }
+
+          PlatformPresetTarget target;
+          target.targetLufs = value.value("targetLufs", -14.0);
+          target.truePeakDbtp = value.value("truePeakDbtp", -1.0);
+          target.enableMultiband = value.value("enableMultiband", false);
+          targets[presetKey] = target;
+        }
+
+        if (!targets.empty()) {
+          break;
+        }
+      } catch (...) {
+        continue;
+      }
+    }
+
+    return targets;
+  }();
+
+  return cache;
+}
+
+std::optional<PlatformPresetTarget> dataDrivenTarget(const domain::MasterPreset preset) {
+  const auto& targets = platformPresetTargets();
+  const auto key = domain::toString(preset);
+  const auto it = targets.find(key);
+  if (it == targets.end()) {
+    return std::nullopt;
+  }
+  return it->second;
+}
+
 } // namespace
 
 domain::MasterPlan HeuristicAutoMasterStrategy::buildPlan(const domain::MasterPreset preset,
                                                            const engine::AudioBuffer& mixBuffer) const {
   domain::MasterPlan plan;
   plan.preset = preset;
+  plan.presetName = domain::toString(preset);
 
   switch (preset) {
     case domain::MasterPreset::DefaultStreaming:
-      plan.presetName = "DefaultStreaming";
       plan.targetLufs = -14.0;
       plan.truePeakDbtp = -1.0;
       break;
     case domain::MasterPreset::Broadcast:
-      plan.presetName = "Broadcast";
       plan.targetLufs = -23.0;
       plan.truePeakDbtp = -1.0;
       break;
     case domain::MasterPreset::UdioOptimized:
-      plan.presetName = "UdioOptimized";
       plan.targetLufs = -14.0;
       plan.truePeakDbtp = -1.0;
       plan.applyEq = true;
@@ -201,10 +293,48 @@ domain::MasterPlan HeuristicAutoMasterStrategy::buildPlan(const domain::MasterPr
       plan.stereoWidth = 0.95;
       plan.enableSoftClipper = true;
       plan.softClipDrive = 1.2;
+      plan.enableMultibandCompressor = true;
+      break;
+    case domain::MasterPreset::Spotify:
+      plan.targetLufs = -14.0;
+      plan.truePeakDbtp = -1.0;
+      plan.enableMultibandCompressor = true;
+      break;
+    case domain::MasterPreset::AppleMusic:
+      plan.targetLufs = -16.0;
+      plan.truePeakDbtp = -1.0;
+      plan.enableMultibandCompressor = true;
+      break;
+    case domain::MasterPreset::YouTube:
+      plan.targetLufs = -14.0;
+      plan.truePeakDbtp = -1.0;
+      plan.enableMultibandCompressor = true;
+      break;
+    case domain::MasterPreset::AmazonMusic:
+      plan.targetLufs = -14.0;
+      plan.truePeakDbtp = -2.0;
+      plan.enableMultibandCompressor = true;
+      break;
+    case domain::MasterPreset::Tidal:
+      plan.targetLufs = -14.0;
+      plan.truePeakDbtp = -1.0;
+      plan.enableMultibandCompressor = true;
+      break;
+    case domain::MasterPreset::BroadcastEbuR128:
+      plan.targetLufs = -23.0;
+      plan.truePeakDbtp = -1.0;
       break;
     case domain::MasterPreset::Custom:
-      plan.presetName = "Custom";
+      plan.targetLufs = -14.0;
+      plan.truePeakDbtp = -1.0;
       break;
+  }
+
+  if (const auto target = dataDrivenTarget(preset); target.has_value()) {
+    plan.targetLufs = target->targetLufs;
+    plan.truePeakDbtp = target->truePeakDbtp;
+    plan.enableMultibandCompressor = plan.enableMultibandCompressor || target->enableMultiband;
+    plan.decisionLog.push_back("Applied data-driven platform target override.");
   }
 
   const double currentLufs = measureIntegratedLufs(mixBuffer);
@@ -230,6 +360,9 @@ domain::MasterPlan HeuristicAutoMasterStrategy::buildPlan(const domain::MasterPr
   plan.decisionLog.push_back("Measured integrated LUFS: " + std::to_string(currentLufs));
   plan.decisionLog.push_back("Applied pre-gain: " + std::to_string(plan.preGainDb) + " dB");
   plan.decisionLog.push_back("Limiter ceiling set to: " + std::to_string(plan.limiterCeilingDb) + " dBTP");
+  if (plan.enableMultibandCompressor) {
+    plan.decisionLog.push_back("Multiband compression enabled.");
+  }
 
   return plan;
 }
@@ -242,7 +375,15 @@ engine::AudioBuffer HeuristicAutoMasterStrategy::applyPlan(const engine::AudioBu
 
   applyDcHighPass(mastered, kDcHighPassHz);
   activeModules.push_back("DcHighPass");
+
   applyGain(mastered, plan.preGainDb);
+
+  if (plan.enableMultibandCompressor) {
+    dsp::MultibandProcessor multiband;
+    multiband.process(mastered, plan.multibandSettings);
+    activeModules.push_back("MultibandProcessor");
+  }
+
   if (plan.applyEq) {
     applyTonalTilt(mastered, kTonalTiltDb);
     activeModules.push_back("TonalTiltEq");

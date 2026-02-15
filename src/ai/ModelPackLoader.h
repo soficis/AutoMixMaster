@@ -22,6 +22,11 @@ struct ModelPack {
   std::string modelFile;
   std::string checksum;
   std::optional<size_t> inputFeatureCount;
+  std::string preferredPrecision;
+  std::vector<std::string> providerAffinity;
+  std::optional<int> defaultIntraOpThreads;
+  std::optional<int> defaultInterOpThreads;
+  bool enableProfiling = false;
   std::vector<std::string> expectedOutputKeys;
   std::vector<std::string> inputNames;
   std::vector<std::string> outputNames;

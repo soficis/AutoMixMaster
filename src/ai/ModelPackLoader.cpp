@@ -69,6 +69,24 @@ std::optional<ModelPack> ModelPackLoader::load(const std::filesystem::path& dire
     }
   }
 
+  pack.preferredPrecision = json.value("preferredPrecision", json.value("preferred_precision", "auto"));
+  pack.providerAffinity = readStringArray(json, "providerAffinity", "provider_affinity");
+  if (json.contains("defaultIntraOpThreads")) {
+    pack.defaultIntraOpThreads = json.at("defaultIntraOpThreads").get<int>();
+  } else if (json.contains("default_intra_op_threads")) {
+    pack.defaultIntraOpThreads = json.at("default_intra_op_threads").get<int>();
+  } else {
+    pack.defaultIntraOpThreads.reset();
+  }
+  if (json.contains("defaultInterOpThreads")) {
+    pack.defaultInterOpThreads = json.at("defaultInterOpThreads").get<int>();
+  } else if (json.contains("default_inter_op_threads")) {
+    pack.defaultInterOpThreads = json.at("default_inter_op_threads").get<int>();
+  } else {
+    pack.defaultInterOpThreads.reset();
+  }
+  pack.enableProfiling = json.value("enableProfiling", json.value("enable_profiling", false));
+
   if (pack.featureSchemaVersion.empty() && json.contains("feature_schema") && json.at("feature_schema").is_object()) {
     pack.featureSchemaVersion = json.at("feature_schema").value("version", "");
   }

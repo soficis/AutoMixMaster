@@ -10,6 +10,7 @@ struct RenderSettings {
   int outputBitDepth = 24;
   std::string outputPath;
   std::string outputFormat = "auto";
+  std::string gpuExecutionProvider = "auto";
   int lossyBitrateKbps = 192;
   int lossyQuality = 7;
   int processingThreads = 0;

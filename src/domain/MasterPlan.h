@@ -5,7 +5,38 @@
 
 namespace automix::domain {
 
-enum class MasterPreset { DefaultStreaming, Broadcast, UdioOptimized, Custom };
+enum class MasterPreset {
+  DefaultStreaming,
+  Broadcast,
+  UdioOptimized,
+  Spotify,
+  AppleMusic,
+  YouTube,
+  AmazonMusic,
+  Tidal,
+  BroadcastEbuR128,
+  Custom,
+};
+
+struct MultibandBandSettings {
+  bool enabled = true;
+  double thresholdDb = -18.0;
+  double ratio = 2.0;
+  double makeupGainDb = 0.0;
+  double width = 1.0;
+};
+
+struct MultibandSettings {
+  std::vector<double> crossoverHz = {120.0, 500.0, 2000.0, 8000.0};
+  std::vector<MultibandBandSettings> bands = {
+      MultibandBandSettings{},
+      MultibandBandSettings{},
+      MultibandBandSettings{},
+      MultibandBandSettings{},
+      MultibandBandSettings{},
+  };
+  bool linearPhase = false;
+};
 
 struct MasterPlan {
   MasterPreset preset = MasterPreset::DefaultStreaming;
@@ -31,6 +62,8 @@ struct MasterPlan {
   double stereoWidth = 1.0;
   bool enableSoftClipper = false;
   double softClipDrive = 1.15;
+  bool enableMultibandCompressor = false;
+  MultibandSettings multibandSettings;
   std::vector<std::string> decisionLog;
 };
 

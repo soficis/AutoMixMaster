@@ -42,8 +42,9 @@ TEST_CASE("Renderer registry includes configured user external renderer metadata
     if (info.id == "ExternalUser1") {
       foundExternal = true;
       REQUIRE(info.linkMode == automix::renderers::RendererLinkMode::External);
-      REQUIRE(info.available);
+      REQUIRE_FALSE(info.available);
       REQUIRE(info.binaryPath == tempBinary);
+      REQUIRE(info.discovery.find("Validation failed") != std::string::npos);
       break;
     }
   }

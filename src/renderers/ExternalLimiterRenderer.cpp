@@ -5,6 +5,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <thread>
 
 #include <juce_core/juce_core.h>
@@ -49,7 +50,159 @@ std::string captureChildOutput(juce::ChildProcess& process, const size_t maxByte
   return output;
 }
 
+std::string summarizeOutput(const std::string& text, const size_t limit = 220) {
+  if (text.size() <= limit) {
+    return text;
+  }
+  return text.substr(0, limit) + "...";
+}
+
+std::optional<nlohmann::json> parseJsonFromOutput(const std::string& output) {
+  if (output.empty()) {
+    return std::nullopt;
+  }
+
+  try {
+    return nlohmann::json::parse(output);
+  } catch (...) {
+  }
+
+  const auto begin = output.find('{');
+  const auto end = output.rfind('}');
+  if (begin == std::string::npos || end == std::string::npos || begin >= end) {
+    return std::nullopt;
+  }
+
+  try {
+    return nlohmann::json::parse(output.substr(begin, end - begin + 1));
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
+bool isCompatibleSchema(const nlohmann::json& json) {
+  if (!json.contains("schemaVersion")) {
+    return false;
+  }
+
+  if (json.at("schemaVersion").is_string()) {
+    const auto schema = json.at("schemaVersion").get<std::string>();
+    return schema.rfind("1.", 0) == 0;
+  }
+  if (json.at("schemaVersion").is_number_integer()) {
+    return json.at("schemaVersion").get<int>() == 1;
+  }
+  return false;
+}
+
 } // namespace
+
+ExternalLimiterRenderer::ValidationResult ExternalLimiterRenderer::validateBinary(const std::filesystem::path& binaryPath,
+                                                                                  const int timeoutMs) {
+  ValidationResult result;
+  result.errorCode = "unknown";
+
+  std::error_code error;
+  if (!std::filesystem::is_regular_file(binaryPath, error) || error) {
+    result.errorCode = "binary_missing";
+    result.diagnostics = "Binary path is missing or not a file.";
+    return result;
+  }
+
+  const auto nonce = std::to_string(std::chrono::high_resolution_clock::now().time_since_epoch().count());
+  const auto outputDir = binaryPath.parent_path().empty() ? std::filesystem::current_path() : binaryPath.parent_path();
+  const auto requestPath = outputDir / ("external_limiter_validate_" + nonce + ".json");
+
+  nlohmann::json request = {
+      {"validate", true},
+      {"schemaVersion", "1.0"},
+      {"request", "capabilities"},
+      {"inputPath", ""},
+      {"outputPath", ""},
+      {"sampleRate", 44100},
+      {"bitDepth", 24},
+  };
+
+  {
+    std::ofstream out(requestPath);
+    out << request.dump(2);
+  }
+
+  juce::StringArray command;
+  command.add(binaryPath.string());
+  command.add("--validate");
+  command.add("--request");
+  command.add(requestPath.string());
+
+  juce::ChildProcess process;
+  if (!process.start(command)) {
+    std::filesystem::remove(requestPath, error);
+    result.errorCode = "launch_failed";
+    result.diagnostics = "Failed to launch binary with --validate.";
+    return result;
+  }
+
+  auto start = std::chrono::steady_clock::now();
+  const int timeout = std::max(500, timeoutMs);
+  while (process.isRunning()) {
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+    if (elapsed > timeout) {
+      process.kill();
+      std::filesystem::remove(requestPath, error);
+      result.errorCode = "timeout";
+      result.diagnostics = "Validation timed out.";
+      return result;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  }
+
+  const int exitCode = process.getExitCode();
+  const std::string processOutput = captureChildOutput(process, 65536);
+  std::filesystem::remove(requestPath, error);
+
+  if (exitCode != 0) {
+    result.errorCode = "exit_code";
+    result.diagnostics = "Validation exited with code " + std::to_string(exitCode) + ". Output: " + summarizeOutput(processOutput);
+    return result;
+  }
+
+  const auto json = parseJsonFromOutput(processOutput);
+  if (!json.has_value() || !json->is_object()) {
+    result.errorCode = "invalid_json";
+    result.diagnostics = "Validation output is not valid JSON.";
+    return result;
+  }
+
+  if (!json->contains("version") || !json->at("version").is_string()) {
+    result.errorCode = "missing_version";
+    result.diagnostics = "Validation response missing string field 'version'.";
+    return result;
+  }
+
+  if (!json->contains("supportedFeatures") || !json->at("supportedFeatures").is_array()) {
+    result.errorCode = "missing_supported_features";
+    result.diagnostics = "Validation response missing array field 'supportedFeatures'.";
+    return result;
+  }
+
+  if (!isCompatibleSchema(*json)) {
+    result.errorCode = "schema_incompatible";
+    result.diagnostics = "Validation response has incompatible or missing schemaVersion.";
+    return result;
+  }
+
+  result.version = json->at("version").get<std::string>();
+  for (const auto& value : json->at("supportedFeatures")) {
+    if (value.is_string()) {
+      result.supportedFeatures.push_back(value.get<std::string>());
+    }
+  }
+
+  result.valid = true;
+  result.errorCode = "ok";
+  result.diagnostics = "Validation passed.";
+  return result;
+}
 
 bool ExternalLimiterRenderer::isAvailable() const { return true; }
 
@@ -67,6 +220,15 @@ RenderResult ExternalLimiterRenderer::render(const domain::Session& session,
     return fallbackToBuiltIn(session, settings, onProgress, cancelFlag, "External binary path is invalid.");
   }
 
+  const auto validation = validateBinary(binaryPath, std::min(5000, settings.externalRendererTimeoutMs));
+  if (!validation.valid) {
+    return fallbackToBuiltIn(session,
+                             settings,
+                             onProgress,
+                             cancelFlag,
+                             "External binary validation failed [" + validation.errorCode + "]: " + validation.diagnostics);
+  }
+
   try {
     engine::OfflineRenderPipeline pipeline;
     auto rawResult = pipeline.renderRawMix(
@@ -79,7 +241,11 @@ RenderResult ExternalLimiterRenderer::render(const domain::Session& session,
         cancelFlag);
 
     if (rawResult.cancelled) {
-      return RenderResult{.cancelled = true, .rendererName = "ExternalLimiter", .logs = rawResult.logs};
+      RenderResult cancelledResult;
+      cancelledResult.cancelled = true;
+      cancelledResult.rendererName = "ExternalLimiter";
+      cancelledResult.logs = rawResult.logs;
+      return cancelledResult;
     }
 
     const std::filesystem::path outputPath = settings.outputPath.empty() ? "export_master.wav" : settings.outputPath;
@@ -143,7 +309,10 @@ RenderResult ExternalLimiterRenderer::render(const domain::Session& session,
     while (process.isRunning()) {
       if (cancelFlag != nullptr && cancelFlag->load()) {
         process.kill();
-        return RenderResult{.cancelled = true, .rendererName = "ExternalLimiter"};
+        RenderResult cancelledResult;
+        cancelledResult.cancelled = true;
+        cancelledResult.rendererName = "ExternalLimiter";
+        return cancelledResult;
       }
 
       const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
@@ -189,6 +358,8 @@ RenderResult ExternalLimiterRenderer::render(const domain::Session& session,
     nlohmann::json report = {
         {"renderer", "ExternalLimiter"},
         {"binaryPath", binaryPath.string()},
+        {"validatedVersion", validation.version},
+        {"validatedFeatures", validation.supportedFeatures},
         {"outputAudioPath", outputPath.string()},
         {"processExitCode", exitCode},
         {"integratedLufs", complianceReport.integratedLufs},
@@ -231,6 +402,7 @@ RenderResult ExternalLimiterRenderer::render(const domain::Session& session,
     result.reportPath = reportPath.string();
     result.logs = rawResult.logs;
     result.logs.push_back("External limiter binary: " + binaryPath.string());
+    result.logs.push_back("External limiter validation version: " + validation.version);
     result.logs.push_back("External process exit code: " + std::to_string(exitCode));
     if (!processOutput.empty()) {
       result.logs.push_back("External process output captured.");

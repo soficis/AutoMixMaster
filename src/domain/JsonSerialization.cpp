@@ -15,6 +15,12 @@ void to_json(Json& j, const Stem& value) {
   if (value.busId.has_value()) {
     j["busId"] = value.busId.value();
   }
+  if (value.separationConfidence.has_value()) {
+    j["separationConfidence"] = value.separationConfidence.value();
+  }
+  if (value.separationArtifactRisk.has_value()) {
+    j["separationArtifactRisk"] = value.separationArtifactRisk.value();
+  }
 }
 
 void from_json(const Json& j, Stem& value) {
@@ -29,6 +35,18 @@ void from_json(const Json& j, Stem& value) {
     value.busId = j.at("busId").get<std::string>();
   } else {
     value.busId.reset();
+  }
+
+  if (j.contains("separationConfidence") && !j.at("separationConfidence").is_null()) {
+    value.separationConfidence = j.at("separationConfidence").get<double>();
+  } else {
+    value.separationConfidence.reset();
+  }
+
+  if (j.contains("separationArtifactRisk") && !j.at("separationArtifactRisk").is_null()) {
+    value.separationArtifactRisk = j.at("separationArtifactRisk").get<double>();
+  } else {
+    value.separationArtifactRisk.reset();
   }
 }
 
@@ -52,6 +70,7 @@ void to_json(Json& j, const RenderSettings& value) {
            {"outputBitDepth", value.outputBitDepth},
            {"outputPath", value.outputPath},
            {"outputFormat", value.outputFormat},
+           {"gpuExecutionProvider", value.gpuExecutionProvider},
            {"lossyBitrateKbps", value.lossyBitrateKbps},
            {"lossyQuality", value.lossyQuality},
            {"processingThreads", value.processingThreads},
@@ -67,6 +86,7 @@ void from_json(const Json& j, RenderSettings& value) {
   value.outputBitDepth = j.value("outputBitDepth", 24);
   value.outputPath = j.value("outputPath", "");
   value.outputFormat = j.value("outputFormat", "auto");
+  value.gpuExecutionProvider = j.value("gpuExecutionProvider", "auto");
   value.lossyBitrateKbps = std::clamp(j.value("lossyBitrateKbps", 192), 48, 512);
   value.lossyQuality = std::clamp(j.value("lossyQuality", 7), 0, 10);
   value.processingThreads = std::max(0, j.value("processingThreads", 0));
@@ -120,6 +140,40 @@ void from_json(const Json& j, MixPlan& value) {
   value.decisionLog = j.value("decisionLog", std::vector<std::string>{});
 }
 
+void to_json(Json& j, const MultibandBandSettings& value) {
+  j = Json{{"enabled", value.enabled},
+           {"thresholdDb", value.thresholdDb},
+           {"ratio", value.ratio},
+           {"makeupGainDb", value.makeupGainDb},
+           {"width", value.width}};
+}
+
+void from_json(const Json& j, MultibandBandSettings& value) {
+  value.enabled = j.value("enabled", true);
+  value.thresholdDb = j.value("thresholdDb", -18.0);
+  value.ratio = j.value("ratio", 2.0);
+  value.makeupGainDb = j.value("makeupGainDb", 0.0);
+  value.width = j.value("width", 1.0);
+}
+
+void to_json(Json& j, const MultibandSettings& value) {
+  j = Json{{"crossoverHz", value.crossoverHz},
+           {"bands", value.bands},
+           {"linearPhase", value.linearPhase}};
+}
+
+void from_json(const Json& j, MultibandSettings& value) {
+  value.crossoverHz = j.value("crossoverHz", std::vector<double>{120.0, 500.0, 2000.0, 8000.0});
+  value.bands = j.value("bands", std::vector<MultibandBandSettings>{
+                                      MultibandBandSettings{},
+                                      MultibandBandSettings{},
+                                      MultibandBandSettings{},
+                                      MultibandBandSettings{},
+                                      MultibandBandSettings{},
+                                  });
+  value.linearPhase = j.value("linearPhase", false);
+}
+
 void to_json(Json& j, const MasterPlan& value) {
   j = Json{{"preset", toString(value.preset)},
            {"presetName", value.presetName},
@@ -144,6 +198,8 @@ void to_json(Json& j, const MasterPlan& value) {
            {"stereoWidth", value.stereoWidth},
            {"enableSoftClipper", value.enableSoftClipper},
            {"softClipDrive", value.softClipDrive},
+           {"enableMultibandCompressor", value.enableMultibandCompressor},
+           {"multibandSettings", value.multibandSettings},
            {"decisionLog", value.decisionLog}};
 }
 
@@ -171,6 +227,8 @@ void from_json(const Json& j, MasterPlan& value) {
   value.stereoWidth = j.value("stereoWidth", 1.0);
   value.enableSoftClipper = j.value("enableSoftClipper", false);
   value.softClipDrive = j.value("softClipDrive", 1.15);
+  value.enableMultibandCompressor = j.value("enableMultibandCompressor", false);
+  value.multibandSettings = j.value("multibandSettings", MultibandSettings{});
   value.decisionLog = j.value("decisionLog", std::vector<std::string>{});
 }
 

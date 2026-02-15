@@ -1,0 +1,50 @@
+{
+  "version": "1.0",
+  "presets": {
+    "default_streaming": {
+      "targetLufs": -14.0,
+      "truePeakDbtp": -1.0,
+      "enableMultiband": false
+    },
+    "broadcast": {
+      "targetLufs": -23.0,
+      "truePeakDbtp": -1.0,
+      "enableMultiband": false
+    },
+    "udio_optimized": {
+      "targetLufs": -14.0,
+      "truePeakDbtp": -1.0,
+      "enableMultiband": true
+    },
+    "spotify": {
+      "targetLufs": -14.0,
+      "truePeakDbtp": -1.0,
+      "enableMultiband": true
+    },
+    "apple_music": {
+      "targetLufs": -16.0,
+      "truePeakDbtp": -1.0,
+      "enableMultiband": true
+    },
+    "youtube": {
+      "targetLufs": -14.0,
+      "truePeakDbtp": -1.0,
+      "enableMultiband": true
+    },
+    "amazon_music": {
+      "targetLufs": -14.0,
+      "truePeakDbtp": -2.0,
+      "enableMultiband": true
+    },
+    "tidal": {
+      "targetLufs": -14.0,
+      "truePeakDbtp": -1.0,
+      "enableMultiband": true
+    },
+    "broadcast_ebu_r128": {
+      "targetLufs": -23.0,
+      "truePeakDbtp": -1.0,
+      "enableMultiband": false
+    }
+  }
+}

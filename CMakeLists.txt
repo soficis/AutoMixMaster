@@ -1,6 +1,18 @@
 cmake_minimum_required(VERSION 3.24)
 project(AutoMixMaster VERSION 0.1.0 LANGUAGES C CXX)
 
+if(CMAKE_VERSION VERSION_GREATER_EQUAL 4.0)
+  set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+endif()
+
+if(WIN32 AND CMAKE_GENERATOR MATCHES "Visual Studio")
+  if(NOT CMAKE_GENERATOR MATCHES "Visual Studio 18 2026")
+    message(FATAL_ERROR "Windows Visual Studio builds require Visual Studio 2026 tools (generator: \"Visual Studio 18 2026\").")
+  endif()
+endif()
+
+option(BUILD_SHARED_LIBS "Build libraries as shared" OFF)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -15,8 +27,11 @@ endif()
 option(ENABLE_PHASELIMITER "Enable optional PhaseLimiter renderer" OFF)
 option(ENABLE_ONNX "Enable optional ONNX model inference adapter" OFF)
 option(ENABLE_RTNEURAL "Enable optional RTNeural model inference adapter" OFF)
+option(RTNEURAL_XSIMD "Enable RTNeural XSIMD backend (if available)" ON)
+option(RTNEURAL_USE_AVX "Enable RTNeural AVX backend on x86_64 (if available)" ON)
 option(ENABLE_LIBEBUR128 "Enable libebur128 standards loudness metering" ON)
 option(ENABLE_GPL_BUNDLED_LIMITERS "Enable bundled GPL limiters (OSS mode only)" OFF)
+option(ENABLE_BUNDLED_LAME "Enable bundled LAME fallback lookup for MP3 export" ON)
 option(ENABLE_EXTERNAL_TOOL_SUPPORT "Enable user-supplied external renderer integrations" ON)
 option(ENABLE_SANITIZERS "Enable sanitizer instrumentation for debug builds" OFF)
 option(ENABLE_CLANG_TIDY "Enable clang-tidy analysis while compiling" OFF)
@@ -68,6 +83,7 @@ add_library(automix_core
   src/engine/AudioPreviewEngine.cpp
   src/engine/LoudnessMeter.cpp
   src/engine/AudioResampler.cpp
+  src/engine/TransportController.cpp
   src/engine/BatchQueueRunner.cpp
   src/engine/OfflineRenderPipeline.cpp
   src/engine/ResidualBlendProcessor.cpp
@@ -76,6 +92,7 @@ add_library(automix_core
   src/dsp/DynamicDeHarshEq.cpp
   src/dsp/LookaheadLimiter.cpp
   src/dsp/MidSideProcessor.cpp
+  src/dsp/MultibandProcessor.cpp
   src/dsp/SignalMath.cpp
   src/dsp/SoftClipper.cpp
   src/dsp/TruePeakDetector.cpp
@@ -100,7 +117,9 @@ add_library(automix_core
   src/ai/MasteringCompliance.cpp
   src/ai/OnnxModelInference.cpp
   src/ai/RtNeuralInference.cpp
+  src/ai/StemSeparator.cpp
   src/ai/StemRoleClassifierAI.cpp
+  src/util/LameDownloader.cpp
   src/util/WavWriter.cpp
 )
 
@@ -109,6 +128,7 @@ target_include_directories(automix_core PUBLIC src)
 target_link_libraries(automix_core
   PUBLIC
     nlohmann_json::nlohmann_json
+    juce::juce_events
     juce::juce_audio_formats
     juce::juce_dsp
 )
@@ -144,7 +164,10 @@ target_compile_definitions(automix_core
     $<$<BOOL:${ENABLE_RTNEURAL}>:ENABLE_RTNEURAL=1>
     $<$<BOOL:${LIBEBUR128_BACKEND_AVAILABLE}>:ENABLE_LIBEBUR128=1>
     $<$<BOOL:${ENABLE_GPL_BUNDLED_LIMITERS}>:ENABLE_GPL_BUNDLED_LIMITERS=1>
+    $<$<BOOL:${ENABLE_BUNDLED_LAME}>:ENABLE_BUNDLED_LAME=1>
     $<$<BOOL:${ENABLE_EXTERNAL_TOOL_SUPPORT}>:ENABLE_EXTERNAL_TOOL_SUPPORT=1>
+    $<$<BOOL:${RTNEURAL_XSIMD}>:RTNEURAL_XSIMD=1>
+    $<$<BOOL:${RTNEURAL_USE_AVX}>:RTNEURAL_USE_AVX=1>
 )
 
 if(ENABLE_CLANG_TIDY)
@@ -180,6 +203,7 @@ juce_add_gui_app(AutoMixMasterApp
 target_sources(AutoMixMasterApp PRIVATE
   src/app/Main.cpp
   src/app/MainComponent.cpp
+  src/app/WaveformPreviewComponent.cpp
 )
 
 target_include_directories(AutoMixMasterApp PRIVATE src)
@@ -230,9 +254,11 @@ if(BUILD_TESTING)
     tests/unit/LookaheadLimiterTests.cpp
     tests/unit/MasteringModulesTests.cpp
     tests/unit/AudioPreviewEngineTests.cpp
+    tests/unit/TransportControllerTests.cpp
     tests/unit/BatchProcessingTests.cpp
     tests/unit/OfflineRenderPipelineTests.cpp
     tests/unit/OnnxModelInferenceTests.cpp
+    tests/unit/StemSeparatorTests.cpp
     tests/regression/RegressionHarness.cpp
     tests/regression/RegressionHarnessTests.cpp
   )

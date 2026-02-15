@@ -7,6 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "renderers/ExternalLimiterRenderer.h"
 #include "renderers/PhaseLimiterDiscovery.h"
 
 namespace automix::renderers {
@@ -18,33 +19,32 @@ bool hasBinary(const std::filesystem::path& path) {
 }
 
 RendererInfo makeBuiltInInfo() {
-  return RendererInfo{
-      .id = "BuiltIn",
-      .name = "BuiltIn",
-      .version = "internal",
-      .licenseId = "Project",
-      .linkMode = RendererLinkMode::InProcess,
-      .bundledByDefault = true,
-      .available = true,
-      .discovery = "Always available (core renderer).",
-  };
+  RendererInfo info;
+  info.id = "BuiltIn";
+  info.name = "BuiltIn";
+  info.version = "internal";
+  info.licenseId = "Project";
+  info.linkMode = RendererLinkMode::InProcess;
+  info.bundledByDefault = true;
+  info.available = true;
+  info.discovery = "Always available (core renderer).";
+  return info;
 }
 
 RendererInfo makePhaseLimiterInfo() {
   PhaseLimiterDiscovery discovery;
   const auto binaryInfo = discovery.find();
 
-  RendererInfo info{
-      .id = "PhaseLimiter",
-      .name = "PhaseLimiter",
-      .version = "external",
-      .licenseId = "See assets/phaselimiter/licenses",
-      .linkMode = RendererLinkMode::External,
-      .bundledByDefault = false,
-      .available = binaryInfo.has_value(),
-      .discovery = binaryInfo.has_value() ? "Auto-discovered in assets or PHASELIMITER_BIN."
-                                          : "Not found in assets. Set PHASELIMITER_BIN or install under assets.",
-  };
+  RendererInfo info;
+  info.id = "PhaseLimiter";
+  info.name = "PhaseLimiter";
+  info.version = "external";
+  info.licenseId = "See assets/phaselimiter/licenses";
+  info.linkMode = RendererLinkMode::External;
+  info.bundledByDefault = false;
+  info.available = binaryInfo.has_value();
+  info.discovery = binaryInfo.has_value() ? "Auto-discovered in assets or PHASELIMITER_BIN."
+                                          : "Not found in assets. Set PHASELIMITER_BIN or install under assets.";
 
   if (binaryInfo.has_value()) {
     info.binaryPath = binaryInfo->executablePath;
@@ -61,10 +61,26 @@ RendererInfo makeExternalInfo(const ExternalRendererConfig& config) {
   info.licenseId = config.licenseId;
   info.linkMode = RendererLinkMode::External;
   info.bundledByDefault = config.bundledByDefault;
-  info.available = hasBinary(config.binaryPath);
   info.binaryPath = config.binaryPath;
-  info.discovery = info.available ? "User-supplied external binary path."
-                                  : "Configured path is missing or not executable.";
+
+  if (!hasBinary(config.binaryPath)) {
+    info.available = false;
+    info.discovery = "Configured path is missing or not executable.";
+    return info;
+  }
+
+  const auto validation = ExternalLimiterRenderer::validateBinary(config.binaryPath);
+  info.available = validation.valid;
+  if (!validation.version.empty() && (info.version.empty() || info.version == "unknown")) {
+    info.version = validation.version;
+  }
+
+  if (validation.valid) {
+    info.discovery = "External limiter validated (--validate contract).";
+  } else {
+    info.discovery = "Validation failed [" + validation.errorCode + "]: " + validation.diagnostics;
+  }
+
   return info;
 }
 

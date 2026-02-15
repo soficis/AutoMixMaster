@@ -25,7 +25,9 @@
 #include "engine/AudioFileIO.h"
 #include "engine/OfflineRenderPipeline.h"
 #include "engine/SessionRepository.h"
+#include "util/LameDownloader.h"
 #include "util/WavWriter.h"
+#include "renderers/ExternalLimiterRenderer.h"
 
 namespace {
 
@@ -49,6 +51,10 @@ std::optional<std::string> argValue(const std::vector<std::string>& args, const 
     }
   }
   return std::nullopt;
+}
+
+bool hasFlag(const std::vector<std::string>& args, const std::string& key) {
+  return std::find(args.begin(), args.end(), key) != args.end();
 }
 
 automix::engine::AudioBuffer sliceBuffer(const automix::engine::AudioBuffer& input,
@@ -245,6 +251,35 @@ int commandInstallSupportedLimiter(const std::vector<std::string>& args) {
   return 2;
 }
 
+int commandInstallLameFallback(const std::vector<std::string>& args) {
+  const bool force = hasFlag(args, "--force");
+  const bool jsonOutput = hasFlag(args, "--json");
+
+  const auto result = automix::util::LameDownloader::ensureAvailable(force);
+  const auto cachePath = automix::util::LameDownloader::cacheBinaryPath();
+
+  if (jsonOutput) {
+    nlohmann::json payload = {
+        {"success", result.success},
+        {"attempted", result.attempted},
+        {"path", result.success ? result.executablePath.string() : cachePath.string()},
+        {"detail", result.detail},
+    };
+    std::cout << payload.dump(2) << "\n";
+    return result.success ? 0 : 1;
+  }
+
+  std::cout << "LAME fallback installation:\n";
+  std::cout << "  Success: " << (result.success ? "yes" : "no") << "\n";
+  std::cout << "  Attempted download: " << (result.attempted ? "yes" : "no") << "\n";
+  std::cout << "  Binary path: " << (result.success ? result.executablePath.string() : cachePath.string()) << "\n";
+  if (!result.detail.empty()) {
+    std::cout << "  Detail: " << result.detail << "\n";
+  }
+
+  return result.success ? 0 : 1;
+}
+
 int commandExportFeatures(const std::vector<std::string>& args) {
   const auto sessionPathArg = argValue(args, "--session");
   const auto outPathArg = argValue(args, "--out");
@@ -279,6 +314,7 @@ int commandExportFeatures(const std::vector<std::string>& args) {
         {"peakDb", entry.metrics.peakDb},
         {"rmsDb", entry.metrics.rmsDb},
         {"crestDb", entry.metrics.crestDb},
+        {"crestFactor", entry.metrics.crestFactor},
         {"lowEnergy", entry.metrics.lowEnergy},
         {"midEnergy", entry.metrics.midEnergy},
         {"highEnergy", entry.metrics.highEnergy},
@@ -296,6 +332,9 @@ int commandExportFeatures(const std::vector<std::string>& args) {
         {"spectralSpreadHz", entry.metrics.spectralSpreadHz},
         {"spectralFlatness", entry.metrics.spectralFlatness},
         {"spectralFlux", entry.metrics.spectralFlux},
+        {"onsetStrength", entry.metrics.onsetStrength},
+        {"mfccCoefficients", entry.metrics.mfccCoefficients},
+        {"constantQBins", entry.metrics.constantQBins},
         {"channelBalanceDb", entry.metrics.channelBalanceDb},
         {"artifactRisk", entry.metrics.artifactRisk},
         {"artifactSwirlRisk", entry.metrics.artifactProfile.swirlRisk},
@@ -446,15 +485,60 @@ int commandValidateModelPack(const std::vector<std::string>& args) {
   return 0;
 }
 
+int commandValidateExternalLimiter(const std::vector<std::string>& args) {
+  const auto binaryArg = argValue(args, "--binary");
+  if (!binaryArg.has_value()) {
+    std::cerr << "validate-external-limiter requires --binary <path>\n";
+    return 2;
+  }
+
+  const bool jsonOutput = hasFlag(args, "--json");
+  const std::filesystem::path binaryPath(*binaryArg);
+  const auto validation = automix::renderers::ExternalLimiterRenderer::validateBinary(binaryPath);
+
+  if (jsonOutput) {
+    nlohmann::json payload = {
+        {"binary", binaryPath.string()},
+        {"valid", validation.valid},
+        {"version", validation.version},
+        {"errorCode", validation.errorCode},
+        {"diagnostics", validation.diagnostics},
+        {"supportedFeatures", validation.supportedFeatures},
+    };
+    std::cout << payload.dump(2) << "\n";
+    return validation.valid ? 0 : 1;
+  }
+
+  std::cout << "External limiter validation summary:\n";
+  std::cout << "  Binary: " << binaryPath.string() << "\n";
+  std::cout << "  Valid: " << (validation.valid ? "yes" : "no") << "\n";
+  std::cout << "  Version: " << (validation.version.empty() ? "(none)" : validation.version) << "\n";
+  std::cout << "  Error code: " << (validation.errorCode.empty() ? "(none)" : validation.errorCode) << "\n";
+  std::cout << "  Diagnostics: " << validation.diagnostics << "\n";
+
+  if (!validation.supportedFeatures.empty()) {
+    std::cout << "  Supported features:\n";
+    for (const auto& feature : validation.supportedFeatures) {
+      std::cout << "    - " << feature << "\n";
+    }
+  } else {
+    std::cout << "  Supported features: (none reported)\n";
+  }
+
+  return validation.valid ? 0 : 1;
+}
+
 void printUsage() {
   std::cout << "Usage:\n";
   std::cout << "  automix_dev_tools export-features --session <session.json> --out <features.jsonl>\n";
   std::cout << "  automix_dev_tools export-segments --session <session.json> --out-dir <dir> [--segment-seconds <sec>]\n";
   std::cout << "  automix_dev_tools validate-modelpack --pack <modelpack_dir>\n";
+  std::cout << "  automix_dev_tools validate-external-limiter --binary <path> [--json]\n";
   std::cout << "  automix_dev_tools list-supported-models\n";
   std::cout << "  automix_dev_tools install-supported-model --id <model_id> [--dest <assets/models>]\n";
   std::cout << "  automix_dev_tools list-supported-limiters\n";
   std::cout << "  automix_dev_tools install-supported-limiter --id <limiter_id> [--dest <assets/limiters>]\n";
+  std::cout << "  automix_dev_tools install-lame-fallback [--force] [--json]\n";
 }
 
 } // namespace
@@ -482,6 +566,9 @@ int main(int argc, char** argv) {
     if (command == "validate-modelpack") {
       return commandValidateModelPack(args);
     }
+    if (command == "validate-external-limiter") {
+      return commandValidateExternalLimiter(args);
+    }
     if (command == "list-supported-models") {
       return commandListSupportedModels();
     }
@@ -493,6 +580,9 @@ int main(int argc, char** argv) {
     }
     if (command == "install-supported-limiter") {
       return commandInstallSupportedLimiter(args);
+    }
+    if (command == "install-lame-fallback") {
+      return commandInstallLameFallback(args);
     }
 
     printUsage();

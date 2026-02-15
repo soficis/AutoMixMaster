@@ -2,6 +2,8 @@
 
 #include <fstream>
 #include <exception>
+#include <map>
+#include <optional>
 
 #include <nlohmann/json.hpp>
 
@@ -14,6 +16,43 @@
 #include "util/WavWriter.h"
 
 namespace automix::renderers {
+namespace {
+
+std::optional<std::filesystem::path> metadataSourcePath(const domain::Session& session) {
+  if (session.originalMixPath.has_value()) {
+    const std::filesystem::path originalPath(session.originalMixPath.value());
+    std::error_code error;
+    if (std::filesystem::is_regular_file(originalPath, error) && !error) {
+      return originalPath;
+    }
+  }
+
+  for (const auto& stem : session.stems) {
+    if (!stem.enabled || stem.filePath.empty()) {
+      continue;
+    }
+    const std::filesystem::path stemPath(stem.filePath);
+    std::error_code error;
+    if (std::filesystem::is_regular_file(stemPath, error) && !error) {
+      return stemPath;
+    }
+  }
+
+  for (const auto& stem : session.stems) {
+    if (stem.filePath.empty()) {
+      continue;
+    }
+    const std::filesystem::path stemPath(stem.filePath);
+    std::error_code error;
+    if (std::filesystem::is_regular_file(stemPath, error) && !error) {
+      return stemPath;
+    }
+  }
+
+  return std::nullopt;
+}
+
+} // namespace
 
 bool BuiltInRenderer::isAvailable() const { return true; }
 
@@ -47,8 +86,9 @@ RenderResult BuiltInRenderer::render(const domain::Session& session,
   domain::MasterPlan plan =
       session.masterPlan.has_value() ? session.masterPlan.value()
                                      : strategy.buildPlan(domain::MasterPreset::DefaultStreaming, renderState.mixBuffer);
+  const bool usedSessionMasterPlan = session.masterPlan.has_value();
 
-  if (!session.masterPlan.has_value() && session.originalMixPath.has_value()) {
+  if (!usedSessionMasterPlan && session.originalMixPath.has_value()) {
     try {
       engine::AudioFileIO fileIO;
       engine::AudioResampler resampler;
@@ -69,13 +109,25 @@ RenderResult BuiltInRenderer::render(const domain::Session& session,
   const auto spectrumMetrics = analyzer.analyzeBuffer(mastered);
 
   util::WavWriter writer;
+  std::map<std::string, std::string> sourceMetadata;
+  if (const auto sourcePath = metadataSourcePath(session); sourcePath.has_value()) {
+    try {
+      engine::AudioFileIO fileIO;
+      sourceMetadata = fileIO.readMetadata(sourcePath.value());
+    } catch (const std::exception& error) {
+      result.logs.push_back("Metadata copy skipped: " + std::string(error.what()));
+    }
+  }
   const std::filesystem::path outputPath = settings.outputPath.empty() ? "export_master.wav" : settings.outputPath;
   writer.write(outputPath,
                mastered,
                settings.outputBitDepth,
                settings.outputFormat,
                settings.lossyBitrateKbps,
-               settings.lossyQuality);
+               settings.lossyQuality,
+               settings.mp3UseVbr,
+               settings.mp3VbrQuality,
+               sourceMetadata);
 
   const std::filesystem::path reportPath = outputPath.string() + ".report.json";
   nlohmann::json report = {
@@ -93,9 +145,14 @@ RenderResult BuiltInRenderer::render(const domain::Session& session,
       {"spectrumHigh", spectrumMetrics.highEnergy},
       {"stereoCorrelation", spectrumMetrics.stereoCorrelation},
       {"masterPreset", plan.presetName},
+      {"masterPlanSource", usedSessionMasterPlan ? "session" : "heuristic"},
+      {"mixPlanSource", session.mixPlan.has_value() ? "session" : "heuristic"},
+      {"exportSpeedMode", settings.exportSpeedMode},
       {"outputFormat", settings.outputFormat},
       {"lossyBitrateKbps", settings.lossyBitrateKbps},
       {"lossyQuality", settings.lossyQuality},
+      {"mp3Mode", settings.mp3UseVbr ? "vbr" : "cbr"},
+      {"mp3VbrQuality", settings.mp3VbrQuality},
       {"targetLufs", plan.targetLufs},
       {"targetTruePeakDbtp", plan.truePeakDbtp},
       {"limiterCeilingDb", plan.limiterCeilingDb},

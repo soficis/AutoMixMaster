@@ -2,11 +2,17 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
+#include <cstdlib>
+#include <fstream>
 #include <numeric>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #include "ai/OnnxModelInference.h"
 #include "domain/StemOrigin.h"
@@ -18,11 +24,27 @@ namespace automix::ai {
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
-constexpr int kStemCount = 4;
-constexpr int kBassStem = 0;
-constexpr int kVocalsStem = 1;
-constexpr int kDrumsStem = 2;
-constexpr int kMusicStem = 3;
+
+struct ModelVariant {
+  int stemCount = 4;
+  std::filesystem::path modelPath;
+  size_t gpuMemoryBudgetMb = 256;
+  int maxStreams = 2;
+  bool fromManifest = false;
+};
+
+struct OverlapAddResult {
+  bool success = false;
+  bool usedModel = false;
+  int stemCount = 0;
+  size_t chunkFrames = 1;
+  int streamCount = 1;
+  std::vector<domain::StemRole> stemRoles;
+  std::vector<engine::AudioBuffer> stems;
+  std::vector<double> confidence;
+  std::vector<double> artifactRisk;
+  std::string logMessage;
+};
 
 double clampSample(const double value) {
   return std::clamp(value, -1.0, 1.0);
@@ -30,6 +52,29 @@ double clampSample(const double value) {
 
 double clamp01(const double value) {
   return std::clamp(value, 0.0, 1.0);
+}
+
+std::string titleCase(std::string value) {
+  bool makeUpper = true;
+  for (auto& c : value) {
+    if (!std::isalpha(static_cast<unsigned char>(c))) {
+      makeUpper = true;
+      continue;
+    }
+    if (makeUpper) {
+      c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+      makeUpper = false;
+    }
+  }
+  return value;
+}
+
+std::string roleToken(const domain::StemRole role, const int index) {
+  auto token = domain::toString(role);
+  if (!token.empty() && token != "unknown") {
+    return token;
+  }
+  return "stem" + std::to_string(index + 1);
 }
 
 double lowPassAlpha(const double sampleRate, const double cutoffHz) {
@@ -69,35 +114,53 @@ void applyOnePoleHighPass(engine::AudioBuffer& buffer, const double cutoffHz) {
 }
 
 engine::AudioBuffer makeResidual(const engine::AudioBuffer& source,
-                                 const engine::AudioBuffer& bass,
-                                 const engine::AudioBuffer& vocals,
-                                 const engine::AudioBuffer& drums) {
+                                 const std::vector<engine::AudioBuffer>& separated,
+                                 const std::optional<size_t>& skipIndex = std::nullopt) {
   engine::AudioBuffer residual(source.getNumChannels(), source.getNumSamples(), source.getSampleRate());
   for (int ch = 0; ch < source.getNumChannels(); ++ch) {
     for (int i = 0; i < source.getNumSamples(); ++i) {
-      const double value = source.getSample(ch, i) - bass.getSample(ch, i) - vocals.getSample(ch, i) - drums.getSample(ch, i);
+      double value = source.getSample(ch, i);
+      for (size_t stemIndex = 0; stemIndex < separated.size(); ++stemIndex) {
+        if (skipIndex.has_value() && skipIndex.value() == stemIndex) {
+          continue;
+        }
+        value -= separated[stemIndex].getSample(ch, i);
+      }
       residual.setSample(ch, i, static_cast<float>(clampSample(value)));
     }
   }
   return residual;
 }
 
-domain::Stem makeStem(const std::string& id,
-                      const std::string& name,
-                      const std::filesystem::path& path,
-                      const domain::StemRole role,
-                      const double confidence,
-                      const double artifactRisk) {
-  domain::Stem stem;
-  stem.id = id;
-  stem.name = name;
-  stem.filePath = path.string();
-  stem.role = role;
-  stem.origin = domain::StemOrigin::Separated;
-  stem.enabled = true;
-  stem.separationConfidence = clamp01(confidence);
-  stem.separationArtifactRisk = clamp01(artifactRisk);
-  return stem;
+engine::AudioBuffer applyBandPass(const engine::AudioBuffer& input,
+                                  const double highPassHz,
+                                  const double lowPassHz) {
+  auto output = input;
+  applyOnePoleHighPass(output, highPassHz);
+  applyOnePoleLowPass(output, lowPassHz);
+  return output;
+}
+
+std::vector<domain::StemRole> rolesForStemCount(const int stemCount) {
+  if (stemCount <= 2) {
+    return {domain::StemRole::Vocals, domain::StemRole::Music};
+  }
+  if (stemCount >= 6) {
+    return {
+        domain::StemRole::Bass,
+        domain::StemRole::Vocals,
+        domain::StemRole::Drums,
+        domain::StemRole::Guitar,
+        domain::StemRole::Keys,
+        domain::StemRole::Fx,
+    };
+  }
+  return {
+      domain::StemRole::Bass,
+      domain::StemRole::Vocals,
+      domain::StemRole::Drums,
+      domain::StemRole::Music,
+  };
 }
 
 std::vector<double> makeHannWindow(const int frameSize) {
@@ -207,22 +270,44 @@ std::optional<double> findOutputValue(const InferenceResult& result, const std::
   return std::nullopt;
 }
 
-std::array<double, kStemCount> defaultWeights(const std::vector<double>& features) {
+std::vector<double> defaultWeights(const std::vector<double>& features,
+                                   const std::vector<domain::StemRole>& roles) {
   const double low = features.size() > 4 ? clamp01(features[4]) : 0.25;
   const double mid = features.size() > 5 ? clamp01(features[5]) : 0.25;
   const double high = features.size() > 6 ? clamp01(features[6]) : 0.25;
   const double flux = features.size() > 7 ? clamp01(features[7]) : 0.25;
 
-  std::array<double, kStemCount> weights {
-      0.55 + low * 0.45 - high * 0.2,
-      0.45 + mid * 0.6 - low * 0.15,
-      0.35 + high * 0.4 + flux * 0.25,
-      0.25 + mid * 0.25 + high * 0.15,
-  };
-
-  for (double& value : weights) {
-    value = std::max(0.01, value);
+  std::vector<double> weights(roles.size(), 0.25);
+  for (size_t i = 0; i < roles.size(); ++i) {
+    switch (roles[i]) {
+      case domain::StemRole::Bass:
+        weights[i] = 0.55 + low * 0.45 - high * 0.2;
+        break;
+      case domain::StemRole::Vocals:
+        weights[i] = 0.45 + mid * 0.6 - low * 0.15;
+        break;
+      case domain::StemRole::Drums:
+        weights[i] = 0.35 + high * 0.4 + flux * 0.25;
+        break;
+      case domain::StemRole::Guitar:
+        weights[i] = 0.30 + mid * 0.45 + high * 0.15;
+        break;
+      case domain::StemRole::Keys:
+        weights[i] = 0.25 + mid * 0.30 + high * 0.25;
+        break;
+      case domain::StemRole::Fx:
+        weights[i] = 0.25 + high * 0.45 + flux * 0.20;
+        break;
+      case domain::StemRole::Music:
+        weights[i] = 0.25 + mid * 0.25 + high * 0.15;
+        break;
+      default:
+        weights[i] = 0.20 + mid * 0.2;
+        break;
+    }
+    weights[i] = std::max(0.01, weights[i]);
   }
+
   const double sum = std::accumulate(weights.begin(), weights.end(), 0.0);
   for (double& value : weights) {
     value /= std::max(1.0e-9, sum);
@@ -230,20 +315,51 @@ std::array<double, kStemCount> defaultWeights(const std::vector<double>& feature
   return weights;
 }
 
-std::array<double, kStemCount> weightsFromInference(const InferenceResult& result,
-                                                    const std::array<double, kStemCount>& fallback) {
+std::vector<double> weightsFromInference(const InferenceResult& result,
+                                         const std::vector<double>& fallback,
+                                         const std::vector<domain::StemRole>& roles) {
   auto weights = fallback;
   bool anyExplicitWeight = false;
-  const std::array<std::vector<std::string>, kStemCount> keyOptions = {
-      std::vector<std::string>{"bass_weight", "stem0_weight", "source0_weight", "mask_bass"},
-      std::vector<std::string>{"vocals_weight", "stem1_weight", "source1_weight", "mask_vocals"},
-      std::vector<std::string>{"drums_weight", "stem2_weight", "source2_weight", "mask_drums"},
-      std::vector<std::string>{"music_weight", "other_weight", "stem3_weight", "source3_weight", "mask_other"},
-  };
 
-  for (int index = 0; index < kStemCount; ++index) {
-    if (const auto value = findOutputValue(result, keyOptions[static_cast<size_t>(index)]); value.has_value()) {
-      weights[static_cast<size_t>(index)] = std::max(0.0, value.value());
+  for (size_t index = 0; index < roles.size(); ++index) {
+    std::vector<std::string> keys = {
+        "stem" + std::to_string(index) + "_weight",
+        "source" + std::to_string(index) + "_weight",
+        "mask_" + std::to_string(index),
+    };
+
+    switch (roles[index]) {
+      case domain::StemRole::Bass:
+        keys.push_back("bass_weight");
+        keys.push_back("mask_bass");
+        break;
+      case domain::StemRole::Vocals:
+        keys.push_back("vocals_weight");
+        keys.push_back("mask_vocals");
+        break;
+      case domain::StemRole::Drums:
+        keys.push_back("drums_weight");
+        keys.push_back("mask_drums");
+        break;
+      case domain::StemRole::Music:
+        keys.push_back("music_weight");
+        keys.push_back("other_weight");
+        break;
+      case domain::StemRole::Guitar:
+        keys.push_back("guitar_weight");
+        break;
+      case domain::StemRole::Keys:
+        keys.push_back("keys_weight");
+        break;
+      case domain::StemRole::Fx:
+        keys.push_back("fx_weight");
+        break;
+      default:
+        break;
+    }
+
+    if (const auto value = findOutputValue(result, keys); value.has_value()) {
+      weights[index] = std::max(0.0, value.value());
       anyExplicitWeight = true;
     }
   }
@@ -262,17 +378,195 @@ std::array<double, kStemCount> weightsFromInference(const InferenceResult& resul
   return weights;
 }
 
-struct OverlapAddResult {
-  bool success = false;
-  bool usedModel = false;
-  std::array<engine::AudioBuffer, kStemCount> stems;
-  std::array<double, kStemCount> confidence {};
-  std::array<double, kStemCount> artifactRisk {};
-  std::string logMessage;
-};
+size_t envUnsigned(const char* key, const size_t fallback) {
+  const char* raw = std::getenv(key);
+  if (raw == nullptr || *raw == '\0') {
+    return fallback;
+  }
+  try {
+    const auto value = static_cast<size_t>(std::stoull(raw));
+    return std::max<size_t>(1, value);
+  } catch (...) {
+    return fallback;
+  }
+}
 
-OverlapAddResult runModelBackedOverlapAdd(const engine::AudioBuffer& mixBuffer, const std::filesystem::path& modelPath) {
+int envInt(const char* key, const int fallback) {
+  const char* raw = std::getenv(key);
+  if (raw == nullptr || *raw == '\0') {
+    return fallback;
+  }
+  try {
+    const auto value = static_cast<int>(std::stoi(raw));
+    return std::max(1, value);
+  } catch (...) {
+    return fallback;
+  }
+}
+
+std::vector<ModelVariant> discoverModelVariants(const std::filesystem::path& modelRoot) {
+  std::vector<ModelVariant> variants;
+
+  const auto manifestPath = modelRoot / "separator_pack.json";
+  std::error_code error;
+  if (std::filesystem::is_regular_file(manifestPath, error) && !error) {
+    try {
+      std::ifstream in(manifestPath);
+      nlohmann::json json;
+      in >> json;
+      if (json.contains("variants") && json.at("variants").is_array()) {
+        for (const auto& entry : json.at("variants")) {
+          const int stemCount = entry.value("stemCount", 0);
+          const std::string modelFile = entry.value("modelFile", "");
+          if (stemCount <= 0 || modelFile.empty()) {
+            continue;
+          }
+          const auto candidatePath = modelRoot / modelFile;
+          error.clear();
+          if (!std::filesystem::is_regular_file(candidatePath, error) || error) {
+            continue;
+          }
+
+          ModelVariant variant;
+          variant.stemCount = stemCount;
+          variant.modelPath = candidatePath;
+          variant.gpuMemoryBudgetMb = static_cast<size_t>(entry.value("gpuMemoryBudgetMb", 256));
+          variant.maxStreams = entry.value("maxStreams", 2);
+          variant.fromManifest = true;
+          variants.push_back(variant);
+        }
+      }
+    } catch (...) {
+    }
+  }
+
+  const std::array<std::pair<int, std::string>, 5> fallbackNames = {
+      std::pair<int, std::string>{2, "separator_2stem.onnx"},
+      std::pair<int, std::string>{4, "separator_4stem.onnx"},
+      std::pair<int, std::string>{4, "separator.onnx"},
+      std::pair<int, std::string>{6, "separator_6stem.onnx"},
+      std::pair<int, std::string>{4, "model.onnx"},
+  };
+
+  for (const auto& [stemCount, fileName] : fallbackNames) {
+    const auto candidatePath = modelRoot / fileName;
+    error.clear();
+    if (!std::filesystem::is_regular_file(candidatePath, error) || error) {
+      continue;
+    }
+
+    const bool duplicate = std::any_of(variants.begin(), variants.end(), [&](const ModelVariant& variant) {
+      return variant.modelPath == candidatePath;
+    });
+    if (duplicate) {
+      continue;
+    }
+
+    ModelVariant variant;
+    variant.stemCount = stemCount;
+    variant.modelPath = candidatePath;
+    variant.gpuMemoryBudgetMb = stemCount >= 6 ? 384 : (stemCount <= 2 ? 192 : 256);
+    variant.maxStreams = stemCount >= 6 ? 3 : 2;
+    variant.fromManifest = false;
+    variants.push_back(variant);
+  }
+
+  std::sort(variants.begin(), variants.end(), [](const ModelVariant& a, const ModelVariant& b) {
+    if (a.stemCount != b.stemCount) {
+      return a.stemCount < b.stemCount;
+    }
+    if (a.fromManifest != b.fromManifest) {
+      return a.fromManifest > b.fromManifest;
+    }
+    return a.modelPath.string() < b.modelPath.string();
+  });
+
+  std::vector<ModelVariant> uniqueByStemCount;
+  std::unordered_set<int> seen;
+  for (const auto& variant : variants) {
+    if (seen.insert(variant.stemCount).second) {
+      uniqueByStemCount.push_back(variant);
+    }
+  }
+
+  return uniqueByStemCount;
+}
+
+std::optional<ModelVariant> pickModelVariant(const std::vector<ModelVariant>& variants,
+                                             const engine::AudioBuffer& mixBuffer,
+                                             const StemSeparator::SeparationOptions& options) {
+  if (variants.empty()) {
+    return std::nullopt;
+  }
+
+  if (options.targetStemCount.has_value()) {
+    const int requested = std::clamp(options.targetStemCount.value(), 2, 6);
+    auto best = variants.front();
+    int bestDistance = std::abs(best.stemCount - requested);
+    for (const auto& variant : variants) {
+      const int distance = std::abs(variant.stemCount - requested);
+      if (distance < bestDistance || (distance == bestDistance && variant.stemCount > best.stemCount)) {
+        best = variant;
+        bestDistance = distance;
+      }
+    }
+    return best;
+  }
+
+  const auto features = extractFrameFeatures(mixBuffer, 0, std::min(4096, std::max(1024, mixBuffer.getNumSamples())));
+  const double complexity = clamp01(features[6] * 0.40 + features[7] * 0.30 + features[15] * 0.30);
+
+  const auto findByStemCount = [&](const int stemCount) -> std::optional<ModelVariant> {
+    const auto it = std::find_if(variants.begin(), variants.end(), [&](const ModelVariant& variant) {
+      return variant.stemCount == stemCount;
+    });
+    if (it == variants.end()) {
+      return std::nullopt;
+    }
+    return *it;
+  };
+
+  if (complexity > 0.65) {
+    if (const auto v = findByStemCount(6); v.has_value()) {
+      return v;
+    }
+  }
+
+  if (complexity < 0.35) {
+    if (const auto v = findByStemCount(2); v.has_value()) {
+      return v;
+    }
+  }
+
+  if (const auto v = findByStemCount(4); v.has_value()) {
+    return v;
+  }
+
+  return variants.back();
+}
+
+size_t resolveMemoryBudgetMb(const ModelVariant& variant,
+                             const StemSeparator::SeparationOptions& options) {
+  if (options.gpuMemoryBudgetMb.has_value()) {
+    return std::max<size_t>(64, options.gpuMemoryBudgetMb.value());
+  }
+  return std::max<size_t>(64, envUnsigned("AUTOMIX_SEPARATOR_GPU_BUDGET_MB", variant.gpuMemoryBudgetMb));
+}
+
+int resolveMaxStreams(const ModelVariant& variant,
+                      const StemSeparator::SeparationOptions& options) {
+  if (options.maxStreams.has_value()) {
+    return std::clamp(options.maxStreams.value(), 1, 8);
+  }
+  return std::clamp(envInt("AUTOMIX_SEPARATOR_MAX_STREAMS", variant.maxStreams), 1, 8);
+}
+
+OverlapAddResult runModelBackedOverlapAdd(const engine::AudioBuffer& mixBuffer,
+                                          const ModelVariant& variant,
+                                          const StemSeparator::SeparationOptions& options) {
   OverlapAddResult result;
+  result.stemCount = variant.stemCount;
+  result.stemRoles = rolesForStemCount(variant.stemCount);
 
   OnnxModelInference inference;
   inference.setExecutionProviderPreference("auto");
@@ -280,7 +574,7 @@ OverlapAddResult runModelBackedOverlapAdd(const engine::AudioBuffer& mixBuffer, 
   inference.setWarmupEnabled(true);
   inference.setPreferQuantizedVariants(true);
 
-  if (!inference.loadModel(modelPath)) {
+  if (!inference.loadModel(variant.modelPath)) {
     result.logMessage = "Separator model exists but failed to load.";
     return result;
   }
@@ -292,73 +586,96 @@ OverlapAddResult runModelBackedOverlapAdd(const engine::AudioBuffer& mixBuffer, 
     return result;
   }
 
-  for (auto& stem : result.stems) {
-    stem = engine::AudioBuffer(channels, samples, mixBuffer.getSampleRate());
+  result.stems.reserve(result.stemCount);
+  for (int index = 0; index < result.stemCount; ++index) {
+    result.stems.emplace_back(channels, samples, mixBuffer.getSampleRate());
   }
+  result.confidence.assign(static_cast<size_t>(result.stemCount), 0.0);
+  result.artifactRisk.assign(static_cast<size_t>(result.stemCount), 0.0);
 
   constexpr int frameSize = 4096;
   constexpr int hopSize = frameSize / 4;
   const auto window = makeHannWindow(frameSize);
   std::vector<double> normalization(static_cast<size_t>(samples), 0.0);
-  std::array<double, kStemCount> confidenceAccumulator {};
-  std::array<double, kStemCount> confidenceWeight {};
-  std::array<double, kStemCount> artifactAccumulator {};
-  std::array<double, kStemCount> artifactWeight {};
+  std::vector<double> confidenceAccumulator(static_cast<size_t>(result.stemCount), 0.0);
+  std::vector<double> confidenceWeight(static_cast<size_t>(result.stemCount), 0.0);
+  std::vector<double> artifactAccumulator(static_cast<size_t>(result.stemCount), 0.0);
+  std::vector<double> artifactWeight(static_cast<size_t>(result.stemCount), 0.0);
+
+  const int totalFrames = (samples + hopSize - 1) / hopSize;
+  const size_t budgetMb = resolveMemoryBudgetMb(variant, options);
+  const int streamCount = resolveMaxStreams(variant, options);
+  const size_t bytesPerFrame = static_cast<size_t>(frameSize) * static_cast<size_t>(std::max(1, channels)) *
+                               static_cast<size_t>(std::max(1, result.stemCount)) * sizeof(float) * 3;
+  const size_t budgetBytes = std::max<size_t>(64, budgetMb) * 1024ull * 1024ull;
+  const size_t framesPerChunk = std::max<size_t>(1, budgetBytes / std::max<size_t>(1, bytesPerFrame));
+  result.chunkFrames = framesPerChunk;
+  result.streamCount = streamCount;
 
   int processedFrames = 0;
   int modelFrames = 0;
-  for (int frameStart = 0; frameStart < samples; frameStart += hopSize) {
-    const auto features = extractFrameFeatures(mixBuffer, frameStart, frameSize);
-    const auto fallbackWeights = defaultWeights(features);
-    auto weights = fallbackWeights;
-    double confidence = 0.45;
+  for (int chunkIndex = 0; chunkIndex * static_cast<int>(framesPerChunk) < totalFrames; ++chunkIndex) {
+    const int chunkFrameBegin = chunkIndex * static_cast<int>(framesPerChunk);
+    const int chunkFrameEnd = std::min(totalFrames, chunkFrameBegin + static_cast<int>(framesPerChunk));
 
-    InferenceRequest request;
-    request.task = "stem_separation";
-    request.features = features;
-    const auto inferenceResult = inference.run(request);
-    if (inferenceResult.usedModel) {
-      weights = weightsFromInference(inferenceResult, fallbackWeights);
-      confidence = findOutputValue(inferenceResult, {"confidence", "separator_confidence"}).value_or(0.7);
-      result.usedModel = true;
-      ++modelFrames;
-    }
+    for (int frameIndex = chunkFrameBegin; frameIndex < chunkFrameEnd; ++frameIndex) {
+      const int frameStart = frameIndex * hopSize;
+      const auto features = extractFrameFeatures(mixBuffer, frameStart, frameSize);
+      const auto fallbackWeights = defaultWeights(features, result.stemRoles);
+      auto weights = fallbackWeights;
+      double confidence = 0.45;
 
-    const double weightSum = std::accumulate(weights.begin(), weights.end(), 0.0);
-    if (weightSum <= 1.0e-9) {
-      continue;
-    }
-    for (double& value : weights) {
-      value = std::max(0.0, value / weightSum);
-    }
+      InferenceRequest request;
+      request.task = "stem_separation";
+      request.features = features;
+      request.scalars["target_stems"] = static_cast<double>(result.stemCount);
+      request.scalars["chunk_budget_mb"] = static_cast<double>(budgetMb);
+      request.scalars["stream_slot"] = static_cast<double>(frameIndex % std::max(1, streamCount));
 
-    const double frameArtifactRisk = clamp01(1.0 - *std::max_element(weights.begin(), weights.end()));
-    for (int i = 0; i < frameSize; ++i) {
-      const int absoluteIndex = frameStart + i;
-      if (absoluteIndex >= samples) {
-        break;
+      const auto inferenceResult = inference.run(request);
+      if (inferenceResult.usedModel) {
+        weights = weightsFromInference(inferenceResult, fallbackWeights, result.stemRoles);
+        confidence = findOutputValue(inferenceResult, {"confidence", "separator_confidence"}).value_or(0.7);
+        result.usedModel = true;
+        ++modelFrames;
       }
-      const double windowed = window[static_cast<size_t>(i)];
-      normalization[static_cast<size_t>(absoluteIndex)] += windowed;
 
-      for (int ch = 0; ch < channels; ++ch) {
-        const double sample = static_cast<double>(mixBuffer.getSample(ch, absoluteIndex)) * windowed;
-        for (int stemIndex = 0; stemIndex < kStemCount; ++stemIndex) {
-          const double current = result.stems[static_cast<size_t>(stemIndex)].getSample(ch, absoluteIndex);
-          result.stems[static_cast<size_t>(stemIndex)].setSample(
-              ch, absoluteIndex, static_cast<float>(current + sample * weights[static_cast<size_t>(stemIndex)]));
+      const double weightSum = std::accumulate(weights.begin(), weights.end(), 0.0);
+      if (weightSum <= 1.0e-9) {
+        continue;
+      }
+      for (double& value : weights) {
+        value = std::max(0.0, value / weightSum);
+      }
+
+      const double frameArtifactRisk = clamp01(1.0 - *std::max_element(weights.begin(), weights.end()));
+      for (int i = 0; i < frameSize; ++i) {
+        const int absoluteIndex = frameStart + i;
+        if (absoluteIndex >= samples) {
+          break;
+        }
+        const double windowed = window[static_cast<size_t>(i)];
+        normalization[static_cast<size_t>(absoluteIndex)] += windowed;
+
+        for (int ch = 0; ch < channels; ++ch) {
+          const double sample = static_cast<double>(mixBuffer.getSample(ch, absoluteIndex)) * windowed;
+          for (int stemIndex = 0; stemIndex < result.stemCount; ++stemIndex) {
+            const double current = result.stems[static_cast<size_t>(stemIndex)].getSample(ch, absoluteIndex);
+            result.stems[static_cast<size_t>(stemIndex)].setSample(
+                ch, absoluteIndex, static_cast<float>(current + sample * weights[static_cast<size_t>(stemIndex)]));
+          }
         }
       }
-    }
 
-    for (int stemIndex = 0; stemIndex < kStemCount; ++stemIndex) {
-      confidenceAccumulator[static_cast<size_t>(stemIndex)] += confidence * weights[static_cast<size_t>(stemIndex)];
-      confidenceWeight[static_cast<size_t>(stemIndex)] += weights[static_cast<size_t>(stemIndex)];
-      artifactAccumulator[static_cast<size_t>(stemIndex)] += frameArtifactRisk * weights[static_cast<size_t>(stemIndex)];
-      artifactWeight[static_cast<size_t>(stemIndex)] += weights[static_cast<size_t>(stemIndex)];
-    }
+      for (int stemIndex = 0; stemIndex < result.stemCount; ++stemIndex) {
+        confidenceAccumulator[static_cast<size_t>(stemIndex)] += confidence * weights[static_cast<size_t>(stemIndex)];
+        confidenceWeight[static_cast<size_t>(stemIndex)] += weights[static_cast<size_t>(stemIndex)];
+        artifactAccumulator[static_cast<size_t>(stemIndex)] += frameArtifactRisk * weights[static_cast<size_t>(stemIndex)];
+        artifactWeight[static_cast<size_t>(stemIndex)] += weights[static_cast<size_t>(stemIndex)];
+      }
 
-    ++processedFrames;
+      ++processedFrames;
+    }
   }
 
   if (processedFrames == 0) {
@@ -368,7 +685,7 @@ OverlapAddResult runModelBackedOverlapAdd(const engine::AudioBuffer& mixBuffer, 
 
   for (int i = 0; i < samples; ++i) {
     const double gain = normalization[static_cast<size_t>(i)] > 1.0e-9 ? 1.0 / normalization[static_cast<size_t>(i)] : 0.0;
-    for (int stemIndex = 0; stemIndex < kStemCount; ++stemIndex) {
+    for (int stemIndex = 0; stemIndex < result.stemCount; ++stemIndex) {
       for (int ch = 0; ch < channels; ++ch) {
         const double value = static_cast<double>(result.stems[static_cast<size_t>(stemIndex)].getSample(ch, i)) * gain;
         result.stems[static_cast<size_t>(stemIndex)].setSample(ch, i, static_cast<float>(value));
@@ -376,18 +693,23 @@ OverlapAddResult runModelBackedOverlapAdd(const engine::AudioBuffer& mixBuffer, 
     }
   }
 
-  // Lock "music" to residual so the separated stems remain phase-consistent with the source.
-  for (int ch = 0; ch < channels; ++ch) {
-    for (int i = 0; i < samples; ++i) {
-      const double value = static_cast<double>(mixBuffer.getSample(ch, i)) -
-                           static_cast<double>(result.stems[kBassStem].getSample(ch, i)) -
-                           static_cast<double>(result.stems[kVocalsStem].getSample(ch, i)) -
-                           static_cast<double>(result.stems[kDrumsStem].getSample(ch, i));
-      result.stems[kMusicStem].setSample(ch, i, static_cast<float>(clampSample(value)));
+  auto musicIt = std::find(result.stemRoles.begin(), result.stemRoles.end(), domain::StemRole::Music);
+  if (musicIt != result.stemRoles.end()) {
+    const size_t musicIndex = static_cast<size_t>(std::distance(result.stemRoles.begin(), musicIt));
+    const auto residual = makeResidual(mixBuffer, result.stems, musicIndex);
+    result.stems[musicIndex] = residual;
+  } else if (!result.stems.empty()) {
+    const size_t catchAll = result.stems.size() - 1;
+    const auto residual = makeResidual(mixBuffer, result.stems);
+    for (int ch = 0; ch < channels; ++ch) {
+      for (int i = 0; i < samples; ++i) {
+        const double value = result.stems[catchAll].getSample(ch, i) + residual.getSample(ch, i);
+        result.stems[catchAll].setSample(ch, i, static_cast<float>(clampSample(value)));
+      }
     }
   }
 
-  for (int stemIndex = 0; stemIndex < kStemCount; ++stemIndex) {
+  for (int stemIndex = 0; stemIndex < result.stemCount; ++stemIndex) {
     const double confidenceNorm = std::max(1.0e-9, confidenceWeight[static_cast<size_t>(stemIndex)]);
     const double artifactNorm = std::max(1.0e-9, artifactWeight[static_cast<size_t>(stemIndex)]);
     result.confidence[static_cast<size_t>(stemIndex)] =
@@ -398,34 +720,254 @@ OverlapAddResult runModelBackedOverlapAdd(const engine::AudioBuffer& mixBuffer, 
 
   result.success = true;
   if (result.usedModel) {
-    result.logMessage = "Model-backed overlap-add separation completed (" + std::to_string(modelFrames) + " model frames).";
+    result.logMessage = "Model-backed overlap-add separation completed (" + std::to_string(modelFrames) +
+                        " model frames, stems=" + std::to_string(result.stemCount) +
+                        ", chunk_frames=" + std::to_string(result.chunkFrames) +
+                        ", streams=" + std::to_string(result.streamCount) + ").";
   } else {
-    result.logMessage = "Model loaded but returned no usable frame outputs; used overlap-add fallback weights.";
+    result.logMessage = "Model loaded but returned no usable frame outputs; overlap-add fallback weights used (stems=" +
+                        std::to_string(result.stemCount) + ").";
   }
   return result;
 }
 
-OverlapAddResult runDeterministicFallback(const engine::AudioBuffer& mixBuffer) {
+OverlapAddResult runDeterministicFallback(const engine::AudioBuffer& mixBuffer, const int requestedStemCount) {
   OverlapAddResult result;
   result.success = true;
   result.usedModel = false;
+  result.stemRoles = rolesForStemCount(requestedStemCount);
+  result.stemCount = static_cast<int>(result.stemRoles.size());
 
-  result.stems[kBassStem] = mixBuffer;
-  applyOnePoleLowPass(result.stems[kBassStem], 180.0);
+  result.stems.reserve(result.stemRoles.size());
+  for (size_t i = 0; i < result.stemRoles.size(); ++i) {
+    result.stems.emplace_back(mixBuffer.getNumChannels(), mixBuffer.getNumSamples(), mixBuffer.getSampleRate());
+  }
+  result.confidence.assign(result.stemRoles.size(), 0.45);
+  result.artifactRisk.assign(result.stemRoles.size(), 0.58);
 
-  result.stems[kVocalsStem] = mixBuffer;
-  applyOnePoleHighPass(result.stems[kVocalsStem], 180.0);
-  applyOnePoleLowPass(result.stems[kVocalsStem], 3500.0);
+  auto setStem = [&](const domain::StemRole role, const engine::AudioBuffer& buffer) {
+    const auto it = std::find(result.stemRoles.begin(), result.stemRoles.end(), role);
+    if (it == result.stemRoles.end()) {
+      return;
+    }
+    result.stems[static_cast<size_t>(std::distance(result.stemRoles.begin(), it))] = buffer;
+  };
 
-  result.stems[kDrumsStem] = mixBuffer;
-  applyOnePoleHighPass(result.stems[kDrumsStem], 3500.0);
+  if (result.stemCount <= 2) {
+    auto vocals = applyBandPass(mixBuffer, 180.0, 3500.0);
+    setStem(domain::StemRole::Vocals, vocals);
+    const auto residual = makeResidual(mixBuffer, result.stems, std::nullopt);
+    setStem(domain::StemRole::Music, residual);
+    result.confidence = {0.50, 0.48};
+    result.artifactRisk = {0.46, 0.52};
+    result.logMessage = "No separator model installed; used deterministic 2-stem splitter.";
+    return result;
+  }
 
-  result.stems[kMusicStem] = makeResidual(mixBuffer, result.stems[kBassStem], result.stems[kVocalsStem], result.stems[kDrumsStem]);
+  auto bass = mixBuffer;
+  applyOnePoleLowPass(bass, 180.0);
+  setStem(domain::StemRole::Bass, bass);
 
-  result.confidence = {0.45, 0.45, 0.45, 0.45};
-  result.artifactRisk = {0.58, 0.58, 0.58, 0.58};
-  result.logMessage = "No separator model installed; used deterministic frequency splitter.";
+  auto vocals = applyBandPass(mixBuffer, 180.0, 3500.0);
+  setStem(domain::StemRole::Vocals, vocals);
+
+  auto drums = mixBuffer;
+  applyOnePoleHighPass(drums, 3500.0);
+  setStem(domain::StemRole::Drums, drums);
+
+  if (result.stemCount >= 6) {
+    auto harmonicResidual = makeResidual(mixBuffer, result.stems);
+    auto guitar = applyBandPass(harmonicResidual, 220.0, 2500.0);
+    auto keys = applyBandPass(harmonicResidual, 500.0, 7000.0);
+
+    setStem(domain::StemRole::Guitar, guitar);
+    setStem(domain::StemRole::Keys, keys);
+
+    const auto fxResidual = makeResidual(harmonicResidual, {guitar, keys});
+    setStem(domain::StemRole::Fx, fxResidual);
+
+    result.confidence = {0.44, 0.47, 0.43, 0.40, 0.40, 0.38};
+    result.artifactRisk = {0.60, 0.55, 0.62, 0.66, 0.66, 0.70};
+    result.logMessage = "No separator model installed; used deterministic 6-stem fallback splitter.";
+    return result;
+  }
+
+  const auto residualMusic = makeResidual(mixBuffer, result.stems);
+  setStem(domain::StemRole::Music, residualMusic);
+  result.confidence = {0.46, 0.47, 0.45, 0.44};
+  result.artifactRisk = {0.57, 0.56, 0.58, 0.59};
+  result.logMessage = "No separator model installed; used deterministic 4-stem frequency splitter.";
   return result;
+}
+
+engine::AudioBuffer sumStems(const std::vector<engine::AudioBuffer>& stems,
+                             const int channels,
+                             const int samples,
+                             const double sampleRate) {
+  engine::AudioBuffer sum(channels, samples, sampleRate);
+  for (const auto& stem : stems) {
+    for (int ch = 0; ch < channels; ++ch) {
+      for (int i = 0; i < samples; ++i) {
+        const double value = sum.getSample(ch, i) + stem.getSample(ch, i);
+        sum.setSample(ch, i, static_cast<float>(value));
+      }
+    }
+  }
+  return sum;
+}
+
+double energy(const engine::AudioBuffer& buffer) {
+  double total = 0.0;
+  for (int ch = 0; ch < buffer.getNumChannels(); ++ch) {
+    for (int i = 0; i < buffer.getNumSamples(); ++i) {
+      const double sample = buffer.getSample(ch, i);
+      total += sample * sample;
+    }
+  }
+  return total;
+}
+
+double onsetStrength(const engine::AudioBuffer& buffer) {
+  if (buffer.getNumSamples() < 2 || buffer.getNumChannels() <= 0) {
+    return 0.0;
+  }
+
+  double total = 0.0;
+  for (int i = 1; i < buffer.getNumSamples(); ++i) {
+    double current = 0.0;
+    double previous = 0.0;
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch) {
+      current += std::abs(buffer.getSample(ch, i));
+      previous += std::abs(buffer.getSample(ch, i - 1));
+    }
+    current /= static_cast<double>(buffer.getNumChannels());
+    previous /= static_cast<double>(buffer.getNumChannels());
+    total += std::abs(current - previous);
+  }
+
+  return total;
+}
+
+double normalizedCorrelation(const engine::AudioBuffer& a, const engine::AudioBuffer& b) {
+  const int channels = std::min(a.getNumChannels(), b.getNumChannels());
+  const int samples = std::min(a.getNumSamples(), b.getNumSamples());
+  if (channels <= 0 || samples <= 0) {
+    return 0.0;
+  }
+
+  double dot = 0.0;
+  double energyA = 0.0;
+  double energyB = 0.0;
+  for (int ch = 0; ch < channels; ++ch) {
+    for (int i = 0; i < samples; ++i) {
+      const double sa = a.getSample(ch, i);
+      const double sb = b.getSample(ch, i);
+      dot += sa * sb;
+      energyA += sa * sa;
+      energyB += sb * sb;
+    }
+  }
+
+  if (energyA <= 1.0e-9 || energyB <= 1.0e-9) {
+    return 0.0;
+  }
+  return std::abs(dot / std::sqrt(energyA * energyB));
+}
+
+StemSeparator::SeparationQaMetrics computeQaMetrics(const engine::AudioBuffer& source,
+                                                    const std::vector<engine::AudioBuffer>& stems) {
+  StemSeparator::SeparationQaMetrics metrics;
+  if (stems.empty()) {
+    return metrics;
+  }
+
+  const auto summed = sumStems(stems, source.getNumChannels(), source.getNumSamples(), source.getSampleRate());
+  const auto residual = makeResidual(source, {summed});
+
+  const double sourceEnergy = std::max(1.0e-9, energy(source));
+  const double residualEnergy = energy(residual);
+  metrics.residualDistortion = std::sqrt(residualEnergy / sourceEnergy);
+
+  const double sourceOnset = std::max(1.0e-9, onsetStrength(source));
+  const double summedOnset = onsetStrength(summed);
+  metrics.transientRetention = std::clamp(summedOnset / sourceOnset, 0.0, 2.0);
+
+  double leakageSum = 0.0;
+  int leakagePairs = 0;
+  for (size_t i = 0; i < stems.size(); ++i) {
+    double maxLeakageForStem = 0.0;
+    for (size_t j = 0; j < stems.size(); ++j) {
+      if (i == j) {
+        continue;
+      }
+      maxLeakageForStem = std::max(maxLeakageForStem, normalizedCorrelation(stems[i], stems[j]));
+    }
+    leakageSum += maxLeakageForStem;
+    ++leakagePairs;
+  }
+
+  metrics.energyLeakage = leakagePairs > 0 ? leakageSum / static_cast<double>(leakagePairs) : 0.0;
+  return metrics;
+}
+
+domain::Stem makeStem(const int stemIndex,
+                      const domain::StemRole role,
+                      const std::filesystem::path& path,
+                      const double confidence,
+                      const double artifactRisk) {
+  domain::Stem stem;
+  const auto token = roleToken(role, stemIndex);
+  stem.id = "sep_" + token;
+  stem.name = "Separated " + titleCase(token);
+  stem.filePath = path.string();
+  stem.role = role;
+  stem.origin = domain::StemOrigin::Separated;
+  stem.enabled = true;
+  stem.separationConfidence = clamp01(confidence);
+  stem.separationArtifactRisk = clamp01(artifactRisk);
+  return stem;
+}
+
+void writeQaBundle(const std::filesystem::path& path,
+                   const StemSeparator::SeparationResult& result,
+                   const std::vector<domain::StemRole>& roles,
+                   const OverlapAddResult& overlap,
+                   const std::optional<ModelVariant>& variant) {
+  nlohmann::json qa = {
+      {"success", result.success},
+      {"usedModel", result.usedModel},
+      {"stemVariantCount", result.stemVariantCount},
+      {"energyLeakage", result.qaMetrics.energyLeakage},
+      {"residualDistortion", result.qaMetrics.residualDistortion},
+      {"transientRetention", result.qaMetrics.transientRetention},
+      {"chunkFrames", overlap.chunkFrames},
+      {"streamCount", overlap.streamCount},
+      {"log", result.logMessage},
+  };
+
+  nlohmann::json stemRoles = nlohmann::json::array();
+  for (size_t i = 0; i < roles.size(); ++i) {
+    stemRoles.push_back({
+        {"index", i},
+        {"role", domain::toString(roles[i])},
+        {"confidence", i < overlap.confidence.size() ? overlap.confidence[i] : 0.0},
+        {"artifactRisk", i < overlap.artifactRisk.size() ? overlap.artifactRisk[i] : 0.0},
+    });
+  }
+  qa["stems"] = stemRoles;
+
+  if (variant.has_value()) {
+    qa["modelVariant"] = {
+        {"stemCount", variant->stemCount},
+        {"modelPath", variant->modelPath.string()},
+        {"gpuMemoryBudgetMb", variant->gpuMemoryBudgetMb},
+        {"maxStreams", variant->maxStreams},
+        {"fromManifest", variant->fromManifest},
+    };
+  }
+
+  std::ofstream out(path);
+  out << qa.dump(2);
 }
 
 } // namespace
@@ -449,11 +991,16 @@ std::filesystem::path StemSeparator::resolveModelPath() const {
 }
 
 bool StemSeparator::isModelAvailable() const {
+  const auto variants = discoverModelVariants(modelRoot_);
+  if (!variants.empty()) {
+    return true;
+  }
   return !resolveModelPath().empty();
 }
 
 StemSeparator::SeparationResult StemSeparator::separate(const std::filesystem::path& mixPath,
-                                                        const std::filesystem::path& outputDir) const {
+                                                        const std::filesystem::path& outputDir,
+                                                        const SeparationOptions& options) const {
   SeparationResult result;
 
   try {
@@ -466,59 +1013,64 @@ StemSeparator::SeparationResult StemSeparator::separate(const std::filesystem::p
 
     std::filesystem::create_directories(outputDir);
 
+    auto variants = discoverModelVariants(modelRoot_);
+    if (variants.empty()) {
+      const auto fallbackModel = resolveModelPath();
+      if (!fallbackModel.empty()) {
+        variants.push_back(ModelVariant{.stemCount = 4,
+                                        .modelPath = fallbackModel,
+                                        .gpuMemoryBudgetMb = 256,
+                                        .maxStreams = 2,
+                                        .fromManifest = false});
+      }
+    }
+
     OverlapAddResult separated;
-    const auto modelPath = resolveModelPath();
-    if (!modelPath.empty()) {
-      separated = runModelBackedOverlapAdd(mixBuffer, modelPath);
+    std::optional<ModelVariant> selectedVariant;
+    if (!variants.empty()) {
+      selectedVariant = pickModelVariant(variants, mixBuffer, options);
+    }
+
+    if (selectedVariant.has_value()) {
+      separated = runModelBackedOverlapAdd(mixBuffer, selectedVariant.value(), options);
       if (!separated.success) {
-        separated = runDeterministicFallback(mixBuffer);
+        const int fallbackStemCount = options.targetStemCount.value_or(selectedVariant->stemCount);
+        separated = runDeterministicFallback(mixBuffer, fallbackStemCount);
         separated.logMessage = "Model-backed path failed, fallback used. " + separated.logMessage;
       }
     } else {
-      separated = runDeterministicFallback(mixBuffer);
+      separated = runDeterministicFallback(mixBuffer, options.targetStemCount.value_or(4));
     }
 
     util::WavWriter writer;
-    const auto bassPath = outputDir / "stem_bass.wav";
-    const auto vocalsPath = outputDir / "stem_vocals.wav";
-    const auto drumsPath = outputDir / "stem_drums.wav";
-    const auto musicPath = outputDir / "stem_music.wav";
+    result.generatedFiles.clear();
+    result.stems.clear();
 
-    writer.write(bassPath, separated.stems[kBassStem], 24);
-    writer.write(vocalsPath, separated.stems[kVocalsStem], 24);
-    writer.write(drumsPath, separated.stems[kDrumsStem], 24);
-    writer.write(musicPath, separated.stems[kMusicStem], 24);
+    for (int stemIndex = 0; stemIndex < separated.stemCount; ++stemIndex) {
+      const auto role = stemIndex < static_cast<int>(separated.stemRoles.size()) ? separated.stemRoles[static_cast<size_t>(stemIndex)]
+                                                                                  : domain::StemRole::Unknown;
+      const auto token = roleToken(role, stemIndex);
+      const auto stemPath = outputDir / ("stem_" + token + ".wav");
+      writer.write(stemPath, separated.stems[static_cast<size_t>(stemIndex)], 24);
+      result.generatedFiles.push_back(stemPath);
 
-    result.generatedFiles = {bassPath, vocalsPath, drumsPath, musicPath};
-    result.stems = {
-        makeStem("sep_bass",
-                 "Separated Bass",
-                 bassPath,
-                 domain::StemRole::Bass,
-                 separated.confidence[kBassStem],
-                 separated.artifactRisk[kBassStem]),
-        makeStem("sep_vocals",
-                 "Separated Vocals",
-                 vocalsPath,
-                 domain::StemRole::Vocals,
-                 separated.confidence[kVocalsStem],
-                 separated.artifactRisk[kVocalsStem]),
-        makeStem("sep_drums",
-                 "Separated Drums",
-                 drumsPath,
-                 domain::StemRole::Drums,
-                 separated.confidence[kDrumsStem],
-                 separated.artifactRisk[kDrumsStem]),
-        makeStem("sep_music",
-                 "Separated Music",
-                 musicPath,
-                 domain::StemRole::Music,
-                 separated.confidence[kMusicStem],
-                 separated.artifactRisk[kMusicStem]),
-    };
+      const double confidence = stemIndex < static_cast<int>(separated.confidence.size())
+                                    ? separated.confidence[static_cast<size_t>(stemIndex)]
+                                    : 0.45;
+      const double artifactRisk = stemIndex < static_cast<int>(separated.artifactRisk.size())
+                                      ? separated.artifactRisk[static_cast<size_t>(stemIndex)]
+                                      : 0.58;
+      result.stems.push_back(makeStem(stemIndex, role, stemPath, confidence, artifactRisk));
+    }
 
     result.usedModel = separated.usedModel;
+    result.stemVariantCount = separated.stemCount;
+    result.qaMetrics = computeQaMetrics(mixBuffer, separated.stems);
+    result.qaReportPath = outputDir / "separation_qa_report.json";
     result.logMessage = separated.logMessage;
+
+    writeQaBundle(result.qaReportPath, result, separated.stemRoles, separated, selectedVariant);
+
     result.success = true;
     return result;
   } catch (const std::exception& error) {

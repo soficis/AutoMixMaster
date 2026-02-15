@@ -74,6 +74,7 @@ add_library(automix_core
   src/domain/JsonSerialization.cpp
   src/domain/MasterPlan.cpp
   src/domain/MixPlan.cpp
+  src/domain/ProjectProfile.cpp
   src/domain/RenderSettings.cpp
   src/domain/Session.cpp
   src/domain/Stem.cpp
@@ -97,6 +98,7 @@ add_library(automix_core
   src/dsp/SoftClipper.cpp
   src/dsp/TruePeakDetector.cpp
   src/analysis/ArtifactRiskEstimator.cpp
+  src/analysis/StemHealthAssistant.cpp
   src/analysis/StemAnalyzer.cpp
   src/automix/HeuristicAutoMixStrategy.cpp
   src/automaster/HeuristicAutoMasterStrategy.cpp
@@ -124,6 +126,22 @@ add_library(automix_core
 )
 
 target_include_directories(automix_core PUBLIC src)
+
+set(AUTOMIX_HAS_NATIVE_ORT OFF)
+if(ENABLE_ONNX)
+  find_path(ONNXRUNTIME_INCLUDE_DIR
+    NAMES onnxruntime_cxx_api.h
+    PATH_SUFFIXES onnxruntime/core/session
+  )
+  find_library(ONNXRUNTIME_LIBRARY NAMES onnxruntime)
+  if(ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY)
+    target_include_directories(automix_core PUBLIC ${ONNXRUNTIME_INCLUDE_DIR})
+    target_link_libraries(automix_core PUBLIC ${ONNXRUNTIME_LIBRARY})
+    set(AUTOMIX_HAS_NATIVE_ORT ON)
+  else()
+    message(WARNING "ENABLE_ONNX is ON but native ONNX Runtime headers/library were not found. Falling back to deterministic ONNX adapter.")
+  endif()
+endif()
 
 target_link_libraries(automix_core
   PUBLIC
@@ -168,6 +186,7 @@ target_compile_definitions(automix_core
     $<$<BOOL:${ENABLE_EXTERNAL_TOOL_SUPPORT}>:ENABLE_EXTERNAL_TOOL_SUPPORT=1>
     $<$<BOOL:${RTNEURAL_XSIMD}>:RTNEURAL_XSIMD=1>
     $<$<BOOL:${RTNEURAL_USE_AVX}>:RTNEURAL_USE_AVX=1>
+    $<$<BOOL:${AUTOMIX_HAS_NATIVE_ORT}>:AUTOMIX_HAS_NATIVE_ORT=1>
 )
 
 if(ENABLE_CLANG_TIDY)
@@ -212,6 +231,7 @@ target_link_libraries(AutoMixMasterApp
   PRIVATE
     automix_core
     juce::juce_gui_extra
+    juce::juce_audio_devices
     juce::juce_audio_formats
     juce::juce_dsp
 )
@@ -222,9 +242,13 @@ target_compile_definitions(AutoMixMasterApp PRIVATE
 )
 
 if(BUILD_TOOLS)
-  add_executable(automix_dev_tools tools/dev_tools.cpp)
-  target_include_directories(automix_dev_tools PRIVATE src)
+  add_executable(automix_dev_tools
+    tools/dev_tools.cpp
+    tests/regression/RegressionHarness.cpp
+  )
+  target_include_directories(automix_dev_tools PRIVATE src tests/regression)
   target_link_libraries(automix_dev_tools PRIVATE automix_core)
+  target_compile_definitions(automix_dev_tools PRIVATE AUTOMIX_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 endif()
 
 if(BUILD_TESTING)
@@ -248,6 +272,8 @@ if(BUILD_TESTING)
     tests/unit/PhaseLimiterRendererTests.cpp
     tests/unit/ExternalLimiterRendererTests.cpp
     tests/unit/RendererRegistryTests.cpp
+    tests/unit/RendererRegistryTrustPolicyTests.cpp
+    tests/unit/ProjectProfileTests.cpp
     tests/unit/AutoMasterTests.cpp
     tests/unit/AiExtensionTests.cpp
     tests/unit/LoudnessMeterTests.cpp

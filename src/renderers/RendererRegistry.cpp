@@ -1,9 +1,13 @@
 #include "renderers/RendererRegistry.h"
 
 #include <algorithm>
+#include <chrono>
 #include <fstream>
 #include <optional>
 #include <set>
+#include <sstream>
+#include <unordered_map>
+#include <unordered_set>
 
 #include <nlohmann/json.hpp>
 
@@ -13,9 +17,120 @@
 namespace automix::renderers {
 namespace {
 
+struct TrustPolicy {
+  bool enforceSignedDescriptors = false;
+  std::unordered_set<std::string> trustedSigners;
+  std::unordered_map<std::string, std::vector<std::string>> profileRendererPins;
+};
+
 bool hasBinary(const std::filesystem::path& path) {
   std::error_code error;
   return std::filesystem::is_regular_file(path, error);
+}
+
+uint64_t fnv1a64(const std::string& input) {
+  uint64_t hash = 14695981039346656037ull;
+  constexpr uint64_t prime = 1099511628211ull;
+  for (const auto c : input) {
+    hash ^= static_cast<uint8_t>(c);
+    hash *= prime;
+  }
+  return hash;
+}
+
+std::string toHex(const uint64_t value) {
+  std::ostringstream out;
+  out << std::hex << value;
+  return out.str();
+}
+
+std::vector<std::filesystem::path> trustPolicyCandidates() {
+  std::vector<std::filesystem::path> candidates;
+  std::error_code error;
+  auto current = std::filesystem::absolute(std::filesystem::current_path(error), error);
+  if (error) {
+    return candidates;
+  }
+
+  for (int depth = 0; depth < 5; ++depth) {
+    candidates.push_back(current / "assets" / "renderers" / "trust_policy.json");
+    candidates.push_back(current / "assets" / "limiters" / "trust_policy.json");
+    candidates.push_back(current / "Assets" / "Renderers" / "trust_policy.json");
+    if (!current.has_parent_path()) {
+      break;
+    }
+    const auto parent = current.parent_path();
+    if (parent == current) {
+      break;
+    }
+    current = parent;
+  }
+
+  return candidates;
+}
+
+TrustPolicy loadTrustPolicy() {
+  TrustPolicy policy;
+
+  std::set<std::string> visited;
+  for (const auto& candidate : trustPolicyCandidates()) {
+    const auto key = candidate.lexically_normal().string();
+    if (!visited.insert(key).second) {
+      continue;
+    }
+
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(candidate, error) || error) {
+      continue;
+    }
+
+    try {
+      std::ifstream in(candidate);
+      nlohmann::json json;
+      in >> json;
+      policy.enforceSignedDescriptors = json.value("enforceSignedDescriptors", false);
+
+      if (json.contains("trustedSigners") && json.at("trustedSigners").is_array()) {
+        for (const auto& signer : json.at("trustedSigners")) {
+          if (signer.is_string()) {
+            policy.trustedSigners.insert(signer.get<std::string>());
+          }
+        }
+      }
+
+      if (json.contains("profileRendererPins") && json.at("profileRendererPins").is_object()) {
+        for (const auto& [profileId, rendererIds] : json.at("profileRendererPins").items()) {
+          if (!rendererIds.is_array()) {
+            continue;
+          }
+          policy.profileRendererPins[profileId] = rendererIds.get<std::vector<std::string>>();
+        }
+      }
+
+      return policy;
+    } catch (...) {
+      continue;
+    }
+  }
+
+  return policy;
+}
+
+bool verifyDescriptorSignature(const nlohmann::json& descriptor,
+                               const std::string& algorithm,
+                               const std::string& signatureValue) {
+  if (algorithm.empty() || signatureValue.empty()) {
+    return false;
+  }
+
+  if (algorithm != "fnv1a64" && algorithm != "FNV1A64") {
+    return false;
+  }
+
+  auto canonical = descriptor;
+  canonical.erase("signature");
+  const auto digest = toHex(fnv1a64(canonical.dump()));
+  return digest == signatureValue;
 }
 
 RendererInfo makeBuiltInInfo() {
@@ -28,6 +143,7 @@ RendererInfo makeBuiltInInfo() {
   info.bundledByDefault = true;
   info.available = true;
   info.discovery = "Always available (core renderer).";
+  info.trustPolicyStatus = "trusted:built-in";
   return info;
 }
 
@@ -45,12 +161,42 @@ RendererInfo makePhaseLimiterInfo() {
   info.available = binaryInfo.has_value();
   info.discovery = binaryInfo.has_value() ? "Auto-discovered in assets or PHASELIMITER_BIN."
                                           : "Not found in assets. Set PHASELIMITER_BIN or install under assets.";
+  info.trustPolicyStatus = "unsigned";
 
   if (binaryInfo.has_value()) {
     info.binaryPath = binaryInfo->executablePath;
   }
 
   return info;
+}
+
+std::filesystem::path capabilitySnapshotPath(const ExternalRendererConfig& config) {
+  const auto safeId = config.id.empty() ? std::string("external") : config.id;
+  return config.binaryPath.parent_path() / (safeId + ".capabilities.snapshot.json");
+}
+
+void writeCapabilitySnapshot(const ExternalRendererConfig& config,
+                             const ExternalLimiterRenderer::ValidationResult& validation,
+                             const std::filesystem::path& snapshotPath) {
+  nlohmann::json snapshot = {
+      {"id", config.id},
+      {"name", config.name},
+      {"binaryPath", config.binaryPath.string()},
+      {"version", validation.version},
+      {"supportedFeatures", validation.supportedFeatures},
+      {"validated", validation.valid},
+      {"errorCode", validation.errorCode},
+      {"diagnostics", validation.diagnostics},
+      {"signatureValid", config.signatureValid},
+      {"signerId", config.signerId},
+      {"timestampEpochMs", std::chrono::duration_cast<std::chrono::milliseconds>(
+                               std::chrono::high_resolution_clock::now().time_since_epoch())
+                               .count()},
+  };
+  std::ofstream out(snapshotPath);
+  if (out.is_open()) {
+    out << snapshot.dump(2);
+  }
 }
 
 RendererInfo makeExternalInfo(const ExternalRendererConfig& config) {
@@ -62,6 +208,8 @@ RendererInfo makeExternalInfo(const ExternalRendererConfig& config) {
   info.linkMode = RendererLinkMode::External;
   info.bundledByDefault = config.bundledByDefault;
   info.binaryPath = config.binaryPath;
+  info.pinnedProfileIds = config.pinnedProfileIds;
+  info.trustPolicyStatus = config.trustPolicyStatus;
 
   if (!hasBinary(config.binaryPath)) {
     info.available = false;
@@ -75,16 +223,25 @@ RendererInfo makeExternalInfo(const ExternalRendererConfig& config) {
     info.version = validation.version;
   }
 
+  const auto snapshotPath = capabilitySnapshotPath(config);
+  writeCapabilitySnapshot(config, validation, snapshotPath);
+  info.capabilitySnapshotPath = snapshotPath;
+
   if (validation.valid) {
     info.discovery = "External limiter validated (--validate contract).";
   } else {
     info.discovery = "Validation failed [" + validation.errorCode + "]: " + validation.diagnostics;
   }
 
+  if (!info.trustPolicyStatus.empty()) {
+    info.discovery += " Trust=" + info.trustPolicyStatus + ".";
+  }
+
   return info;
 }
 
-std::optional<ExternalRendererConfig> loadExternalRendererDescriptor(const std::filesystem::path& descriptorPath) {
+std::optional<ExternalRendererConfig> loadExternalRendererDescriptor(const std::filesystem::path& descriptorPath,
+                                                                     const TrustPolicy& trustPolicy) {
   try {
     std::ifstream in(descriptorPath);
     if (!in.is_open()) {
@@ -108,9 +265,49 @@ std::optional<ExternalRendererConfig> loadExternalRendererDescriptor(const std::
 
     const std::filesystem::path binary(binaryPath);
     config.binaryPath = binary.is_absolute() ? binary : (descriptorPath.parent_path() / binary);
+
+    if (json.contains("signature") && json.at("signature").is_object()) {
+      const auto& signature = json.at("signature");
+      config.signerId = signature.value("signer", "");
+      config.signatureAlgorithm = signature.value("algorithm", "");
+      config.signatureValue = signature.value("value", "");
+      config.signatureValid = verifyDescriptorSignature(json, config.signatureAlgorithm, config.signatureValue);
+    }
+
+    if (json.contains("pinnedProfileIds") && json.at("pinnedProfileIds").is_array()) {
+      config.pinnedProfileIds = json.at("pinnedProfileIds").get<std::vector<std::string>>();
+    }
+
     if (config.id.empty() || config.name.empty()) {
       return std::nullopt;
     }
+
+    if (!config.signerId.empty() && !trustPolicy.trustedSigners.empty()) {
+      if (trustPolicy.trustedSigners.find(config.signerId) == trustPolicy.trustedSigners.end()) {
+        config.trustPolicyStatus = "signer_untrusted";
+      }
+    }
+
+    if (!config.signatureAlgorithm.empty() && !config.signatureValid) {
+      config.trustPolicyStatus = "signature_invalid";
+    } else if (!config.signatureAlgorithm.empty() && config.signatureValid) {
+      config.trustPolicyStatus = "signature_valid";
+    }
+
+    if (trustPolicy.enforceSignedDescriptors) {
+      if (config.signatureAlgorithm.empty()) {
+        config.trustPolicyStatus = "signature_missing";
+      }
+      if (!config.signerId.empty() && !trustPolicy.trustedSigners.empty() &&
+          trustPolicy.trustedSigners.find(config.signerId) == trustPolicy.trustedSigners.end()) {
+        config.trustPolicyStatus = "signer_untrusted";
+      }
+    }
+
+    if (config.trustPolicyStatus.empty()) {
+      config.trustPolicyStatus = config.signatureAlgorithm.empty() ? "unsigned" : "signature_valid";
+    }
+
     return config;
   } catch (...) {
     return std::nullopt;
@@ -137,7 +334,7 @@ std::vector<std::filesystem::path> assetLimiterRoots() {
   return roots;
 }
 
-std::vector<ExternalRendererConfig> discoverAssetExternalRenderers() {
+std::vector<ExternalRendererConfig> discoverAssetExternalRenderers(const TrustPolicy& trustPolicy) {
   std::vector<ExternalRendererConfig> configs;
   std::set<std::string> seenDescriptors;
   std::error_code error;
@@ -162,8 +359,15 @@ std::vector<ExternalRendererConfig> discoverAssetExternalRenderers() {
         continue;
       }
 
-      const auto config = loadExternalRendererDescriptor(entry.path());
+      const auto config = loadExternalRendererDescriptor(entry.path(), trustPolicy);
       if (config.has_value()) {
+        if (trustPolicy.enforceSignedDescriptors) {
+          if (config->trustPolicyStatus == "signature_missing" ||
+              config->trustPolicyStatus == "signature_invalid" ||
+              config->trustPolicyStatus == "signer_untrusted") {
+            continue;
+          }
+        }
         configs.push_back(config.value());
       }
     }
@@ -175,8 +379,10 @@ std::vector<ExternalRendererConfig> discoverAssetExternalRenderers() {
 } // namespace
 
 std::vector<RendererInfo> RendererRegistry::list(const std::vector<ExternalRendererConfig>& externalConfigs) const {
+  const auto trustPolicy = loadTrustPolicy();
+
   std::vector<RendererInfo> infos;
-  const auto assetConfigs = discoverAssetExternalRenderers();
+  const auto assetConfigs = discoverAssetExternalRenderers(trustPolicy);
   infos.reserve(2 + externalConfigs.size() + assetConfigs.size());
   infos.push_back(makeBuiltInInfo());
   infos.push_back(makePhaseLimiterInfo());
@@ -189,7 +395,12 @@ std::vector<RendererInfo> RendererRegistry::list(const std::vector<ExternalRende
     if (!seenExternalIds.insert(config.id).second) {
       return;
     }
-    infos.push_back(makeExternalInfo(config));
+
+    ExternalRendererConfig effective = config;
+    if (effective.trustPolicyStatus.empty()) {
+      effective.trustPolicyStatus = "unsigned";
+    }
+    infos.push_back(makeExternalInfo(effective));
   };
 
   for (const auto& config : externalConfigs) {

@@ -1,18 +1,28 @@
 #include "engine/AudioFileIO.h"
 
 #include <algorithm>
+#include <map>
 #include <stdexcept>
+#include <string>
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
 namespace automix::engine {
 
+namespace {
+
+std::unique_ptr<juce::AudioFormatReader> createReader(const std::filesystem::path& filePath,
+                                                       juce::AudioFormatManager* managerOut) {
+  managerOut->registerBasicFormats();
+  const juce::File juceFile(filePath.string());
+  return std::unique_ptr<juce::AudioFormatReader>(managerOut->createReaderFor(juceFile));
+}
+
+} // namespace
+
 AudioBuffer AudioFileIO::readAudioFile(const std::filesystem::path& filePath) const {
   juce::AudioFormatManager manager;
-  manager.registerBasicFormats();
-
-  const juce::File juceFile(filePath.string());
-  std::unique_ptr<juce::AudioFormatReader> reader(manager.createReaderFor(juceFile));
+  std::unique_ptr<juce::AudioFormatReader> reader = createReader(filePath, &manager);
   if (reader == nullptr) {
     throw std::runtime_error("Failed to open audio file: " + filePath.string());
   }
@@ -34,6 +44,24 @@ AudioBuffer AudioFileIO::readAudioFile(const std::filesystem::path& filePath) co
   }
 
   return output;
+}
+
+std::map<std::string, std::string> AudioFileIO::readMetadata(const std::filesystem::path& filePath) const {
+  juce::AudioFormatManager manager;
+  std::unique_ptr<juce::AudioFormatReader> reader = createReader(filePath, &manager);
+  if (reader == nullptr) {
+    throw std::runtime_error("Failed to open audio file metadata: " + filePath.string());
+  }
+
+  std::map<std::string, std::string> metadata;
+  const auto keys = reader->metadataValues.getAllKeys();
+  for (const auto& key : keys) {
+    const auto value = reader->metadataValues.getValue(key, {});
+    if (value.isNotEmpty()) {
+      metadata[key.toStdString()] = value.toStdString();
+    }
+  }
+  return metadata;
 }
 
 } // namespace automix::engine

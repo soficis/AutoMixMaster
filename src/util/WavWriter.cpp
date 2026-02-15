@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <memory>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -32,6 +33,91 @@ int qualityIndexFromRequested(const juce::StringArray& options, const int reques
     return 0;
   }
   return std::clamp(requestedQuality, 0, options.size() - 1);
+}
+
+std::string normalizeMetadataKey(std::string key) {
+  std::string normalized;
+  normalized.reserve(key.size());
+  for (const unsigned char c : key) {
+    if (std::isalnum(c) != 0) {
+      normalized.push_back(static_cast<char>(std::tolower(c)));
+    }
+  }
+  return normalized;
+}
+
+std::map<std::string, std::string> buildNormalizedMetadataLookup(
+    const std::map<std::string, std::string>& sourceMetadata) {
+  std::map<std::string, std::string> normalized;
+  for (const auto& [key, value] : sourceMetadata) {
+    if (value.empty()) {
+      continue;
+    }
+    const auto normalizedKey = normalizeMetadataKey(key);
+    if (normalizedKey.empty()) {
+      continue;
+    }
+    if (normalized.find(normalizedKey) == normalized.end()) {
+      normalized[normalizedKey] = value;
+    }
+  }
+  return normalized;
+}
+
+std::string findFirstMetadataValue(const std::map<std::string, std::string>& normalizedMetadata,
+                                   std::initializer_list<const char*> candidateKeys) {
+  for (const auto* candidate : candidateKeys) {
+    const auto it = normalizedMetadata.find(candidate);
+    if (it != normalizedMetadata.end() && !it->second.empty()) {
+      return it->second;
+    }
+  }
+  return "";
+}
+
+juce::StringPairArray buildWriterMetadata(const int bitrate, const std::map<std::string, std::string>& sourceMetadata) {
+  juce::StringPairArray metadata;
+  metadata.set("bitrate", juce::String(bitrate));
+
+  for (const auto& [key, value] : sourceMetadata) {
+    if (!key.empty() && !value.empty()) {
+      metadata.set(juce::String(key), juce::String(value));
+    }
+  }
+
+  const auto normalized = buildNormalizedMetadataLookup(sourceMetadata);
+  const auto title = findFirstMetadataValue(normalized, {"title", "track", "song", "tit2"});
+  const auto artist = findFirstMetadataValue(normalized, {"artist", "performer", "albumartist", "tpe1"});
+  const auto album = findFirstMetadataValue(normalized, {"album", "talb"});
+  const auto genre = findFirstMetadataValue(normalized, {"genre", "tcon"});
+  const auto year = findFirstMetadataValue(normalized, {"year", "date", "tyer", "tdrc"});
+  const auto track = findFirstMetadataValue(normalized, {"track", "tracknumber", "trck"});
+  const auto comment = findFirstMetadataValue(normalized, {"comment", "description", "comm"});
+
+  if (!title.empty()) {
+    metadata.set("title", juce::String(title));
+  }
+  if (!artist.empty()) {
+    metadata.set("artist", juce::String(artist));
+  }
+  if (!album.empty()) {
+    metadata.set("album", juce::String(album));
+  }
+  if (!genre.empty()) {
+    metadata.set("genre", juce::String(genre));
+  }
+  if (!year.empty()) {
+    metadata.set("year", juce::String(year));
+    metadata.set("date", juce::String(year));
+  }
+  if (!track.empty()) {
+    metadata.set("track", juce::String(track));
+  }
+  if (!comment.empty()) {
+    metadata.set("comment", juce::String(comment));
+  }
+
+  return metadata;
 }
 
 std::vector<std::string> lameExecutableNames() {
@@ -273,9 +359,9 @@ std::unique_ptr<juce::AudioFormatWriter> createWriterForFormat(const std::string
                                                                const int outputBitDepth,
                                                                const int bitrate,
                                                                const int quality,
+                                                               const std::map<std::string, std::string>& sourceMetadata,
                                                                std::string* detail) {
-  juce::StringPairArray metadata;
-  metadata.set("bitrate", juce::String(bitrate));
+  const auto metadata = buildWriterMetadata(bitrate, sourceMetadata);
 
   std::unique_ptr<juce::AudioFormatWriter> writer;
   const auto normalized = toLower(format);
@@ -405,14 +491,62 @@ bool encodeMp3WithExternalLame(const std::filesystem::path& lamePath,
                                const std::filesystem::path& outputMp3Path,
                                const int bitrateKbps,
                                const int quality,
+                               const bool useVbr,
+                               const int vbrQuality,
+                               const std::map<std::string, std::string>& sourceMetadata,
                                std::string* detail) {
+  const auto normalizedMetadata = buildNormalizedMetadataLookup(sourceMetadata);
+
   juce::StringArray command;
   command.add(lamePath.string());
   command.add("--silent");
-  command.add("-b");
-  command.add(std::to_string(std::clamp(bitrateKbps, 48, 320)));
+  if (useVbr) {
+    command.add("-V");
+    command.add(std::to_string(std::clamp(vbrQuality, 0, 9)));
+  } else {
+    command.add("-b");
+    command.add(std::to_string(std::clamp(bitrateKbps, 48, 320)));
+  }
   command.add("-q");
   command.add(std::to_string(lameQualityPreset(quality)));
+
+  const auto title = findFirstMetadataValue(normalizedMetadata, {"title", "track", "song", "tit2"});
+  const auto artist = findFirstMetadataValue(normalizedMetadata, {"artist", "performer", "albumartist", "tpe1"});
+  const auto album = findFirstMetadataValue(normalizedMetadata, {"album", "talb"});
+  const auto year = findFirstMetadataValue(normalizedMetadata, {"year", "date", "tyer", "tdrc"});
+  const auto track = findFirstMetadataValue(normalizedMetadata, {"track", "tracknumber", "trck"});
+  const auto genre = findFirstMetadataValue(normalizedMetadata, {"genre", "tcon"});
+  const auto comment = findFirstMetadataValue(normalizedMetadata, {"comment", "description", "comm"});
+
+  if (!title.empty()) {
+    command.add("--tt");
+    command.add(title);
+  }
+  if (!artist.empty()) {
+    command.add("--ta");
+    command.add(artist);
+  }
+  if (!album.empty()) {
+    command.add("--tl");
+    command.add(album);
+  }
+  if (!year.empty()) {
+    command.add("--ty");
+    command.add(year);
+  }
+  if (!track.empty()) {
+    command.add("--tn");
+    command.add(track);
+  }
+  if (!genre.empty()) {
+    command.add("--tg");
+    command.add(genre);
+  }
+  if (!comment.empty()) {
+    command.add("--tc");
+    command.add(comment);
+  }
+
   command.add(inputWavPath.string());
   command.add(outputMp3Path.string());
 
@@ -495,7 +629,7 @@ std::vector<WavWriter::FormatAvailability> WavWriter::getAvailableFormats() {
   for (const auto& [format, extension] : formatDescriptors) {
     auto stream = std::make_unique<juce::MemoryOutputStream>();
     std::string detail;
-    auto writer = createWriterForFormat(format, stream.get(), 44100.0, 2, 24, 192, 7, &detail);
+    auto writer = createWriterForFormat(format, stream.get(), 44100.0, 2, 24, 192, 7, {}, &detail);
     const bool knownByManager = formatExistsInManager(manager, extension);
 
     bool available = writer != nullptr;
@@ -551,7 +685,10 @@ void WavWriter::write(const std::filesystem::path& path,
                       const int bitDepth,
                       const std::string& preferredFormat,
                       const int lossyBitrateKbps,
-                      const int lossyQuality) const {
+                      const int lossyQuality,
+                      const bool mp3UseVbr,
+                      const int mp3VbrQuality,
+                      const std::map<std::string, std::string>& sourceMetadata) const {
   const auto format = resolveFormat(path, preferredFormat);
   const auto normalizedFormat = toLower(format);
   const int outputBitDepth = std::clamp(bitDepth, 16, 32);
@@ -567,14 +704,20 @@ void WavWriter::write(const std::filesystem::path& path,
   }
 
   std::string detail;
-  auto writer = createWriterForFormat(format,
-                                      stream.get(),
-                                      buffer.getSampleRate(),
-                                      buffer.getNumChannels(),
-                                      outputBitDepth,
-                                      bitrate,
-                                      quality,
-                                      &detail);
+  std::unique_ptr<juce::AudioFormatWriter> writer;
+  if (!(normalizedFormat == "mp3" && mp3UseVbr)) {
+    writer = createWriterForFormat(format,
+                                   stream.get(),
+                                   buffer.getSampleRate(),
+                                   buffer.getNumChannels(),
+                                   outputBitDepth,
+                                   bitrate,
+                                   quality,
+                                   sourceMetadata,
+                                   &detail);
+  } else {
+    detail = "MP3 VBR selected: using external LAME encoder path.";
+  }
 
   if (writer == nullptr && normalizedFormat == "mp3") {
     stream.reset();
@@ -596,7 +739,15 @@ void WavWriter::write(const std::filesystem::path& path,
 
       try {
         write(tempWavPath, buffer, outputBitDepth, "wav", bitrate, quality);
-        if (encodeMp3WithExternalLame(*lamePath, tempWavPath, path, bitrate, quality, &lameDetail)) {
+        if (encodeMp3WithExternalLame(*lamePath,
+                                      tempWavPath,
+                                      path,
+                                      bitrate,
+                                      quality,
+                                      mp3UseVbr,
+                                      mp3VbrQuality,
+                                      sourceMetadata,
+                                      &lameDetail)) {
           std::filesystem::remove(tempWavPath, error);
           return;
         }

@@ -58,6 +58,12 @@ TEST_CASE("Stem separator uses model-backed overlap-add when model metadata is p
   REQUIRE(result.usedModel);
   REQUIRE(result.stems.size() == 4);
   REQUIRE(result.generatedFiles.size() == 4);
+  REQUIRE(result.stemVariantCount == 4);
+  REQUIRE_FALSE(result.qaReportPath.empty());
+  REQUIRE(std::filesystem::exists(result.qaReportPath));
+  REQUIRE(result.qaMetrics.energyLeakage >= 0.0);
+  REQUIRE(result.qaMetrics.residualDistortion >= 0.0);
+  REQUIRE(result.qaMetrics.transientRetention >= 0.0);
 
   for (const auto& stem : result.stems) {
     REQUIRE(std::filesystem::exists(stem.filePath));
@@ -68,6 +74,33 @@ TEST_CASE("Stem separator uses model-backed overlap-add when model metadata is p
     REQUIRE(stem.separationArtifactRisk.value() >= 0.0);
     REQUIRE(stem.separationArtifactRisk.value() <= 1.0);
   }
+
+  std::filesystem::remove_all(tempRoot);
+}
+
+TEST_CASE("Stem separator supports deterministic 6-stem variant selection", "[ai][separator]") {
+  const std::filesystem::path tempRoot = std::filesystem::temp_directory_path() / "automix_separator_6stem_test";
+  const auto modelDir = tempRoot / "missing_model";
+  const auto outputDir = tempRoot / "output";
+  const auto mixPath = tempRoot / "mix.wav";
+  std::filesystem::remove_all(tempRoot);
+  std::filesystem::create_directories(modelDir);
+  std::filesystem::create_directories(outputDir);
+
+  automix::util::WavWriter writer;
+  writer.write(mixPath, makeTone(44100.0, 44100, 220.0), 24, "wav");
+
+  automix::ai::StemSeparator separator(modelDir);
+  automix::ai::StemSeparator::SeparationOptions options;
+  options.targetStemCount = 6;
+
+  const auto result = separator.separate(mixPath, outputDir, options);
+  REQUIRE(result.success);
+  REQUIRE_FALSE(result.usedModel);
+  REQUIRE(result.stems.size() == 6);
+  REQUIRE(result.generatedFiles.size() == 6);
+  REQUIRE(result.stemVariantCount == 6);
+  REQUIRE(std::filesystem::exists(result.qaReportPath));
 
   std::filesystem::remove_all(tempRoot);
 }

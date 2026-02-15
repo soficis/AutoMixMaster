@@ -1,15 +1,29 @@
 #include "ai/OnnxModelInference.h"
 
 #include <algorithm>
-#include <cctype>
 #include <chrono>
-#include <cstdint>
 #include <cmath>
+#include <cstdint>
+#include <cctype>
+#include <exception>
 #include <fstream>
 #include <numeric>
+#include <optional>
 #include <sstream>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <utility>
 
 #include <nlohmann/json.hpp>
+
+#ifndef AUTOMIX_HAS_NATIVE_ORT
+#define AUTOMIX_HAS_NATIVE_ORT 0
+#endif
+
+#if AUTOMIX_HAS_NATIVE_ORT
+#include <onnxruntime_cxx_api.h>
+#endif
 
 namespace automix::ai {
 namespace {
@@ -25,6 +39,23 @@ std::string toLower(std::string value) {
     return static_cast<char>(std::tolower(c));
   });
   return value;
+}
+
+std::string canonicalProviderName(const std::string& rawProvider) {
+  const auto provider = toLower(rawProvider);
+  if (provider.find("cpu") != std::string::npos) {
+    return "cpu";
+  }
+  if (provider.find("cuda") != std::string::npos) {
+    return "cuda";
+  }
+  if (provider.find("dml") != std::string::npos || provider.find("directml") != std::string::npos) {
+    return "directml";
+  }
+  if (provider.find("coreml") != std::string::npos) {
+    return "coreml";
+  }
+  return provider;
 }
 
 std::string platformPreferredProvider() {
@@ -83,7 +114,134 @@ std::filesystem::path pickQuantizedVariant(const std::filesystem::path& modelPat
   return modelPath;
 }
 
+#if AUTOMIX_HAS_NATIVE_ORT
+struct SessionTuning {
+  std::string hardwareTier = "standard";
+  int intraOpThreads = 0;
+  int interOpThreads = 0;
+  bool memPattern = true;
+  bool cpuArena = true;
+  bool sequentialExecution = false;
+};
+
+SessionTuning tuningForProvider(const std::string& provider, const int hardwareThreads) {
+  SessionTuning tuning;
+  const auto normalized = canonicalProviderName(provider);
+  const int clampedThreads = std::max(1, hardwareThreads);
+  if (clampedThreads <= 4) {
+    tuning.hardwareTier = "low";
+  } else if (clampedThreads >= 12) {
+    tuning.hardwareTier = "high";
+  }
+
+  if (normalized == "cuda") {
+    tuning.intraOpThreads = std::clamp(clampedThreads / 2, 1, 8);
+    tuning.interOpThreads = 1;
+    tuning.memPattern = false;
+    tuning.cpuArena = true;
+    tuning.sequentialExecution = false;
+    return tuning;
+  }
+
+  if (normalized == "directml") {
+    tuning.intraOpThreads = std::clamp(clampedThreads / 2, 1, 4);
+    tuning.interOpThreads = 1;
+    tuning.memPattern = false;
+    tuning.cpuArena = false;
+    tuning.sequentialExecution = true;
+    return tuning;
+  }
+
+  if (normalized == "coreml") {
+    tuning.intraOpThreads = std::clamp(clampedThreads / 2, 1, 4);
+    tuning.interOpThreads = 1;
+    tuning.memPattern = false;
+    tuning.cpuArena = false;
+    tuning.sequentialExecution = true;
+    return tuning;
+  }
+
+  tuning.intraOpThreads = std::clamp(clampedThreads, 1, 16);
+  tuning.interOpThreads = std::clamp(clampedThreads / 2, 1, 8);
+  tuning.memPattern = true;
+  tuning.cpuArena = true;
+  tuning.sequentialExecution = false;
+  return tuning;
+}
+#endif
+
+#if AUTOMIX_HAS_NATIVE_ORT
+
+std::string makeProfilePrefix(const std::filesystem::path& modelPath) {
+  const auto timeTag = std::to_string(
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now().time_since_epoch()).count());
+
+  std::error_code error;
+  auto base = std::filesystem::temp_directory_path(error);
+  if (error) {
+    base = modelPath.parent_path();
+  }
+  base /= "automix_ort_profiles";
+  std::filesystem::create_directories(base, error);
+
+  const auto stem = modelPath.stem().string();
+  return (base / (stem + "_" + timeTag)).string();
+}
+
+void appendExecutionProvider(Ort::SessionOptions& options, const std::string& provider) {
+  const auto normalized = canonicalProviderName(provider);
+  if (normalized == "cpu" || normalized == "auto" || normalized.empty()) {
+    return;
+  }
+
+  std::unordered_map<std::string, std::string> providerOptions;
+  if (normalized == "cuda") {
+    options.AppendExecutionProvider("CUDA", providerOptions);
+    return;
+  }
+  if (normalized == "directml") {
+    options.AppendExecutionProvider("DML", providerOptions);
+    return;
+  }
+  if (normalized == "coreml") {
+    providerOptions["ModelFormat"] = "MLProgram";
+    options.AppendExecutionProvider("CoreML", providerOptions);
+  }
+}
+
+std::vector<std::string> discoverAvailableRuntimeProviders() {
+  std::vector<std::string> providers = {"cpu"};
+  try {
+    const auto runtimeProviders = Ort::GetAvailableProviders();
+    providers.reserve(providers.size() + runtimeProviders.size());
+    for (const auto& provider : runtimeProviders) {
+      providers.push_back(canonicalProviderName(provider));
+    }
+  } catch (...) {
+  }
+
+  std::sort(providers.begin(), providers.end());
+  providers.erase(std::unique(providers.begin(), providers.end()), providers.end());
+  return providers;
+}
+
+#endif
+
 } // namespace
+
+struct OnnxModelInference::NativeState {
+#if AUTOMIX_HAS_NATIVE_ORT
+  std::unique_ptr<Ort::Env> env;
+  std::unique_ptr<Ort::SessionOptions> sessionOptions;
+  std::unique_ptr<Ort::Session> session;
+  std::vector<std::string> inputNames;
+  std::vector<std::string> outputNames;
+  std::vector<int64_t> inputShape;
+  std::filesystem::path profilingPrefix;
+#endif
+};
+
+OnnxModelInference::~OnnxModelInference() noexcept = default;
 
 bool OnnxModelInference::isAvailable() const { return loaded_; }
 
@@ -96,6 +254,7 @@ bool OnnxModelInference::loadModel(const std::filesystem::path& modelPath) {
   std::error_code error;
   if (!std::filesystem::exists(modelPath, error) || error || !std::filesystem::is_regular_file(modelPath, error)) {
     loaded_ = false;
+    nativeSessionActive_ = false;
     modelPath_.clear();
     expectedFeatureCount_.reset();
     allowedTasks_.clear();
@@ -104,14 +263,17 @@ bool OnnxModelInference::loadModel(const std::filesystem::path& modelPath) {
     intraOpThreads_ = 0;
     interOpThreads_ = 0;
     profilingEnabled_ = false;
-    inferenceCalls_.store(0);
-    batchCalls_.store(0);
-    providerFallbacks_.store(0);
-    cumulativeInferenceMicros_.store(0);
-    warmupDurationMillis_.store(0);
+    profilingArtifacts_.clear();
+    profilingCaptured_ = false;
+    nativeState_.reset();
+    resetMetrics();
     diagnostics_ = "ONNX load failed: missing model file.";
     return false;
   }
+
+  nativeState_.reset();
+  nativeSessionActive_ = false;
+  nativeAvailable_ = false;
 
   const auto baseModelPath = std::filesystem::absolute(modelPath);
   expectedFeatureCount_.reset();
@@ -121,6 +283,8 @@ bool OnnxModelInference::loadModel(const std::filesystem::path& modelPath) {
   intraOpThreads_ = std::max(0, configuredIntraOpThreads);
   interOpThreads_ = std::max(0, configuredInterOpThreads);
   profilingEnabled_ = configuredProfiling;
+  profilingArtifacts_.clear();
+  profilingCaptured_ = false;
 
   const auto metadataPath = std::filesystem::path(modelPath.string() + ".meta.json");
   if (std::filesystem::exists(metadataPath, error) && !error) {
@@ -171,6 +335,21 @@ bool OnnxModelInference::loadModel(const std::filesystem::path& modelPath) {
           requestedExecutionProvider_ == "auto") {
         requestedExecutionProvider_ = toLower(meta.at("preferred_execution_provider").get<std::string>());
       }
+      if (meta.contains("expected_output_keys") && meta.at("expected_output_keys").is_array()) {
+        expectedOutputKeys_ = meta.at("expected_output_keys").get<std::vector<std::string>>();
+      } else if (meta.contains("output_keys") && meta.at("output_keys").is_array()) {
+        expectedOutputKeys_ = meta.at("output_keys").get<std::vector<std::string>>();
+      }
+      if (meta.contains("output_names") && meta.at("output_names").is_array()) {
+        outputNames_ = meta.at("output_names").get<std::vector<std::string>>();
+      } else if (meta.contains("outputNames") && meta.at("outputNames").is_array()) {
+        outputNames_ = meta.at("outputNames").get<std::vector<std::string>>();
+      }
+      if (meta.contains("input_names") && meta.at("input_names").is_array()) {
+        inputNames_ = meta.at("input_names").get<std::vector<std::string>>();
+      } else if (meta.contains("inputNames") && meta.at("inputNames").is_array()) {
+        inputNames_ = meta.at("inputNames").get<std::vector<std::string>>();
+      }
     }
   }
 
@@ -183,7 +362,7 @@ bool OnnxModelInference::loadModel(const std::filesystem::path& modelPath) {
   }
 
   for (auto& provider : availableExecutionProviders_) {
-    provider = toLower(provider);
+    provider = canonicalProviderName(provider);
   }
 
   std::sort(availableExecutionProviders_.begin(), availableExecutionProviders_.end());
@@ -200,24 +379,139 @@ bool OnnxModelInference::loadModel(const std::filesystem::path& modelPath) {
   activeExecutionProvider_ = resolveExecutionProvider();
   loaded_ = true;
   warmupRan_ = false;
-  inferenceCalls_.store(0);
-  batchCalls_.store(0);
-  providerFallbacks_.store(0);
-  cumulativeInferenceMicros_.store(0);
-  warmupDurationMillis_.store(0);
+  resetMetrics();
 
-  std::ostringstream os;
-  os << "ONNX model loaded from " << modelPath_.string() << "; provider=" << activeExecutionProvider_
-     << "; graph_opt=" << (graphOptimizationEnabled_ ? "ORT_ENABLE_ALL" : "disabled")
-     << "; preferred_precision=" << preferredPrecision_
-     << "; intra_threads=" << intraOpThreads_
-     << "; inter_threads=" << interOpThreads_
-     << "; profiling=" << (profilingEnabled_ ? "on" : "off");
+  std::ostringstream diagnostics;
+  diagnostics << "ONNX model loaded from " << modelPath_.string()
+              << "; provider=" << activeExecutionProvider_
+              << "; graph_opt=" << (graphOptimizationEnabled_ ? "ORT_ENABLE_ALL" : "disabled")
+              << "; preferred_precision=" << preferredPrecision_
+              << "; intra_threads=" << intraOpThreads_
+              << "; inter_threads=" << interOpThreads_
+              << "; profiling=" << (profilingEnabled_ ? "on" : "off");
+
   if (selectedModelPath != baseModelPath) {
-    os << "; quantized_variant=" << selectedModelPath.filename().string();
+    diagnostics << "; quantized_variant=" << selectedModelPath.filename().string();
   }
-  diagnostics_ = os.str();
 
+#if AUTOMIX_HAS_NATIVE_ORT
+  try {
+    nativeAvailable_ = true;
+    const auto runtimeProviders = discoverAvailableRuntimeProviders();
+    if (!runtimeProviders.empty()) {
+      availableExecutionProviders_ = runtimeProviders;
+      activeExecutionProvider_ = resolveExecutionProvider();
+    }
+
+    auto nativeState = std::make_shared<NativeState>();
+    nativeState->env = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "AutoMixMaster");
+    nativeState->sessionOptions = std::make_unique<Ort::SessionOptions>();
+
+    const int hardwareThreads = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
+    auto tuning = tuningForProvider(activeExecutionProvider_, hardwareThreads);
+    if (intraOpThreads_ > 0) {
+      tuning.intraOpThreads = intraOpThreads_;
+    }
+    if (interOpThreads_ > 0) {
+      tuning.interOpThreads = interOpThreads_;
+    }
+
+    nativeState->sessionOptions->SetIntraOpNumThreads(std::max(1, tuning.intraOpThreads));
+    nativeState->sessionOptions->SetInterOpNumThreads(std::max(1, tuning.interOpThreads));
+    nativeState->sessionOptions->SetExecutionMode(
+        tuning.sequentialExecution ? ExecutionMode::ORT_SEQUENTIAL : ExecutionMode::ORT_PARALLEL);
+    nativeState->sessionOptions->SetGraphOptimizationLevel(
+        graphOptimizationEnabled_ ? GraphOptimizationLevel::ORT_ENABLE_ALL : GraphOptimizationLevel::ORT_DISABLE_ALL);
+
+    if (!tuning.memPattern) {
+      nativeState->sessionOptions->DisableMemPattern();
+    }
+    if (!tuning.cpuArena) {
+      nativeState->sessionOptions->DisableCpuMemArena();
+    }
+
+    if (profilingEnabled_) {
+      nativeState->profilingPrefix = makeProfilePrefix(modelPath_);
+      nativeState->sessionOptions->EnableProfiling(nativeState->profilingPrefix.string().c_str());
+    }
+
+    try {
+      appendExecutionProvider(*nativeState->sessionOptions, activeExecutionProvider_);
+    } catch (const std::exception&) {
+      providerFallbacks_.fetch_add(1);
+      activeExecutionProvider_ = "cpu";
+    }
+
+#if defined(_WIN32)
+    nativeState->session = std::make_unique<Ort::Session>(*nativeState->env,
+                                                           modelPath_.wstring().c_str(),
+                                                           *nativeState->sessionOptions);
+#else
+    nativeState->session = std::make_unique<Ort::Session>(*nativeState->env,
+                                                           modelPath_.string().c_str(),
+                                                           *nativeState->sessionOptions);
+#endif
+
+    Ort::AllocatorWithDefaultOptions allocator;
+    const auto inputCount = nativeState->session->GetInputCount();
+    nativeState->inputNames.reserve(inputCount);
+    for (size_t i = 0; i < inputCount; ++i) {
+      auto name = nativeState->session->GetInputNameAllocated(i, allocator);
+      nativeState->inputNames.emplace_back(name.get() == nullptr ? std::string() : std::string(name.get()));
+    }
+
+    const auto outputCount = nativeState->session->GetOutputCount();
+    nativeState->outputNames.reserve(outputCount);
+    for (size_t i = 0; i < outputCount; ++i) {
+      auto name = nativeState->session->GetOutputNameAllocated(i, allocator);
+      nativeState->outputNames.emplace_back(name.get() == nullptr ? std::string() : std::string(name.get()));
+    }
+
+    if (outputNames_.empty()) {
+      outputNames_ = nativeState->outputNames;
+    }
+    if (inputNames_.empty()) {
+      inputNames_ = nativeState->inputNames;
+    }
+
+    if (inputCount > 0) {
+      auto inputInfo = nativeState->session->GetInputTypeInfo(0);
+      auto shape = inputInfo.GetTensorTypeAndShapeInfo().GetShape();
+      if (shape.empty()) {
+        shape = {1, static_cast<int64_t>(expectedFeatureCount_.value_or(27))};
+      }
+      nativeState->inputShape = shape;
+
+      if (!expectedFeatureCount_.has_value()) {
+        for (auto it = shape.rbegin(); it != shape.rend(); ++it) {
+          if (*it > 0) {
+            expectedFeatureCount_ = static_cast<size_t>(*it);
+            break;
+          }
+        }
+      }
+    }
+
+    nativeState_ = std::move(nativeState);
+    nativeSessionActive_ = true;
+
+    diagnostics << "; backend=native_onnxruntime"
+                << "; tuning_hardware_tier=" << tuning.hardwareTier
+                << "; tuning_mem_pattern=" << (tuning.memPattern ? "on" : "off")
+                << "; tuning_cpu_arena=" << (tuning.cpuArena ? "on" : "off")
+                << "; tuning_execution_mode=" << (tuning.sequentialExecution ? "sequential" : "parallel");
+  } catch (const std::exception& errorException) {
+    nativeSessionActive_ = false;
+    diagnostics << "; backend=native_onnxruntime_unavailable"
+                << "; native_error=" << errorException.what()
+                << "; fallback=deterministic_adapter";
+  }
+#else
+  diagnostics << "; backend=deterministic_adapter"
+              << "; reason=onnxruntime_not_linked";
+#endif
+
+  diagnostics_ = diagnostics.str();
   warmupIfNeeded();
   return true;
 }
@@ -255,6 +549,196 @@ InferenceResult OnnxModelInference::run(const InferenceRequest& request) const {
     return result;
   }
 
+#if AUTOMIX_HAS_NATIVE_ORT
+  if (nativeSessionActive_ && nativeState_ != nullptr && nativeState_->session != nullptr) {
+    try {
+      std::scoped_lock lock(nativeMutex_);
+      std::vector<float> normalized;
+      normalized.reserve(request.features.size());
+      for (const auto value : request.features) {
+        normalized.push_back(static_cast<float>(normalizeFeatureValue(value)));
+      }
+
+      auto inputShape = nativeState_->inputShape;
+      if (inputShape.empty()) {
+        inputShape = {1, static_cast<int64_t>(normalized.size())};
+      }
+
+      int64_t knownProduct = 1;
+      int dynamicDims = 0;
+      for (const auto dim : inputShape) {
+        if (dim <= 0) {
+          ++dynamicDims;
+          continue;
+        }
+        knownProduct = std::max<int64_t>(1, knownProduct * dim);
+      }
+      if (dynamicDims > 0) {
+        const auto remaining = static_cast<int64_t>(std::max<size_t>(1, normalized.size())) / std::max<int64_t>(1, knownProduct);
+        for (auto& dim : inputShape) {
+          if (dim <= 0) {
+            dim = remaining > 0 ? remaining : 1;
+          }
+        }
+      }
+
+      int64_t totalElements = 1;
+      for (const auto dim : inputShape) {
+        totalElements *= std::max<int64_t>(1, dim);
+      }
+      if (totalElements <= 0) {
+        totalElements = static_cast<int64_t>(std::max<size_t>(1, normalized.size()));
+        inputShape = {1, totalElements};
+      }
+
+      normalized.resize(static_cast<size_t>(totalElements), 0.0f);
+
+      auto memoryInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+      auto inputTensor = Ort::Value::CreateTensor<float>(memoryInfo,
+                                                         normalized.data(),
+                                                         normalized.size(),
+                                                         inputShape.data(),
+                                                         inputShape.size());
+
+      if (nativeState_->inputNames.empty()) {
+        result.usedModel = false;
+        result.logMessage = "ONNX native session has no inputs.";
+        finalizeMetrics();
+        return result;
+      }
+
+      std::vector<const char*> outputNamePtrs;
+      outputNamePtrs.reserve(nativeState_->outputNames.size());
+      for (const auto& name : nativeState_->outputNames) {
+        outputNamePtrs.push_back(name.c_str());
+      }
+
+      if (outputNamePtrs.empty()) {
+        result.usedModel = false;
+        result.logMessage = "ONNX native session has no outputs.";
+        finalizeMetrics();
+        return result;
+      }
+
+      const char* inputName = nativeState_->inputNames.front().c_str();
+      auto outputs = nativeState_->session->Run(Ort::RunOptions{nullptr},
+                                                &inputName,
+                                                &inputTensor,
+                                                1,
+                                                outputNamePtrs.data(),
+                                                outputNamePtrs.size());
+
+      std::vector<double> flattenedOutputs;
+      std::vector<std::string> flattenedOutputKeys;
+      for (size_t outputIndex = 0; outputIndex < outputs.size(); ++outputIndex) {
+        if (!outputs[outputIndex].IsTensor()) {
+          continue;
+        }
+
+        const auto tensorInfo = outputs[outputIndex].GetTensorTypeAndShapeInfo();
+        const auto elementType = tensorInfo.GetElementType();
+        const auto elementCount = tensorInfo.GetElementCount();
+        if (elementCount == 0) {
+          continue;
+        }
+
+        const std::string baseName = outputIndex < nativeState_->outputNames.size() && !nativeState_->outputNames[outputIndex].empty()
+                                         ? nativeState_->outputNames[outputIndex]
+                                         : ("output_" + std::to_string(outputIndex));
+
+        if (elementType == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+          const float* data = outputs[outputIndex].GetTensorData<float>();
+          for (size_t i = 0; i < elementCount; ++i) {
+            flattenedOutputs.push_back(static_cast<double>(data[i]));
+            flattenedOutputKeys.push_back(elementCount == 1 ? baseName : (baseName + "_" + std::to_string(i)));
+          }
+          continue;
+        }
+
+        if (elementType == ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE) {
+          const double* data = outputs[outputIndex].GetTensorData<double>();
+          for (size_t i = 0; i < elementCount; ++i) {
+            flattenedOutputs.push_back(data[i]);
+            flattenedOutputKeys.push_back(elementCount == 1 ? baseName : (baseName + "_" + std::to_string(i)));
+          }
+          continue;
+        }
+
+        if (elementType == ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64) {
+          const int64_t* data = outputs[outputIndex].GetTensorData<int64_t>();
+          for (size_t i = 0; i < elementCount; ++i) {
+            flattenedOutputs.push_back(static_cast<double>(data[i]));
+            flattenedOutputKeys.push_back(elementCount == 1 ? baseName : (baseName + "_" + std::to_string(i)));
+          }
+          continue;
+        }
+      }
+
+      if (flattenedOutputs.empty()) {
+        providerFallbacks_.fetch_add(1);
+        result = runDeterministicFallback(request);
+        result.logMessage = "ONNX native session produced no numeric tensor output; deterministic fallback used.";
+        finalizeMetrics();
+        return result;
+      }
+
+      result.usedModel = true;
+
+      if (!expectedOutputKeys_.empty()) {
+        const size_t outputCount = std::min(expectedOutputKeys_.size(), flattenedOutputs.size());
+        for (size_t i = 0; i < outputCount; ++i) {
+          result.outputs[expectedOutputKeys_[i]] = flattenedOutputs[i];
+        }
+      } else if (request.task == "mix_parameters" && flattenedOutputs.size() >= 3) {
+        result.outputs["confidence"] = clamp01(flattenedOutputs[0]);
+        result.outputs["global_gain_db"] = std::clamp(flattenedOutputs[1], -12.0, 12.0);
+        result.outputs["global_pan_bias"] = std::clamp(flattenedOutputs[2], -1.0, 1.0);
+      } else if (request.task == "master_parameters" && flattenedOutputs.size() >= 5) {
+        result.outputs["confidence"] = clamp01(flattenedOutputs[0]);
+        result.outputs["target_lufs"] = std::clamp(flattenedOutputs[1], -30.0, -8.0);
+        result.outputs["pre_gain_db"] = std::clamp(flattenedOutputs[2], -12.0, 12.0);
+        result.outputs["limiter_ceiling_db"] = std::clamp(flattenedOutputs[3], -3.0, -0.1);
+        result.outputs["glue_ratio"] = std::clamp(flattenedOutputs[4], 1.0, 12.0);
+      } else if (request.task == "role_classifier" && flattenedOutputs.size() >= 4) {
+        result.outputs["prob_vocals"] = clamp01(flattenedOutputs[0]);
+        result.outputs["prob_bass"] = clamp01(flattenedOutputs[1]);
+        result.outputs["prob_drums"] = clamp01(flattenedOutputs[2]);
+        result.outputs["prob_fx"] = clamp01(flattenedOutputs[3]);
+      }
+
+      for (size_t i = 0; i < flattenedOutputs.size(); ++i) {
+        const auto key = i < flattenedOutputKeys.size() ? flattenedOutputKeys[i] : ("output_" + std::to_string(i));
+        if (!result.outputs.contains(key)) {
+          result.outputs[key] = flattenedOutputs[i];
+        }
+      }
+
+      if (!result.outputs.contains("confidence")) {
+        result.outputs["confidence"] = clamp01(0.6 + std::min(0.35, std::abs(flattenedOutputs.front()) * 0.05));
+      }
+
+      result.logMessage = "ONNX native inference executed for task '" + request.task + "' using provider '" +
+                          activeExecutionProvider_ + "'.";
+      captureProfilingArtifactIfNeeded();
+      finalizeMetrics();
+      return result;
+    } catch (const std::exception& errorException) {
+      providerFallbacks_.fetch_add(1);
+      result = runDeterministicFallback(request);
+      result.logMessage = "ONNX native inference failed ('" + std::string(errorException.what()) +
+                          "'); deterministic fallback used.";
+      finalizeMetrics();
+      return result;
+    }
+  }
+#endif
+
+  result = runDeterministicFallback(request);
+  finalizeMetrics();
+  return result;
+}
+
+InferenceResult OnnxModelInference::runDeterministicFallback(const InferenceRequest& request) const {
   double mean = 0.0;
   double rms = 0.0;
   {
@@ -276,10 +760,10 @@ InferenceResult OnnxModelInference::run(const InferenceRequest& request) const {
     }
   }
 
+  InferenceResult result;
   result.usedModel = true;
-  result.logMessage = "ONNX inference executed for task '" + request.task + "' using provider '" +
-                      activeExecutionProvider_ + "' (" + (graphOptimizationEnabled_ ? "ORT_ENABLE_ALL" : "graph-opt-off") +
-                      ", precision=" + preferredPrecision_ + ").";
+  result.logMessage = "ONNX inference executed for task '" + request.task +
+                      "' using deterministic adapter path (provider='" + activeExecutionProvider_ + "').";
 
   const double confidence = clamp01(0.55 + std::min(0.35, std::abs(mean) * 0.05 + rms * 0.03));
 
@@ -289,7 +773,6 @@ InferenceResult OnnxModelInference::run(const InferenceRequest& request) const {
         {"global_gain_db", std::clamp(-mean * 0.08, -4.0, 4.0)},
         {"global_pan_bias", std::clamp(mean * 0.002, -0.2, 0.2)},
     };
-    finalizeMetrics();
     return result;
   }
 
@@ -301,7 +784,6 @@ InferenceResult OnnxModelInference::run(const InferenceRequest& request) const {
         {"limiter_ceiling_db", -1.0},
         {"glue_ratio", std::clamp(2.0 + rms * 0.02, 1.2, 4.0)},
     };
-    finalizeMetrics();
     return result;
   }
 
@@ -318,14 +800,12 @@ InferenceResult OnnxModelInference::run(const InferenceRequest& request) const {
         {"prob_drums", clamp01(0.2 + (low + high) * 0.6 - mid * 0.2 + flatness * 0.05)},
         {"prob_fx", clamp01(0.2 + high * 0.8 + artifact * 0.5 + flatness * 0.2)},
     };
-    finalizeMetrics();
     return result;
   }
 
   result.outputs = {
       {"confidence", confidence},
   };
-  finalizeMetrics();
   return result;
 }
 
@@ -340,7 +820,7 @@ std::vector<InferenceResult> OnnxModelInference::runBatch(const std::vector<Infe
 }
 
 void OnnxModelInference::setExecutionProviderPreference(std::string provider) {
-  requestedExecutionProvider_ = toLower(std::move(provider));
+  requestedExecutionProvider_ = canonicalProviderName(std::move(provider));
   if (requestedExecutionProvider_.empty()) {
     requestedExecutionProvider_ = "auto";
   }
@@ -384,11 +864,23 @@ std::string OnnxModelInference::backendDiagnostics() const {
      << "; provider_fallbacks=" << providerFallbacks_.load()
      << "; avg_inference_ms=" << averageMs
      << "; warmup_ms=" << warmupDurationMillis_.load();
+
+  if (!profilingArtifacts_.empty()) {
+    os << "; ort_profile=" << profilingArtifacts_.back().string();
+  }
+
   return os.str();
 }
 
+std::vector<std::filesystem::path> OnnxModelInference::profilingArtifacts() const {
+  std::scoped_lock lock(nativeMutex_);
+  return profilingArtifacts_;
+}
+
+bool OnnxModelInference::usingNativeSession() const { return nativeSessionActive_; }
+
 std::string OnnxModelInference::resolveExecutionProvider() const {
-  const std::string requested = toLower(requestedExecutionProvider_);
+  const std::string requested = canonicalProviderName(requestedExecutionProvider_);
   const std::string preferred = requested == "auto" ? platformPreferredProvider() : requested;
 
   if (supportsExecutionProvider(preferred)) {
@@ -404,7 +896,7 @@ std::string OnnxModelInference::resolveExecutionProvider() const {
 }
 
 bool OnnxModelInference::supportsExecutionProvider(const std::string& provider) const {
-  const auto normalized = toLower(provider);
+  const auto normalized = canonicalProviderName(provider);
   return std::find(availableExecutionProviders_.begin(), availableExecutionProviders_.end(), normalized) !=
          availableExecutionProviders_.end();
 }
@@ -415,14 +907,48 @@ void OnnxModelInference::warmupIfNeeded() {
   }
 
   const auto started = std::chrono::steady_clock::now();
-  const size_t featureCount = expectedFeatureCount_.value_or(27);
-  {
+
+  if (nativeSessionActive_) {
+    InferenceRequest warmupRequest;
+    warmupRequest.task = !allowedTasks_.empty() ? allowedTasks_.front() : "mix_parameters";
+    warmupRequest.features.assign(expectedFeatureCount_.value_or(27), 0.0);
+    (void)run(warmupRequest);
+    resetMetrics();
+  } else {
+    const size_t featureCount = expectedFeatureCount_.value_or(27);
     std::scoped_lock lock(scratchMutex_);
     preallocatedNormalized_.assign(featureCount, 0.0);
   }
+
   warmupRan_ = true;
   const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
   warmupDurationMillis_.store(static_cast<uint64_t>(std::max<int64_t>(0, elapsed)));
+}
+
+void OnnxModelInference::captureProfilingArtifactIfNeeded() const {
+#if AUTOMIX_HAS_NATIVE_ORT
+  if (!profilingEnabled_ || profilingCaptured_ || !nativeSessionActive_ || nativeState_ == nullptr || nativeState_->session == nullptr) {
+    return;
+  }
+
+  try {
+    Ort::AllocatorWithDefaultOptions allocator;
+    auto profile = nativeState_->session->EndProfilingAllocated(allocator);
+    if (profile.get() != nullptr && *profile.get() != '\0') {
+      profilingArtifacts_.push_back(std::filesystem::path(profile.get()));
+    }
+    profilingCaptured_ = true;
+  } catch (...) {
+  }
+#endif
+}
+
+void OnnxModelInference::resetMetrics() {
+  inferenceCalls_.store(0);
+  batchCalls_.store(0);
+  providerFallbacks_.store(0);
+  cumulativeInferenceMicros_.store(0);
+  warmupDurationMillis_.store(0);
 }
 
 } // namespace automix::ai

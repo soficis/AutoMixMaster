@@ -4,10 +4,16 @@
 #include <atomic>
 #include <cctype>
 #include <cmath>
+#include <chrono>
+#include <cstdint>
+#include <filesystem>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
-#include <thread>
+#include <sstream>
 #include <stdexcept>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -38,9 +44,264 @@ struct BiquadCoefficients {
 };
 
 struct StemRenderNode {
-  AudioBuffer buffer;
+  std::shared_ptr<const AudioBuffer> buffer;
   std::string busId;
 };
+
+AudioBuffer processStemBuffer(const AudioBuffer& input,
+                              const domain::StemMixDecision* decision,
+                              double dryWet,
+                              int outputChannels);
+
+struct FileStamp {
+  bool valid = false;
+  std::uintmax_t size = 0;
+  std::int64_t writeTicks = 0;
+};
+
+struct CachedStemAudio {
+  FileStamp stamp;
+  std::shared_ptr<AudioBuffer> buffer;
+};
+
+struct CachedRenderMix {
+  std::string key;
+  OfflineRenderResult result;
+};
+
+std::mutex& stemRawCacheMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::mutex& stemProcessedCacheMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::mutex& renderMixCacheMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::unordered_map<std::string, CachedStemAudio>& stemRawCache() {
+  static std::unordered_map<std::string, CachedStemAudio> cache;
+  return cache;
+}
+
+std::unordered_map<std::string, CachedStemAudio>& stemProcessedCache() {
+  static std::unordered_map<std::string, CachedStemAudio> cache;
+  return cache;
+}
+
+std::optional<CachedRenderMix>& renderMixCache() {
+  static std::optional<CachedRenderMix> cache;
+  return cache;
+}
+
+template <typename T>
+void hashCombine(std::size_t& seed, const T& value) {
+  const auto hash = std::hash<T>{}(value);
+  seed ^= hash + 0x9e3779b97f4a7c15ULL + (seed << 6U) + (seed >> 2U);
+}
+
+std::string normalizedPathString(const std::filesystem::path& path) {
+  std::error_code error;
+  const auto absolute = std::filesystem::absolute(path, error);
+  if (error) {
+    return path.lexically_normal().string();
+  }
+  return absolute.lexically_normal().string();
+}
+
+FileStamp fileStampForPath(const std::filesystem::path& path) {
+  std::error_code error;
+  const auto fileStatus = std::filesystem::status(path, error);
+  if (error || !std::filesystem::is_regular_file(fileStatus)) {
+    return {};
+  }
+
+  const auto size = std::filesystem::file_size(path, error);
+  if (error) {
+    return {};
+  }
+
+  const auto writeTime = std::filesystem::last_write_time(path, error);
+  if (error) {
+    return {};
+  }
+
+  const auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(writeTime.time_since_epoch()).count();
+  return FileStamp{
+      .valid = true,
+      .size = size,
+      .writeTicks = static_cast<std::int64_t>(ticks),
+  };
+}
+
+bool sameFileStamp(const FileStamp& left, const FileStamp& right) {
+  return left.valid == right.valid &&
+         left.size == right.size &&
+         left.writeTicks == right.writeTicks;
+}
+
+std::size_t decisionHash(const domain::StemMixDecision* decision) {
+  std::size_t seed = 0;
+  if (decision == nullptr) {
+    hashCombine(seed, 0);
+    return seed;
+  }
+
+  hashCombine(seed, decision->stemId);
+  hashCombine(seed, decision->gainDb);
+  hashCombine(seed, decision->pan);
+  hashCombine(seed, decision->highPassHz);
+  hashCombine(seed, decision->mudCutDb);
+  hashCombine(seed, decision->enableCompressor);
+  hashCombine(seed, decision->compressorThresholdDb);
+  hashCombine(seed, decision->compressorRatio);
+  hashCombine(seed, decision->compressorReleaseMs);
+  hashCombine(seed, decision->enableExpander);
+  hashCombine(seed, decision->expanderThresholdDb);
+  hashCombine(seed, decision->expanderRatio);
+  return seed;
+}
+
+std::string makeStemRawCacheKey(const std::filesystem::path& stemPath, const int outputSampleRate) {
+  std::size_t seed = 0;
+  hashCombine(seed, normalizedPathString(stemPath));
+  hashCombine(seed, outputSampleRate);
+  return std::to_string(seed);
+}
+
+std::string makeStemProcessedCacheKey(const std::filesystem::path& stemPath,
+                                      const int outputSampleRate,
+                                      const domain::StemMixDecision* decision,
+                                      const double dryWet,
+                                      const int outputChannels) {
+  std::size_t seed = 0;
+  hashCombine(seed, normalizedPathString(stemPath));
+  hashCombine(seed, outputSampleRate);
+  hashCombine(seed, decisionHash(decision));
+  hashCombine(seed, dryWet);
+  hashCombine(seed, outputChannels);
+  return std::to_string(seed);
+}
+
+std::string makeRenderMixCacheKey(const domain::Session& session, const domain::RenderSettings& settings) {
+  std::ostringstream out;
+  out << settings.outputSampleRate << '|'
+      << settings.blockSize << '|'
+      << session.residualBlend << '|'
+      << session.stems.size() << '|'
+      << session.buses.size();
+
+  for (const auto& stem : session.stems) {
+    const auto stamp = fileStampForPath(stem.filePath);
+    out << "|s:" << stem.id
+        << ':' << stem.filePath
+        << ':' << stem.enabled
+        << ':' << static_cast<int>(stem.role)
+        << ':' << (stem.busId.has_value() ? stem.busId.value() : "")
+        << ':' << stamp.valid
+        << ':' << stamp.size
+        << ':' << stamp.writeTicks;
+  }
+
+  for (const auto& bus : session.buses) {
+    out << "|b:" << bus.id
+        << ':' << bus.gainDb;
+  }
+
+  if (session.mixPlan.has_value()) {
+    out << "|mix:" << session.mixPlan->dryWet
+        << ':' << session.mixPlan->mixBusHeadroomDb
+        << ':' << session.mixPlan->stemDecisions.size();
+    for (const auto& decision : session.mixPlan->stemDecisions) {
+      out << ':' << decisionHash(&decision);
+    }
+  } else {
+    out << "|mix:none";
+  }
+
+  if (session.residualBlend > 0.0 && session.originalMixPath.has_value()) {
+    const auto originalStamp = fileStampForPath(session.originalMixPath.value());
+    out << "|orig:" << session.originalMixPath.value()
+        << ':' << originalStamp.valid
+        << ':' << originalStamp.size
+        << ':' << originalStamp.writeTicks;
+  }
+
+  return out.str();
+}
+
+std::shared_ptr<const AudioBuffer> loadStemResampledCached(const std::filesystem::path& stemPath,
+                                                           const int outputSampleRate,
+                                                           AudioFileIO& fileIO,
+                                                           AudioResampler& resampler) {
+  const auto key = makeStemRawCacheKey(stemPath, outputSampleRate);
+  const auto stamp = fileStampForPath(stemPath);
+  {
+    std::scoped_lock lock(stemRawCacheMutex());
+    const auto& cache = stemRawCache();
+    const auto cached = cache.find(key);
+    if (cached != cache.end() && sameFileStamp(cached->second.stamp, stamp)) {
+      return cached->second.buffer;
+    }
+  }
+
+  auto loaded = fileIO.readAudioFile(stemPath);
+  if (loaded.getSampleRate() != static_cast<double>(outputSampleRate)) {
+    loaded = resampler.resampleLinear(loaded, static_cast<double>(outputSampleRate));
+  }
+  auto shared = std::make_shared<AudioBuffer>(std::move(loaded));
+
+  {
+    std::scoped_lock lock(stemRawCacheMutex());
+    auto& cache = stemRawCache();
+    cache[key] = CachedStemAudio{
+        .stamp = stamp,
+        .buffer = shared,
+    };
+    if (cache.size() > 192) {
+      cache.clear();
+    }
+  }
+
+  return shared;
+}
+
+std::shared_ptr<const AudioBuffer> processStemCached(const std::filesystem::path& stemPath,
+                                                     const int outputSampleRate,
+                                                     const std::shared_ptr<const AudioBuffer>& source,
+                                                     const domain::StemMixDecision* decision,
+                                                     const double dryWet,
+                                                     const int outputChannels) {
+  const auto key = makeStemProcessedCacheKey(stemPath, outputSampleRate, decision, dryWet, outputChannels);
+  const auto stamp = fileStampForPath(stemPath);
+  {
+    std::scoped_lock lock(stemProcessedCacheMutex());
+    const auto& cache = stemProcessedCache();
+    const auto cached = cache.find(key);
+    if (cached != cache.end() && sameFileStamp(cached->second.stamp, stamp)) {
+      return cached->second.buffer;
+    }
+  }
+
+  auto processed = std::make_shared<AudioBuffer>(processStemBuffer(*source, decision, dryWet, outputChannels));
+  {
+    std::scoped_lock lock(stemProcessedCacheMutex());
+    auto& cache = stemProcessedCache();
+    cache[key] = CachedStemAudio{
+        .stamp = stamp,
+        .buffer = processed,
+    };
+    if (cache.size() > 256) {
+      cache.clear();
+    }
+  }
+  return processed;
+}
 
 BiquadCoefficients makeHighPass(const double sampleRate, const double cutoffHz, const double q = kSqrtHalf) {
   const double sr = std::max(8000.0, sampleRate);
@@ -286,8 +547,22 @@ int effectiveThreadCount(const domain::RenderSettings& settings, const int taskC
     return 1;
   }
   const int hardwareThreads = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
-  const int requested = settings.processingThreads > 0 ? settings.processingThreads : hardwareThreads;
-  return std::clamp(requested, 1, std::max(1, taskCount));
+  const int requested = settings.processingThreads > 0 ? settings.processingThreads : std::max(1, hardwareThreads - 1);
+  const int bounded = std::clamp(requested, 1, std::max(1, taskCount));
+  if (taskCount <= 2) {
+    return 1;
+  }
+  return bounded;
+}
+
+int effectiveMixBlockSize(const domain::RenderSettings& settings, const int maxSamples, const int stemCount) {
+  int blockSize = std::max(1, settings.blockSize);
+  if (stemCount >= 12 && maxSamples >= blockSize * 1024) {
+    blockSize = std::min(8192, blockSize * 4);
+  } else if (stemCount >= 6 && maxSamples >= blockSize * 512) {
+    blockSize = std::min(4096, blockSize * 2);
+  }
+  return blockSize;
 }
 
 void addBlock(AudioBuffer& destination,
@@ -304,7 +579,14 @@ void addBlock(AudioBuffer& destination,
   for (int ch = 0; ch < channels; ++ch) {
     float* dst = destination.getWritePointer(ch);
     const float* src = source.getReadPointer(ch);
-    for (int i = 0; i < numSamples; ++i) {
+    int i = 0;
+    for (; i + 3 < numSamples; i += 4) {
+      dst[startSample + i] += src[srcStart + i];
+      dst[startSample + i + 1] += src[srcStart + i + 1];
+      dst[startSample + i + 2] += src[srcStart + i + 2];
+      dst[startSample + i + 3] += src[srcStart + i + 3];
+    }
+    for (; i < numSamples; ++i) {
       dst[startSample + i] += src[srcStart + i];
     }
   }
@@ -312,11 +594,46 @@ void addBlock(AudioBuffer& destination,
 
 } // namespace
 
+void OfflineRenderPipeline::clearCaches() {
+  {
+    std::scoped_lock lock(stemRawCacheMutex());
+    stemRawCache().clear();
+  }
+  {
+    std::scoped_lock lock(stemProcessedCacheMutex());
+    stemProcessedCache().clear();
+  }
+  {
+    std::scoped_lock lock(renderMixCacheMutex());
+    renderMixCache().reset();
+  }
+}
+
 OfflineRenderResult OfflineRenderPipeline::renderRawMix(const domain::Session& session,
                                                         const domain::RenderSettings& settings,
                                                         const ProgressCallback& onProgress,
                                                         const std::atomic_bool* cancelFlag) const {
   OfflineRenderResult result;
+  const auto renderCacheKey = makeRenderMixCacheKey(session, settings);
+  if (cancelFlag == nullptr || !cancelFlag->load()) {
+    std::optional<OfflineRenderResult> cached;
+    {
+      std::scoped_lock lock(renderMixCacheMutex());
+      const auto& cache = renderMixCache();
+      if (cache.has_value() && cache->key == renderCacheKey) {
+        cached = cache->result;
+      }
+    }
+
+    if (cached.has_value()) {
+      cached->logs.emplace_back("Raw mix cache hit.");
+      if (onProgress) {
+        onProgress(RenderProgress{.fraction = 1.0, .stage = "Mix render cache hit"});
+      }
+      return cached.value();
+    }
+  }
+
   AudioFileIO fileIO;
   AudioResampler resampler;
 
@@ -370,17 +687,22 @@ OfflineRenderResult OfflineRenderPipeline::renderRawMix(const domain::Session& s
       const auto& stem = session.stems[stemIndex];
 
       try {
-        AudioBuffer buffer = workerFileIO.readAudioFile(stem.filePath);
-        if (buffer.getSampleRate() != static_cast<double>(settings.outputSampleRate)) {
-          buffer = workerResampler.resampleLinear(buffer, static_cast<double>(settings.outputSampleRate));
-        }
-
         const auto decisionIt = decisions.find(stem.id);
         const domain::StemMixDecision* decision = decisionIt != decisions.end() ? &decisionIt->second : nullptr;
         const std::string busId = defaultBusIdForStem(stem);
+        const auto resampled = loadStemResampledCached(stem.filePath,
+                                                       settings.outputSampleRate,
+                                                       workerFileIO,
+                                                       workerResampler);
+        const auto processed = processStemCached(stem.filePath,
+                                                 settings.outputSampleRate,
+                                                 resampled,
+                                                 decision,
+                                                 dryWet,
+                                                 2);
 
         stemNodeSlots[slot] = StemRenderNode{
-            .buffer = processStemBuffer(buffer, decision, dryWet, 2),
+            .buffer = processed,
             .busId = busId,
         };
       } catch (const std::exception& error) {
@@ -434,7 +756,7 @@ OfflineRenderResult OfflineRenderPipeline::renderRawMix(const domain::Session& s
 
   int maxSamples = 0;
   for (const auto& node : stemNodes) {
-    maxSamples = std::max(maxSamples, node.buffer.getNumSamples());
+    maxSamples = std::max(maxSamples, node.buffer->getNumSamples());
   }
 
   if (maxSamples == 0) {
@@ -456,8 +778,9 @@ OfflineRenderResult OfflineRenderPipeline::renderRawMix(const domain::Session& s
 
   result.mixBuffer = AudioBuffer(2, maxSamples, static_cast<double>(settings.outputSampleRate));
 
-  const int blockSize = std::max(1, settings.blockSize);
+  const int blockSize = effectiveMixBlockSize(settings, maxSamples, static_cast<int>(stemNodes.size()));
   const int totalBlocks = (maxSamples + blockSize - 1) / blockSize;
+  const int progressStride = std::max(1, totalBlocks / 120);
 
   for (int block = 0; block < totalBlocks; ++block) {
     if (cancelFlag != nullptr && cancelFlag->load()) {
@@ -475,14 +798,14 @@ OfflineRenderResult OfflineRenderPipeline::renderRawMix(const domain::Session& s
         continue;
       }
       auto& busBuffer = busIt->second;
-      if (start >= node.buffer.getNumSamples()) {
+      if (start >= node.buffer->getNumSamples()) {
         continue;
       }
-      const int blockSamples = std::min(end, node.buffer.getNumSamples()) - start;
-      addBlock(busBuffer, node.buffer, start, blockSamples);
+      const int blockSamples = std::min(end, node.buffer->getNumSamples()) - start;
+      addBlock(busBuffer, *node.buffer, start, blockSamples);
     }
 
-    if (onProgress) {
+    if (onProgress && (block == totalBlocks - 1 || block % progressStride == 0)) {
       const double fraction = 0.35 + (static_cast<double>(block + 1) / std::max(1, totalBlocks) * 0.40);
       onProgress(RenderProgress{.fraction = fraction, .stage = "Summing stem buses"});
     }
@@ -553,6 +876,13 @@ OfflineRenderResult OfflineRenderPipeline::renderRawMix(const domain::Session& s
 
   result.logs.emplace_back("Raw mix render completed.");
   result.logs.emplace_back("Final peak dBFS: " + std::to_string(linearToDb(finalPeak)));
+  {
+    std::scoped_lock lock(renderMixCacheMutex());
+    renderMixCache() = CachedRenderMix{
+        .key = renderCacheKey,
+        .result = result,
+    };
+  }
   if (onProgress) {
     onProgress(RenderProgress{.fraction = 1.0, .stage = "Mix render complete"});
   }

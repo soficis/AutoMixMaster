@@ -21,6 +21,9 @@ struct RendererInfo {
   bool available = false;
   std::string discovery;
   std::filesystem::path binaryPath;
+  std::string trustPolicyStatus;
+  std::vector<std::string> pinnedProfileIds;
+  std::filesystem::path capabilitySnapshotPath;
 };
 
 struct ExternalRendererConfig {
@@ -30,6 +33,13 @@ struct ExternalRendererConfig {
   std::string licenseId = "unknown";
   std::filesystem::path binaryPath;
   bool bundledByDefault = false;
+  std::string signerId;
+  std::string signatureAlgorithm;
+  std::string signatureValue;
+  bool signatureValid = false;
+  std::string trustPolicyStatus = "unsigned";
+  std::vector<std::string> pinnedProfileIds;
+  std::string capabilitySnapshot;
 };
 
 class RendererRegistry {

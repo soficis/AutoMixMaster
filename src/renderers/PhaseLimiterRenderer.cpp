@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <optional>
 #include <thread>
 #include <vector>
@@ -15,6 +16,7 @@
 #include "ai/MasteringCompliance.h"
 #include "analysis/StemAnalyzer.h"
 #include "automaster/HeuristicAutoMasterStrategy.h"
+#include "automaster/OriginalMixReference.h"
 #include "engine/AudioFileIO.h"
 #include "engine/AudioResampler.h"
 #include "engine/OfflineRenderPipeline.h"
@@ -32,6 +34,40 @@ constexpr size_t kMaxProcessOutputCaptureBytes = 32768;
 bool pathExists(const std::filesystem::path& path) {
   std::error_code error;
   return std::filesystem::exists(path, error);
+}
+
+std::optional<std::filesystem::path> metadataSourcePath(const domain::Session& session) {
+  if (session.originalMixPath.has_value()) {
+    const std::filesystem::path originalPath(session.originalMixPath.value());
+    std::error_code error;
+    if (std::filesystem::is_regular_file(originalPath, error) && !error) {
+      return originalPath;
+    }
+  }
+
+  for (const auto& stem : session.stems) {
+    if (!stem.enabled || stem.filePath.empty()) {
+      continue;
+    }
+    const std::filesystem::path stemPath(stem.filePath);
+    std::error_code error;
+    if (std::filesystem::is_regular_file(stemPath, error) && !error) {
+      return stemPath;
+    }
+  }
+
+  for (const auto& stem : session.stems) {
+    if (stem.filePath.empty()) {
+      continue;
+    }
+    const std::filesystem::path stemPath(stem.filePath);
+    std::error_code error;
+    if (std::filesystem::is_regular_file(stemPath, error) && !error) {
+      return stemPath;
+    }
+  }
+
+  return std::nullopt;
 }
 
 class CurrentWorkingDirectoryGuard final {
@@ -147,9 +183,26 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
     }
 
     automaster::HeuristicAutoMasterStrategy strategy;
-    const auto plan = session.masterPlan.has_value()
-                          ? session.masterPlan.value()
-                          : strategy.buildPlan(domain::MasterPreset::DefaultStreaming, rawMix);
+    analysis::StemAnalyzer analyzer;
+    const bool usedSessionMasterPlan = session.masterPlan.has_value();
+    const bool usedSessionMixPlan = session.mixPlan.has_value();
+    auto plan = session.masterPlan.has_value()
+                    ? session.masterPlan.value()
+                    : strategy.buildPlan(domain::MasterPreset::DefaultStreaming, rawMix);
+    if (!usedSessionMasterPlan && session.originalMixPath.has_value()) {
+      try {
+        engine::AudioFileIO fileIO;
+        engine::AudioResampler resampler;
+        auto originalMix = fileIO.readAudioFile(session.originalMixPath.value());
+        if (originalMix.getSampleRate() != rawMix.getSampleRate()) {
+          originalMix = resampler.resampleLinear(originalMix, rawMix.getSampleRate());
+        }
+        automaster::OriginalMixReference referenceTarget;
+        plan = referenceTarget.applySoftTarget(plan, rawMix, originalMix, strategy, analyzer);
+      } catch (const std::exception& errorException) {
+        renderState.logs.push_back("Original mix reference skipped: " + std::string(errorException.what()));
+      }
+    }
 
     const std::filesystem::path outputPath = settings.outputPath.empty() ? "export_master.wav" : settings.outputPath;
     const auto outputFormat = util::WavWriter::resolveFormat(outputPath, settings.outputFormat);
@@ -223,6 +276,14 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
 
     engine::AudioFileIO fileIO;
     auto mastered = fileIO.readAudioFile(tempPhaseOutputPath);
+    std::map<std::string, std::string> sourceMetadata;
+    if (const auto sourcePath = metadataSourcePath(session); sourcePath.has_value()) {
+      try {
+        sourceMetadata = fileIO.readMetadata(sourcePath.value());
+      } catch (const std::exception& error) {
+        renderState.logs.push_back("Metadata copy skipped: " + std::string(error.what()));
+      }
+    }
 
     ai::MasteringCompliance compliance;
     const auto boundedPlan = compliance.enforcePlanBounds(plan);
@@ -233,9 +294,11 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
                  settings.outputBitDepth,
                  settings.outputFormat,
                  settings.lossyBitrateKbps,
-                 settings.lossyQuality);
+                 settings.lossyQuality,
+                 settings.mp3UseVbr,
+                 settings.mp3VbrQuality,
+                 sourceMetadata);
 
-    analysis::StemAnalyzer analyzer;
     const auto spectrumMetrics = analyzer.analyzeBuffer(mastered);
 
     const std::filesystem::path reportPath = outputPath.string() + ".report.json";
@@ -253,9 +316,16 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
         {"spectrumMid", spectrumMetrics.midEnergy},
         {"spectrumHigh", spectrumMetrics.highEnergy},
         {"stereoCorrelation", spectrumMetrics.stereoCorrelation},
+        {"masterPlanSource", usedSessionMasterPlan ? "session" : "heuristic"},
+        {"mixPlanSource", usedSessionMixPlan ? "session" : "heuristic"},
+        {"masterDecisionLog", boundedPlan.decisionLog},
+        {"mixDecisionLog", session.mixPlan.has_value() ? session.mixPlan->decisionLog : std::vector<std::string>{}},
+        {"exportSpeedMode", settings.exportSpeedMode},
         {"outputFormat", outputFormat},
         {"lossyBitrateKbps", settings.lossyBitrateKbps},
         {"lossyQuality", settings.lossyQuality},
+        {"mp3Mode", settings.mp3UseVbr ? "vbr" : "cbr"},
+        {"mp3VbrQuality", settings.mp3VbrQuality},
         {"preGainDb", boundedPlan.preGainDb},
         {"targetLufs", boundedPlan.targetLufs},
         {"targetTruePeakDbtp", boundedPlan.truePeakDbtp},

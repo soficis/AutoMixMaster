@@ -187,7 +187,15 @@ domain::BatchResult BatchQueueRunner::process(domain::BatchJob& job,
           }
 
           if (item.status == domain::BatchItemStatus::Pending) {
-            runAnalysisForItem(item);
+            try {
+              runAnalysisForItem(item);
+            } catch (const std::exception& errorException) {
+              item.status = domain::BatchItemStatus::Failed;
+              item.error = errorException.what();
+            } catch (...) {
+              item.status = domain::BatchItemStatus::Failed;
+              item.error = "Unknown analysis failure.";
+            }
           }
         }
       });
@@ -203,7 +211,15 @@ domain::BatchResult BatchQueueRunner::process(domain::BatchJob& job,
         continue;
       }
       if (item.status == domain::BatchItemStatus::Pending) {
-        runAnalysisForItem(item);
+        try {
+          runAnalysisForItem(item);
+        } catch (const std::exception& errorException) {
+          item.status = domain::BatchItemStatus::Failed;
+          item.error = errorException.what();
+        } catch (...) {
+          item.status = domain::BatchItemStatus::Failed;
+          item.error = "Unknown analysis failure.";
+        }
       }
     }
   }

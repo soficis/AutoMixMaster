@@ -10,9 +10,12 @@ struct RenderSettings {
   int outputBitDepth = 24;
   std::string outputPath;
   std::string outputFormat = "auto";
+  std::string exportSpeedMode = "final";
   std::string gpuExecutionProvider = "auto";
-  int lossyBitrateKbps = 192;
+  int lossyBitrateKbps = 320;
   int lossyQuality = 7;
+  bool mp3UseVbr = false;
+  int mp3VbrQuality = 4;
   int processingThreads = 0;
   bool preferHardwareAcceleration = true;
   std::string rendererName = "BuiltIn";

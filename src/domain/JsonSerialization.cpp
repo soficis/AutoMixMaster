@@ -70,9 +70,12 @@ void to_json(Json& j, const RenderSettings& value) {
            {"outputBitDepth", value.outputBitDepth},
            {"outputPath", value.outputPath},
            {"outputFormat", value.outputFormat},
+           {"exportSpeedMode", value.exportSpeedMode},
            {"gpuExecutionProvider", value.gpuExecutionProvider},
            {"lossyBitrateKbps", value.lossyBitrateKbps},
            {"lossyQuality", value.lossyQuality},
+           {"mp3UseVbr", value.mp3UseVbr},
+           {"mp3VbrQuality", value.mp3VbrQuality},
            {"processingThreads", value.processingThreads},
            {"preferHardwareAcceleration", value.preferHardwareAcceleration},
            {"rendererName", value.rendererName},
@@ -86,9 +89,17 @@ void from_json(const Json& j, RenderSettings& value) {
   value.outputBitDepth = j.value("outputBitDepth", 24);
   value.outputPath = j.value("outputPath", "");
   value.outputFormat = j.value("outputFormat", "auto");
+  value.exportSpeedMode = j.value("exportSpeedMode", "final");
+  if (value.exportSpeedMode != "final" &&
+      value.exportSpeedMode != "balanced" &&
+      value.exportSpeedMode != "quick") {
+    value.exportSpeedMode = "final";
+  }
   value.gpuExecutionProvider = j.value("gpuExecutionProvider", "auto");
-  value.lossyBitrateKbps = std::clamp(j.value("lossyBitrateKbps", 192), 48, 512);
+  value.lossyBitrateKbps = std::clamp(j.value("lossyBitrateKbps", 320), 48, 512);
   value.lossyQuality = std::clamp(j.value("lossyQuality", 7), 0, 10);
+  value.mp3UseVbr = j.value("mp3UseVbr", false);
+  value.mp3VbrQuality = std::clamp(j.value("mp3VbrQuality", 4), 0, 9);
   value.processingThreads = std::max(0, j.value("processingThreads", 0));
   value.preferHardwareAcceleration = j.value("preferHardwareAcceleration", true);
   value.rendererName = j.value("rendererName", "BuiltIn");
@@ -238,7 +249,18 @@ void to_json(Json& j, const Session& value) {
            {"residualBlend", value.residualBlend},
            {"stems", value.stems},
            {"buses", value.buses},
-           {"renderSettings", value.renderSettings}};
+           {"renderSettings", value.renderSettings},
+           {"projectProfileId", value.projectProfileId},
+           {"safetyPolicyId", value.safetyPolicyId},
+           {"preferredStemCount", value.preferredStemCount},
+           {"timeline",
+            Json{
+                {"loopEnabled", value.timeline.loopEnabled},
+                {"loopInSeconds", value.timeline.loopInSeconds},
+                {"loopOutSeconds", value.timeline.loopOutSeconds},
+                {"zoom", value.timeline.zoom},
+                {"fineScrub", value.timeline.fineScrub},
+            }}};
 
   if (value.originalMixPath.has_value()) {
     j["originalMixPath"] = value.originalMixPath.value();
@@ -258,6 +280,19 @@ void from_json(const Json& j, Session& value) {
   value.residualBlend = std::clamp(j.value("residualBlend", 0.0), 0.0, 10.0);
   value.stems = j.value("stems", std::vector<Stem>{});
   value.buses = j.value("buses", std::vector<Bus>{});
+  value.projectProfileId = j.value("projectProfileId", "default");
+  value.safetyPolicyId = j.value("safetyPolicyId", "balanced");
+  value.preferredStemCount = std::clamp(j.value("preferredStemCount", 4), 2, 6);
+
+  const auto timelineJson = j.value("timeline", Json::object());
+  value.timeline.loopEnabled = timelineJson.value("loopEnabled", false);
+  value.timeline.loopInSeconds = std::max(0.0, timelineJson.value("loopInSeconds", 0.0));
+  value.timeline.loopOutSeconds = std::max(0.0, timelineJson.value("loopOutSeconds", 0.0));
+  value.timeline.zoom = std::clamp(timelineJson.value("zoom", 1.0), 1.0, 64.0);
+  value.timeline.fineScrub = timelineJson.value("fineScrub", false);
+  if (value.timeline.loopOutSeconds <= value.timeline.loopInSeconds) {
+    value.timeline.loopEnabled = false;
+  }
 
   if (j.contains("originalMixPath") && !j.at("originalMixPath").is_null()) {
     value.originalMixPath = j.at("originalMixPath").get<std::string>();

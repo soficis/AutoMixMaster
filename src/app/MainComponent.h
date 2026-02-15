@@ -1,11 +1,14 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <vector>
 
+#include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 
 #include "analysis/StemAnalyzer.h"
@@ -14,6 +17,7 @@
 #include "automaster/HeuristicAutoMasterStrategy.h"
 #include "automix/HeuristicAutoMixStrategy.h"
 #include "domain/MasterPlan.h"
+#include "domain/ProjectProfile.h"
 #include "domain/Session.h"
 #include "engine/AudioPreviewEngine.h"
 #include "engine/SessionRepository.h"
@@ -27,7 +31,8 @@ class MainComponent final : public juce::Component,
                             private juce::ComboBox::Listener,
                             private juce::Slider::Listener,
                             private juce::Timer,
-                            private juce::ChangeListener {
+                            private juce::ChangeListener,
+                            private juce::AudioIODeviceCallback {
  public:
   MainComponent();
   ~MainComponent() override;
@@ -60,9 +65,19 @@ class MainComponent final : public juce::Component,
   void sliderValueChanged(juce::Slider* slider) override;
   void timerCallback() override;
   void changeListenerCallback(juce::ChangeBroadcaster* source) override;
+  void audioDeviceIOCallbackWithContext(const float* const* inputChannelData,
+                                        int numInputChannels,
+                                        float* const* outputChannelData,
+                                        int numOutputChannels,
+                                        int numSamples,
+                                        const juce::AudioIODeviceCallbackContext& context) override;
+  void audioDeviceAboutToStart(juce::AudioIODevice* device) override;
+  void audioDeviceStopped() override;
 
   void onImport();
   void onImportOriginalMix();
+  void onClearOriginalMix();
+  void onRegenerateCachedRenders();
   void onAutoMix();
   void onAutoMaster();
   void onBatchImport();
@@ -79,11 +94,20 @@ class MainComponent final : public juce::Component,
   void refreshModelPacks();
   void refreshRenderers();
   void refreshCodecAvailability();
+  void updateExportCodecControls();
+  std::string selectedExportSpeedMode() const;
+  bool isQuickExportModeSelected() const;
+  void applyQuickExportDefaults();
+  void refreshProjectProfiles();
   void refreshStemRoutingSelectors();
+  void applyLoadedSession(domain::Session loadedSession, const juce::String& sourcePath);
   void rebuildPreviewBuffers();
   void rebuildPreviewBuffersAsync();
   void updateTransportFromBuffer(const engine::AudioBuffer& buffer);
   void updateTransportDisplay();
+  void updateTransportLoopAndZoomUI();
+  void appendTaskHistory(const juce::String& line);
+  void applyProjectProfile(const domain::ProjectProfile& profile);
   void populateMasterPresetSelectors();
 
   domain::MasterPreset selectedMasterPreset() const;
@@ -94,6 +118,8 @@ class MainComponent final : public juce::Component,
 
   juce::TextButton importButton_ {"Import"};
   juce::TextButton originalMixButton_ {"Original Mix"};
+  juce::TextButton clearOriginalMixButton_ {"Clear Original"};
+  juce::TextButton regenerateCacheButton_ {"Regenerate Cache"};
   juce::TextButton saveSessionButton_ {"Save Session"};
   juce::TextButton loadSessionButton_ {"Load Session"};
   juce::TextButton autoMixButton_ {"Auto Mix"};
@@ -103,6 +129,9 @@ class MainComponent final : public juce::Component,
   juce::TextButton previewRenderedButton_ {"Preview B"};
   juce::TextButton playPauseButton_ {"Play/Pause"};
   juce::TextButton stopButton_ {"Stop"};
+  juce::TextButton loopInButton_ {"Set Loop In"};
+  juce::TextButton loopOutButton_ {"Set Loop Out"};
+  juce::TextButton clearLoopButton_ {"Clear Loop"};
   juce::TextButton addExternalRendererButton_ {"Add External Limiter"};
   juce::TextButton prefetchLameButton_ {"Prefetch LAME"};
   juce::TextButton exportButton_ {"Export"};
@@ -113,8 +142,16 @@ class MainComponent final : public juce::Component,
   juce::ComboBox rendererBox_;
   juce::Label exportFormatLabel_ {"exportFormatLabel", "Export"};
   juce::ComboBox exportFormatBox_;
+  juce::Label exportSpeedModeLabel_ {"exportSpeedModeLabel", "Mode"};
+  juce::ComboBox exportSpeedModeBox_;
+  juce::Label projectProfileLabel_ {"projectProfileLabel", "Profile"};
+  juce::ComboBox projectProfileBox_;
   juce::Label exportBitrateLabel_ {"exportBitrateLabel", "Lossy kbps"};
   juce::Slider exportBitrateSlider_;
+  juce::Label mp3ModeLabel_ {"mp3ModeLabel", "MP3 Mode"};
+  juce::ComboBox mp3ModeBox_;
+  juce::Label mp3VbrLabel_ {"mp3VbrLabel", "VBR Q"};
+  juce::Slider mp3VbrSlider_;
   juce::Label gpuProviderLabel_ {"gpuProviderLabel", "ML Provider"};
   juce::ComboBox gpuProviderBox_;
   juce::Label masterPresetLabel_ {"masterPresetLabel", "Master Preset"};
@@ -126,6 +163,9 @@ class MainComponent final : public juce::Component,
   juce::Label muteStemLabel_ {"muteStemLabel", "Mute"};
   juce::ComboBox muteStemBox_;
   juce::Slider transportSlider_;
+  juce::Label zoomLabel_ {"zoomLabel", "Zoom"};
+  juce::Slider zoomSlider_;
+  juce::ToggleButton fineScrubToggle_ {"Fine Scrub"};
   juce::Label aiModelsLabel_ {"aiModelsLabel", "AI Models"};
   juce::ComboBox roleModelBox_;
   juce::ComboBox mixModelBox_;
@@ -138,6 +178,8 @@ class MainComponent final : public juce::Component,
   AnalysisTableModel analysisTableModel_;
   juce::TableListBox analysisTable_;
   juce::TextEditor reportEditor_;
+  juce::Label taskCenterLabel_ {"taskCenterLabel", "Task Center"};
+  juce::TextEditor taskCenterEditor_;
 
   domain::Session session_;
   analysis::StemAnalyzer analyzer_;
@@ -147,6 +189,7 @@ class MainComponent final : public juce::Component,
   engine::AudioPreviewEngine previewEngine_;
   engine::TransportController transportController_;
   ai::ModelManager modelManager_;
+  juce::AudioDeviceManager audioDeviceManager_;
   std::vector<analysis::StemAnalysisEntry> analysisEntries_;
   std::vector<renderers::RendererInfo> rendererInfos_;
   std::vector<renderers::ExternalRendererConfig> userExternalRendererConfigs_;
@@ -157,11 +200,18 @@ class MainComponent final : public juce::Component,
   std::map<int, domain::MasterPreset> masterPresetByComboId_;
   std::map<int, domain::MasterPreset> platformPresetByComboId_;
   std::map<int, std::string> codecFormatByComboId_;
+  std::map<int, std::string> exportSpeedModeByComboId_;
   std::map<int, std::string> stemIdBySoloComboId_;
   std::map<int, std::string> stemIdByMuteComboId_;
+  std::map<int, std::string> projectProfileIdByComboId_;
   std::atomic_bool cancelRender_ {false};
   std::atomic_bool taskRunning_ {false};
+  std::atomic_uint64_t previewBuildGeneration_ {0};
+  std::atomic<int64_t> playbackCursorSamples_ {0};
+  std::mutex playbackBufferMutex_;
+  engine::AudioBuffer playbackBuffer_;
   bool ignoreTransportSliderChange_ = false;
+  double lastFineScrubProgress_ = 0.0;
   std::unique_ptr<juce::FileChooser> importChooser_;
   std::unique_ptr<juce::FileChooser> originalMixChooser_;
   std::unique_ptr<juce::FileChooser> exportChooser_;
@@ -169,6 +219,8 @@ class MainComponent final : public juce::Component,
   std::unique_ptr<juce::FileChooser> saveSessionChooser_;
   std::unique_ptr<juce::FileChooser> loadSessionChooser_;
   std::unique_ptr<juce::FileChooser> externalRendererChooser_;
+  std::vector<juce::String> taskHistoryLines_;
+  std::vector<domain::ProjectProfile> projectProfiles_;
 };
 
 } // namespace automix::app

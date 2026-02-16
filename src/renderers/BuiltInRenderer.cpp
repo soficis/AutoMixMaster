@@ -13,6 +13,7 @@
 #include "engine/AudioFileIO.h"
 #include "engine/AudioResampler.h"
 #include "engine/OfflineRenderPipeline.h"
+#include "util/MetadataPolicy.h"
 #include "util/WavWriter.h"
 
 namespace automix::renderers {
@@ -118,6 +119,12 @@ RenderResult BuiltInRenderer::render(const domain::Session& session,
       result.logs.push_back("Metadata copy skipped: " + std::string(error.what()));
     }
   }
+  std::vector<std::string> metadataPolicyNotes;
+  const auto exportMetadata =
+      util::applyMetadataPolicy(sourceMetadata, settings.metadataPolicy, settings.metadataTemplate, &metadataPolicyNotes);
+  for (const auto& note : metadataPolicyNotes) {
+    result.logs.push_back(note);
+  }
   const std::filesystem::path outputPath = settings.outputPath.empty() ? "export_master.wav" : settings.outputPath;
   writer.write(outputPath,
                mastered,
@@ -127,7 +134,7 @@ RenderResult BuiltInRenderer::render(const domain::Session& session,
                settings.lossyQuality,
                settings.mp3UseVbr,
                settings.mp3VbrQuality,
-               sourceMetadata);
+               exportMetadata);
 
   const std::filesystem::path reportPath = outputPath.string() + ".report.json";
   nlohmann::json report = {
@@ -153,6 +160,7 @@ RenderResult BuiltInRenderer::render(const domain::Session& session,
       {"lossyQuality", settings.lossyQuality},
       {"mp3Mode", settings.mp3UseVbr ? "vbr" : "cbr"},
       {"mp3VbrQuality", settings.mp3VbrQuality},
+      {"metadataPolicy", settings.metadataPolicy},
       {"targetLufs", plan.targetLufs},
       {"targetTruePeakDbtp", plan.truePeakDbtp},
       {"limiterCeilingDb", plan.limiterCeilingDb},

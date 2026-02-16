@@ -20,6 +20,8 @@ TEST_CASE("Session serialization round trip preserves required fields", "[sessio
   session.renderSettings.mp3VbrQuality = 2;
   session.renderSettings.processingThreads = 4;
   session.renderSettings.preferHardwareAcceleration = true;
+  session.renderSettings.metadataPolicy = "override_template";
+  session.renderSettings.metadataTemplate = {{"artist", "AutoMixMaster"}, {"comment", "test"}};
   session.timeline.loopEnabled = true;
   session.timeline.loopInSeconds = 12.5;
   session.timeline.loopOutSeconds = 28.0;
@@ -61,6 +63,8 @@ TEST_CASE("Session serialization round trip preserves required fields", "[sessio
   REQUIRE(decoded.renderSettings.mp3UseVbr == true);
   REQUIRE(decoded.renderSettings.mp3VbrQuality == 2);
   REQUIRE(decoded.renderSettings.processingThreads == 4);
+  REQUIRE(decoded.renderSettings.metadataPolicy == "override_template");
+  REQUIRE(decoded.renderSettings.metadataTemplate.at("artist") == "AutoMixMaster");
   REQUIRE(decoded.timeline.loopEnabled == true);
   REQUIRE(decoded.timeline.loopInSeconds == Catch::Approx(12.5));
   REQUIRE(decoded.timeline.loopOutSeconds == Catch::Approx(28.0));
@@ -91,6 +95,8 @@ TEST_CASE("Session deserialization handles missing optional fields", "[session]"
   REQUIRE(decoded.renderSettings.lossyQuality == 7);
   REQUIRE(decoded.renderSettings.mp3UseVbr == false);
   REQUIRE(decoded.renderSettings.mp3VbrQuality == 4);
+  REQUIRE(decoded.renderSettings.metadataPolicy == "copy_all");
+  REQUIRE(decoded.renderSettings.metadataTemplate.empty());
   REQUIRE(decoded.renderSettings.preferHardwareAcceleration == true);
   REQUIRE(decoded.timeline.loopEnabled == false);
   REQUIRE(decoded.timeline.zoom == Catch::Approx(1.0));

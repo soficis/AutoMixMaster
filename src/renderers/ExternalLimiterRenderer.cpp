@@ -21,6 +21,7 @@
 #include "engine/AudioResampler.h"
 #include "engine/OfflineRenderPipeline.h"
 #include "renderers/BuiltInRenderer.h"
+#include "util/MetadataPolicy.h"
 #include "util/WavWriter.h"
 
 namespace automix::renderers {
@@ -342,6 +343,8 @@ RenderResult ExternalLimiterRenderer::render(const domain::Session& session,
         {"lossyQuality", settings.lossyQuality},
         {"gpuExecutionProvider", settings.gpuExecutionProvider},
         {"preferHardwareAcceleration", settings.preferHardwareAcceleration},
+        {"metadataPolicy", settings.metadataPolicy},
+        {"metadataTemplate", settings.metadataTemplate},
         {"masterPlanSource", usedSessionMasterPlan ? "session" : "heuristic"},
         {"mixPlanSource", usedSessionMixPlan ? "session" : "heuristic"},
         {"masterDecisionLog", plan.decisionLog},
@@ -409,6 +412,12 @@ RenderResult ExternalLimiterRenderer::render(const domain::Session& session,
         rawResult.logs.push_back("Metadata copy skipped: " + std::string(errorException.what()));
       }
     }
+    std::vector<std::string> metadataPolicyNotes;
+    const auto exportMetadata =
+        util::applyMetadataPolicy(sourceMetadata, settings.metadataPolicy, settings.metadataTemplate, &metadataPolicyNotes);
+    for (const auto& note : metadataPolicyNotes) {
+      rawResult.logs.push_back(note);
+    }
 
     const auto boundedPlan = compliance.enforcePlanBounds(plan);
     const auto checked = compliance.enforceOutput(mastered, boundedPlan, strategy, &complianceReport);
@@ -421,7 +430,7 @@ RenderResult ExternalLimiterRenderer::render(const domain::Session& session,
                  settings.lossyQuality,
                  settings.mp3UseVbr,
                  settings.mp3VbrQuality,
-                 sourceMetadata);
+                 exportMetadata);
 
     const auto spectrum = analyzer.analyzeBuffer(mastered);
 
@@ -453,6 +462,7 @@ RenderResult ExternalLimiterRenderer::render(const domain::Session& session,
         {"lossyQuality", settings.lossyQuality},
         {"mp3Mode", settings.mp3UseVbr ? "vbr" : "cbr"},
         {"mp3VbrQuality", settings.mp3VbrQuality},
+        {"metadataPolicy", settings.metadataPolicy},
         {"targetLufs", boundedPlan.targetLufs},
         {"targetTruePeakDbtp", boundedPlan.truePeakDbtp},
         {"limiterCeilingDb", boundedPlan.limiterCeilingDb},

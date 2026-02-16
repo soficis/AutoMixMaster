@@ -78,6 +78,8 @@ void to_json(Json& j, const RenderSettings& value) {
            {"mp3VbrQuality", value.mp3VbrQuality},
            {"processingThreads", value.processingThreads},
            {"preferHardwareAcceleration", value.preferHardwareAcceleration},
+           {"metadataPolicy", value.metadataPolicy},
+           {"metadataTemplate", value.metadataTemplate},
            {"rendererName", value.rendererName},
            {"externalRendererPath", value.externalRendererPath},
            {"externalRendererTimeoutMs", value.externalRendererTimeoutMs}};
@@ -102,6 +104,15 @@ void from_json(const Json& j, RenderSettings& value) {
   value.mp3VbrQuality = std::clamp(j.value("mp3VbrQuality", 4), 0, 9);
   value.processingThreads = std::max(0, j.value("processingThreads", 0));
   value.preferHardwareAcceleration = j.value("preferHardwareAcceleration", true);
+  value.metadataPolicy = j.value("metadataPolicy", "copy_all");
+  if (value.metadataPolicy != "copy_all" &&
+      value.metadataPolicy != "copy_common" &&
+      value.metadataPolicy != "copy_common_only" &&
+      value.metadataPolicy != "strip" &&
+      value.metadataPolicy != "override_template") {
+    value.metadataPolicy = "copy_all";
+  }
+  value.metadataTemplate = j.value("metadataTemplate", std::map<std::string, std::string>{});
   value.rendererName = j.value("rendererName", "BuiltIn");
   value.externalRendererPath = j.value("externalRendererPath", "");
   value.externalRendererTimeoutMs = j.value("externalRendererTimeoutMs", 300000);

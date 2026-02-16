@@ -25,6 +25,17 @@ ProjectProfile profileFromJson(const nlohmann::json& json) {
   profile.masterModelPackId = json.value("masterModelPackId", "none");
   profile.safetyPolicyId = json.value("safetyPolicyId", "balanced");
   profile.preferredStemCount = std::clamp(json.value("preferredStemCount", 4), 2, 6);
+  profile.metadataPolicy = json.value("metadataPolicy", "copy_common");
+  if (profile.metadataPolicy != "copy_all" &&
+      profile.metadataPolicy != "copy_common" &&
+      profile.metadataPolicy != "copy_common_only" &&
+      profile.metadataPolicy != "strip" &&
+      profile.metadataPolicy != "override_template") {
+    profile.metadataPolicy = "copy_common";
+  }
+  if (json.contains("metadataTemplate") && json.at("metadataTemplate").is_object()) {
+    profile.metadataTemplate = json.at("metadataTemplate").get<std::map<std::string, std::string>>();
+  }
   if (json.contains("pinnedRendererIds") && json.at("pinnedRendererIds").is_array()) {
     profile.pinnedRendererIds = json.at("pinnedRendererIds").get<std::vector<std::string>>();
   }
@@ -86,6 +97,8 @@ std::vector<ProjectProfile> defaultProjectProfiles() {
           .masterModelPackId = "none",
           .safetyPolicyId = "balanced",
           .preferredStemCount = 4,
+          .metadataPolicy = "copy_common",
+          .metadataTemplate = {},
           .pinnedRendererIds = {"BuiltIn"},
       },
       ProjectProfile{
@@ -103,6 +116,8 @@ std::vector<ProjectProfile> defaultProjectProfiles() {
           .masterModelPackId = "demo-master-v1",
           .safetyPolicyId = "strict",
           .preferredStemCount = 4,
+          .metadataPolicy = "copy_common",
+          .metadataTemplate = {},
           .pinnedRendererIds = {"BuiltIn", "PhaseLimiter"},
       },
       ProjectProfile{
@@ -120,6 +135,8 @@ std::vector<ProjectProfile> defaultProjectProfiles() {
           .masterModelPackId = "none",
           .safetyPolicyId = "balanced",
           .preferredStemCount = 2,
+          .metadataPolicy = "strip",
+          .metadataTemplate = {},
           .pinnedRendererIds = {"BuiltIn"},
       },
   };

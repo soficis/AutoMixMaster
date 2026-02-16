@@ -4,6 +4,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <ctime>
 #include <exception>
 #include <filesystem>
@@ -28,6 +29,7 @@
 #include "ai/AutoMasterStrategyAI.h"
 #include "ai/AutoMixStrategyAI.h"
 #include "ai/ModelPackLoader.h"
+#include "ai/HuggingFaceModelHub.h"
 #include "ai/OnnxModelInference.h"
 #include "ai/RtNeuralInference.h"
 #include "analysis/StemHealthAssistant.h"
@@ -152,6 +154,18 @@ std::optional<double> parseDoubleArg(const std::vector<std::string>& args, const
   } catch (...) {
     return std::nullopt;
   }
+}
+
+std::optional<std::string> readEnvironment(const std::string& key) {
+  const char* value = std::getenv(key.c_str());
+  if (value == nullptr || *value == '\0') {
+    return std::nullopt;
+  }
+  return std::string(value);
+}
+
+std::filesystem::path profileCatalogPath() {
+  return std::filesystem::path("assets") / "profiles" / "project_profiles.json";
 }
 
 std::string extensionForFormat(const std::string& format) {
@@ -815,6 +829,579 @@ int commandInstallLameFallback(const std::vector<std::string>& args) {
   }
 
   return result.success ? 0 : 1;
+}
+
+nlohmann::json projectProfileToJson(const automix::domain::ProjectProfile& profile) {
+  return {
+      {"id", profile.id},
+      {"name", profile.name},
+      {"platformPreset", profile.platformPreset},
+      {"rendererName", profile.rendererName},
+      {"outputFormat", profile.outputFormat},
+      {"lossyBitrateKbps", profile.lossyBitrateKbps},
+      {"mp3UseVbr", profile.mp3UseVbr},
+      {"mp3VbrQuality", profile.mp3VbrQuality},
+      {"gpuProvider", profile.gpuProvider},
+      {"roleModelPackId", profile.roleModelPackId},
+      {"mixModelPackId", profile.mixModelPackId},
+      {"masterModelPackId", profile.masterModelPackId},
+      {"safetyPolicyId", profile.safetyPolicyId},
+      {"preferredStemCount", profile.preferredStemCount},
+      {"metadataPolicy", profile.metadataPolicy},
+      {"metadataTemplate", profile.metadataTemplate},
+      {"pinnedRendererIds", profile.pinnedRendererIds},
+  };
+}
+
+std::optional<automix::domain::ProjectProfile> projectProfileFromJson(const nlohmann::json& json) {
+  if (!json.is_object()) {
+    return std::nullopt;
+  }
+
+  automix::domain::ProjectProfile profile;
+  profile.id = json.value("id", "");
+  profile.name = json.value("name", profile.id);
+  profile.platformPreset = json.value("platformPreset", "spotify");
+  profile.rendererName = json.value("rendererName", "BuiltIn");
+  profile.outputFormat = json.value("outputFormat", "wav");
+  profile.lossyBitrateKbps = std::clamp(json.value("lossyBitrateKbps", 320), 64, 320);
+  profile.mp3UseVbr = json.value("mp3UseVbr", false);
+  profile.mp3VbrQuality = std::clamp(json.value("mp3VbrQuality", 4), 0, 9);
+  profile.gpuProvider = json.value("gpuProvider", "auto");
+  profile.roleModelPackId = json.value("roleModelPackId", "none");
+  profile.mixModelPackId = json.value("mixModelPackId", "none");
+  profile.masterModelPackId = json.value("masterModelPackId", "none");
+  profile.safetyPolicyId = json.value("safetyPolicyId", "balanced");
+  profile.preferredStemCount = std::clamp(json.value("preferredStemCount", 4), 2, 6);
+  profile.metadataPolicy = json.value("metadataPolicy", "copy_common");
+  if (profile.metadataPolicy != "copy_all" &&
+      profile.metadataPolicy != "copy_common" &&
+      profile.metadataPolicy != "copy_common_only" &&
+      profile.metadataPolicy != "strip" &&
+      profile.metadataPolicy != "override_template") {
+    profile.metadataPolicy = "copy_common";
+  }
+  if (json.contains("metadataTemplate") && json.at("metadataTemplate").is_object()) {
+    profile.metadataTemplate = json.at("metadataTemplate").get<std::map<std::string, std::string>>();
+  }
+  if (json.contains("pinnedRendererIds") && json.at("pinnedRendererIds").is_array()) {
+    profile.pinnedRendererIds = json.at("pinnedRendererIds").get<std::vector<std::string>>();
+  }
+
+  if (profile.id.empty() || profile.name.empty()) {
+    return std::nullopt;
+  }
+  return profile;
+}
+
+int commandProfileExport(const std::vector<std::string>& args) {
+  const auto outArg = argValue(args, "--out");
+  if (!outArg.has_value()) {
+    std::cerr << "profile-export requires --out <path>\n";
+    return 2;
+  }
+
+  const auto idArg = argValue(args, "--id");
+  const auto profiles = automix::domain::loadProjectProfiles(std::filesystem::current_path());
+  nlohmann::json payload = nlohmann::json::array();
+
+  if (idArg.has_value()) {
+    const auto profile = automix::domain::findProjectProfile(profiles, *idArg);
+    if (!profile.has_value()) {
+      std::cerr << "Profile not found: " << *idArg << "\n";
+      return 1;
+    }
+    payload.push_back(projectProfileToJson(profile.value()));
+  } else {
+    for (const auto& profile : profiles) {
+      payload.push_back(projectProfileToJson(profile));
+    }
+  }
+
+  writeJsonFile(*outArg, payload);
+  std::cout << "Exported " << payload.size() << " profile(s) to " << *outArg << "\n";
+  return 0;
+}
+
+int commandProfileImport(const std::vector<std::string>& args) {
+  const auto inArg = argValue(args, "--in");
+  if (!inArg.has_value()) {
+    std::cerr << "profile-import requires --in <path>\n";
+    return 2;
+  }
+
+  const auto source = loadJsonFile(*inArg);
+  if (!source.has_value()) {
+    std::cerr << "Failed to read profile file: " << *inArg << "\n";
+    return 1;
+  }
+
+  std::vector<automix::domain::ProjectProfile> imported;
+  if (source->is_array()) {
+    for (const auto& item : *source) {
+      if (const auto parsed = projectProfileFromJson(item); parsed.has_value()) {
+        imported.push_back(parsed.value());
+      }
+    }
+  } else if (source->is_object()) {
+    if (const auto parsed = projectProfileFromJson(*source); parsed.has_value()) {
+      imported.push_back(parsed.value());
+    }
+  }
+
+  if (imported.empty()) {
+    std::cerr << "No valid profile records found in " << *inArg << "\n";
+    return 1;
+  }
+
+  const auto outPath = argValue(args, "--out").value_or(profileCatalogPath().string());
+  nlohmann::json existing = loadJsonFile(outPath).value_or(nlohmann::json::array());
+  if (!existing.is_array()) {
+    existing = nlohmann::json::array();
+  }
+
+  std::map<std::string, nlohmann::json> byId;
+  for (const auto& item : existing) {
+    if (!item.is_object()) {
+      continue;
+    }
+    const auto id = item.value("id", "");
+    if (!id.empty()) {
+      byId[id] = item;
+    }
+  }
+  for (const auto& profile : imported) {
+    byId[profile.id] = projectProfileToJson(profile);
+  }
+
+  nlohmann::json merged = nlohmann::json::array();
+  for (const auto& [id, item] : byId) {
+    (void)id;
+    merged.push_back(item);
+  }
+
+  writeJsonFile(outPath, merged);
+  std::cout << "Imported " << imported.size() << " profile(s) into " << outPath << "\n";
+  return 0;
+}
+
+int commandAdaptiveAssistant(const std::vector<std::string>& args) {
+  const auto sessionArg = argValue(args, "--session");
+  if (!sessionArg.has_value()) {
+    std::cerr << "adaptive-assistant requires --session <session.json>\n";
+    return 2;
+  }
+
+  automix::engine::SessionRepository repository;
+  const auto session = repository.load(*sessionArg);
+  automix::analysis::StemAnalyzer analyzer;
+  const auto analysisEntries = analyzer.analyzeSession(session);
+  automix::analysis::StemHealthAssistant assistant;
+  const auto health = assistant.analyze(session, analysisEntries);
+
+  nlohmann::json fixes = nlohmann::json::array();
+  for (const auto& issue : health.issues) {
+    if (issue.code == "harshness_risk") {
+      fixes.push_back({
+          {"priority", issue.severity == automix::analysis::StemHealthSeverity::Critical ? "high" : "medium"},
+          {"stemId", issue.stemId},
+          {"action", "reduce_high_band_harshness"},
+          {"details", "Apply de-harsh EQ in 3k-8k region and lower clipping-prone gains."},
+      });
+    } else if (issue.code == "pumping_risk") {
+      fixes.push_back({
+          {"priority", "medium"},
+          {"stemId", issue.stemId},
+          {"action", "relax_compression"},
+          {"details", "Increase compressor release and lower ratio/threshold aggressiveness."},
+      });
+    } else if (issue.code == "masking_conflict" || issue.code == "spectral_masking") {
+      fixes.push_back({
+          {"priority", "medium"},
+          {"stemId", issue.stemId},
+          {"action", "rebalance_masking"},
+          {"details", "Cut overlapping bands and spread conflicting stems with mild pan/EQ separation."},
+      });
+    } else if (issue.code == "mono_risk") {
+      fixes.push_back({
+          {"priority", "medium"},
+          {"stemId", issue.stemId},
+          {"action", "improve_mono_compatibility"},
+          {"details", "Narrow extreme stereo content and verify mono fold-down phase correlation."},
+      });
+    }
+  }
+
+  const auto compareArg = argValue(args, "--compare-report");
+  if (compareArg.has_value()) {
+    if (const auto compare = loadJsonFile(*compareArg); compare.has_value() &&
+                                                  compare->contains("ranking") &&
+                                                  compare->at("ranking").is_array() &&
+                                                  !compare->at("ranking").empty()) {
+      const auto top = compare->at("ranking").front();
+      const auto bestRenderer = top.value("rendererId", "");
+      const auto score = top.value("score", 0.0);
+      if (!bestRenderer.empty()) {
+        fixes.push_back({
+            {"priority", "medium"},
+            {"stemId", ""},
+            {"action", "renderer_recommendation"},
+            {"details", "Comparator top renderer is '" + bestRenderer + "' (score=" + std::to_string(score) +
+                            "). Consider profile pinning to this renderer."},
+        });
+      }
+    }
+  }
+
+  if (fixes.empty()) {
+    fixes.push_back({
+        {"priority", "low"},
+        {"stemId", ""},
+        {"action", "no_critical_changes"},
+        {"details", "No major corrective chain detected; keep current profile and run final compliance check."},
+    });
+  }
+
+  const nlohmann::json payload = {
+      {"generatedAtUtc", iso8601NowUtc()},
+      {"sessionPath", *sessionArg},
+      {"overallRisk", health.overallRisk},
+      {"hasCriticalIssues", health.hasCriticalIssues},
+      {"issueCount", health.issues.size()},
+      {"fixChain", fixes},
+  };
+
+  if (const auto outArg = argValue(args, "--out"); outArg.has_value()) {
+    writeJsonFile(*outArg, payload);
+    std::cout << "Adaptive assistant report: " << *outArg << "\n";
+  }
+
+  if (hasFlag(args, "--json")) {
+    std::cout << payload.dump(2) << "\n";
+  } else {
+    std::cout << "Adaptive assistant generated " << fixes.size() << " fix-chain step(s).\n";
+  }
+  return 0;
+}
+
+int commandSessionReview(const std::vector<std::string>& args) {
+  const auto baseArg = argValue(args, "--base");
+  const auto headArg = argValue(args, "--head");
+  if (!baseArg.has_value() || !headArg.has_value()) {
+    std::cerr << "session-review requires --base <session.json> --head <session.json>\n";
+    return 2;
+  }
+
+  const auto baseJson = loadJsonFile(*baseArg);
+  const auto headJson = loadJsonFile(*headArg);
+  if (!baseJson.has_value() || !headJson.has_value()) {
+    std::cerr << "Failed to load session files for review.\n";
+    return 1;
+  }
+
+  const auto patch = nlohmann::json::diff(*baseJson, *headJson);
+  std::map<std::string, int> topLevelCounts;
+  std::vector<std::string> highlights;
+
+  for (const auto& op : patch) {
+    if (!op.is_object()) {
+      continue;
+    }
+    const auto path = op.value("path", "");
+    if (path.empty()) {
+      continue;
+    }
+    const auto slash = path.find('/', 1);
+    const auto top = slash == std::string::npos ? path : path.substr(0, slash);
+    topLevelCounts[top] += 1;
+
+    if (path.find("/renderSettings") == 0 ||
+        path.find("/timeline") == 0 ||
+        path.find("/mixPlan") == 0 ||
+        path.find("/masterPlan") == 0) {
+      highlights.push_back(op.value("op", "op") + " " + path);
+    }
+  }
+
+  nlohmann::json payload = {
+      {"generatedAtUtc", iso8601NowUtc()},
+      {"base", *baseArg},
+      {"head", *headArg},
+      {"patchOperations", patch.size()},
+      {"topLevelChangeCounts", topLevelCounts},
+      {"highlights", highlights},
+      {"patch", patch},
+  };
+
+  if (const auto outArg = argValue(args, "--out"); outArg.has_value()) {
+    writeJsonFile(*outArg, payload);
+    std::cout << "Session review written to " << *outArg << "\n";
+  }
+
+  if (hasFlag(args, "--json")) {
+    std::cout << payload.dump(2) << "\n";
+  } else {
+    std::cout << "Session review summary:\n";
+    for (const auto& [top, count] : topLevelCounts) {
+      std::cout << "  " << top << ": " << count << "\n";
+    }
+    if (!highlights.empty()) {
+      std::cout << "Highlights:\n";
+      for (const auto& line : highlights) {
+        std::cout << "  - " << line << "\n";
+      }
+    }
+  }
+
+  return 0;
+}
+
+int commandModelBrowse(const std::vector<std::string>& args) {
+  automix::ai::HuggingFaceModelHub hub;
+  automix::ai::HubModelQueryOptions options;
+  options.maxResultsPerQuery = static_cast<size_t>(std::clamp(parseIntArg(args, "--limit").value_or(6), 1, 20));
+
+  if (const auto tokenEnvArg = argValue(args, "--token-env"); tokenEnvArg.has_value()) {
+    options.token = readEnvironment(*tokenEnvArg).value_or("");
+  }
+
+  const auto models = hub.discoverRecommended(options);
+  nlohmann::json payload = nlohmann::json::array();
+  for (const auto& model : models) {
+    payload.push_back({
+        {"repoId", model.repoId},
+        {"useCase", model.useCase},
+        {"license", model.license},
+        {"downloads", model.downloads},
+        {"likes", model.likes},
+        {"revision", model.revision},
+        {"primaryFile", model.primaryFile},
+        {"recommended", model.recommended},
+        {"gated", model.gated},
+        {"sourceUrl", model.sourceUrl},
+    });
+  }
+
+  if (const auto outArg = argValue(args, "--out"); outArg.has_value()) {
+    writeJsonFile(*outArg, payload);
+    std::cout << "Wrote model catalog to " << *outArg << "\n";
+  }
+
+  if (hasFlag(args, "--json")) {
+    std::cout << payload.dump(2) << "\n";
+  } else {
+    std::cout << "Recommended model catalog entries: " << payload.size() << "\n";
+    for (const auto& model : payload) {
+      std::cout << "  - " << model.value("repoId", "")
+                << " useCase=" << model.value("useCase", "")
+                << " downloads=" << model.value("downloads", 0)
+                << " license=" << model.value("license", "")
+                << (model.value("recommended", false) ? " [recommended]" : "")
+                << "\n";
+    }
+  }
+
+  return payload.empty() ? 1 : 0;
+}
+
+int commandModelInstall(const std::vector<std::string>& args) {
+  const auto repoArg = argValue(args, "--repo");
+  if (!repoArg.has_value()) {
+    std::cerr << "model-install requires --repo <huggingface_repo_id>\n";
+    return 2;
+  }
+
+  automix::ai::HubInstallOptions options;
+  options.destinationRoot = argValue(args, "--dest").value_or("assets/modelhub");
+  options.overwrite = hasFlag(args, "--force");
+  options.downloadReadme = !hasFlag(args, "--no-readme");
+  if (const auto tokenEnvArg = argValue(args, "--token-env"); tokenEnvArg.has_value()) {
+    options.token = readEnvironment(*tokenEnvArg).value_or("");
+  }
+
+  automix::ai::HuggingFaceModelHub hub;
+  const auto installed = hub.installModel(*repoArg, options);
+
+  nlohmann::json payload = {
+      {"success", installed.success},
+      {"repoId", installed.repoId},
+      {"revision", installed.revision},
+      {"installPath", installed.installPath.string()},
+      {"primaryFilePath", installed.primaryFilePath.string()},
+      {"metadataPath", installed.metadataPath.string()},
+      {"message", installed.message},
+      {"downloadedFiles", installed.downloadedFiles},
+  };
+
+  if (const auto outArg = argValue(args, "--out"); outArg.has_value()) {
+    writeJsonFile(*outArg, payload);
+    std::cout << "Model install report: " << *outArg << "\n";
+  }
+
+  if (hasFlag(args, "--json")) {
+    std::cout << payload.dump(2) << "\n";
+  } else {
+    std::cout << "Model install result: " << (installed.success ? "success" : "failed") << "\n";
+    std::cout << "  Repo: " << installed.repoId << "\n";
+    std::cout << "  Revision: " << installed.revision << "\n";
+    std::cout << "  Path: " << installed.installPath.string() << "\n";
+    std::cout << "  Detail: " << installed.message << "\n";
+  }
+
+  return installed.success ? 0 : 1;
+}
+
+int commandModelHealth(const std::vector<std::string>& args) {
+  const std::filesystem::path root = argValue(args, "--root").value_or("assets/modelhub");
+  const auto registryPath = root / "install_registry.json";
+  const auto registry = loadJsonFile(registryPath);
+  if (!registry.has_value() || !registry->is_array()) {
+    std::cerr << "Model registry not found: " << registryPath.string() << "\n";
+    return 1;
+  }
+
+  nlohmann::json checks = nlohmann::json::array();
+  int ok = 0;
+  int failed = 0;
+
+  for (const auto& item : *registry) {
+    if (!item.is_object()) {
+      continue;
+    }
+    const auto repoId = item.value("repoId", "");
+    const std::filesystem::path installPath(item.value("installPath", ""));
+    const std::filesystem::path primaryPath = installPath / item.value("primaryFile", "");
+    std::error_code error;
+    const bool downloaded = std::filesystem::is_regular_file(primaryPath, error) && !error;
+    bool loadable = false;
+    std::string detail;
+
+    if (downloaded) {
+      const auto extension = toLower(primaryPath.extension().string());
+      if (extension == ".onnx") {
+        automix::ai::OnnxModelInference inference;
+        loadable = inference.loadModel(primaryPath);
+        detail = loadable ? "ONNX load ok" : "ONNX load failed";
+      } else {
+        loadable = true;
+        detail = "Non-ONNX model file present (schema/runtime check skipped)";
+      }
+    } else {
+      detail = "Primary model file missing";
+    }
+
+    if (downloaded && loadable) {
+      ++ok;
+    } else {
+      ++failed;
+    }
+
+    checks.push_back({
+        {"repoId", repoId},
+        {"downloaded", downloaded},
+        {"loadable", loadable},
+        {"expectedIoSchema", "modelhub.json metadata"},
+        {"detail", detail},
+    });
+  }
+
+  nlohmann::json payload = {
+      {"generatedAtUtc", iso8601NowUtc()},
+      {"root", root.string()},
+      {"ok", ok},
+      {"failed", failed},
+      {"checks", checks},
+  };
+
+  if (const auto outArg = argValue(args, "--out"); outArg.has_value()) {
+    writeJsonFile(*outArg, payload);
+    std::cout << "Model health report: " << *outArg << "\n";
+  }
+
+  if (hasFlag(args, "--json")) {
+    std::cout << payload.dump(2) << "\n";
+  } else {
+    std::cout << "Model health: ok=" << ok << " failed=" << failed << "\n";
+  }
+
+  return failed == 0 ? 0 : 1;
+}
+
+int commandEvalTrend(const std::vector<std::string>& args) {
+  const auto baselinePath = std::filesystem::path(argValue(args, "--baseline").value_or(
+      findRepoPath("tests/regression/baselines.json").value_or(std::filesystem::path("tests/regression/baselines.json")).string()));
+  const auto workDir = std::filesystem::path(argValue(args, "--work-dir")
+                                                 .value_or((std::filesystem::temp_directory_path() / "automix_golden_eval").string()));
+  const auto trendPath = std::filesystem::path(argValue(args, "--trend").value_or("artifacts/eval/golden_trend.json"));
+
+  const auto result = automix::regression::runRegressionSuite(baselinePath, workDir);
+  const nlohmann::json current = {
+      {"timestampUtc", iso8601NowUtc()},
+      {"baselinePath", baselinePath.string()},
+      {"workDir", workDir.string()},
+      {"success", result.success},
+      {"renderedCount", result.rendered.size()},
+      {"failureCount", result.failures.size()},
+  };
+
+  auto trend = loadJsonFile(trendPath).value_or(nlohmann::json::array());
+  if (!trend.is_array()) {
+    trend = nlohmann::json::array();
+  }
+  trend.push_back(current);
+  writeJsonFile(trendPath, trend);
+
+  nlohmann::json payload = {
+      {"current", current},
+      {"trendPath", trendPath.string()},
+      {"historySize", trend.size()},
+  };
+
+  if (const auto outArg = argValue(args, "--out"); outArg.has_value()) {
+    writeJsonFile(*outArg, payload);
+  }
+
+  if (hasFlag(args, "--json")) {
+    std::cout << payload.dump(2) << "\n";
+  } else {
+    std::cout << "Eval trend updated: " << trendPath.string()
+              << " entries=" << trend.size()
+              << " failures=" << result.failures.size() << "\n";
+  }
+
+  return result.success ? 0 : 1;
+}
+
+int commandBatchStudioApi(const std::vector<std::string>& args) {
+  const auto scriptPath = findRepoPath("tools/batch_studio_api.py");
+  if (!scriptPath.has_value()) {
+    std::cerr << "batch-studio-api script not found under tools/batch_studio_api.py\n";
+    return 1;
+  }
+
+  const auto python = argValue(args, "--python")
+                          .value_or(readEnvironment("PYTHON").value_or("python3"));
+  std::ostringstream command;
+  command << python << " \"" << scriptPath->string() << "\"";
+
+  if (const auto host = argValue(args, "--host"); host.has_value()) {
+    command << " --host " << *host;
+  }
+  if (const auto port = argValue(args, "--port"); port.has_value()) {
+    command << " --port " << *port;
+  }
+  if (const auto bin = argValue(args, "--automix-bin"); bin.has_value()) {
+    command << " --automix-bin \"" << *bin << "\"";
+  }
+  if (const auto outputRoot = argValue(args, "--output-root"); outputRoot.has_value()) {
+    command << " --output-root \"" << *outputRoot << "\"";
+  }
+  if (const auto apiKey = argValue(args, "--api-key"); apiKey.has_value()) {
+    command << " --api-key \"" << *apiKey << "\"";
+  }
+
+  std::cout << "Launching Batch Studio API: " << command.str() << "\n";
+  return std::system(command.str().c_str());
 }
 
 int commandExportFeatures(const std::vector<std::string>& args) {
@@ -1911,6 +2498,15 @@ void printUsage() {
   std::cout << "  automix_dev_tools list-supported-limiters\n";
   std::cout << "  automix_dev_tools install-supported-limiter --id <limiter_id> [--dest <assets/limiters>]\n";
   std::cout << "  automix_dev_tools install-lame-fallback [--force] [--json]\n";
+  std::cout << "  automix_dev_tools profile-export --out <profiles.json> [--id <profile_id>]\n";
+  std::cout << "  automix_dev_tools profile-import --in <profiles.json> [--out <assets/profiles/project_profiles.json>]\n";
+  std::cout << "  automix_dev_tools adaptive-assistant --session <session.json> [--compare-report <comparison_report.json>] [--out <fixes.json>] [--json]\n";
+  std::cout << "  automix_dev_tools session-review --base <session.json> --head <session.json> [--out <review.json>] [--json]\n";
+  std::cout << "  automix_dev_tools model-browse [--limit <n>] [--token-env <ENV_VAR>] [--out <catalog.json>] [--json]\n";
+  std::cout << "  automix_dev_tools model-install --repo <org/model> [--dest <assets/modelhub>] [--token-env <ENV_VAR>] [--force] [--out <report.json>] [--json]\n";
+  std::cout << "  automix_dev_tools model-health [--root <assets/modelhub>] [--out <report.json>] [--json]\n";
+  std::cout << "  automix_dev_tools eval-trend [--baseline <baselines.json>] [--work-dir <dir>] [--trend <trend.json>] [--out <summary.json>] [--json]\n";
+  std::cout << "  automix_dev_tools batch-studio-api [--host <ip>] [--port <n>] [--automix-bin <path>] [--output-root <dir>] [--api-key <key>]\n";
 }
 
 } // namespace
@@ -1979,6 +2575,33 @@ int main(int argc, char** argv) {
     }
     if (command == "install-lame-fallback") {
       return commandInstallLameFallback(args);
+    }
+    if (command == "profile-export") {
+      return commandProfileExport(args);
+    }
+    if (command == "profile-import") {
+      return commandProfileImport(args);
+    }
+    if (command == "adaptive-assistant") {
+      return commandAdaptiveAssistant(args);
+    }
+    if (command == "session-review") {
+      return commandSessionReview(args);
+    }
+    if (command == "model-browse") {
+      return commandModelBrowse(args);
+    }
+    if (command == "model-install") {
+      return commandModelInstall(args);
+    }
+    if (command == "model-health") {
+      return commandModelHealth(args);
+    }
+    if (command == "eval-trend") {
+      return commandEvalTrend(args);
+    }
+    if (command == "batch-studio-api") {
+      return commandBatchStudioApi(args);
     }
 
     printUsage();

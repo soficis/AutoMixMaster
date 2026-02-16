@@ -13,6 +13,7 @@
 
 #include "analysis/StemAnalyzer.h"
 #include "ai/ModelManager.h"
+#include "ai/HuggingFaceModelHub.h"
 #include "app/WaveformPreviewComponent.h"
 #include "automaster/HeuristicAutoMasterStrategy.h"
 #include "automix/HeuristicAutoMixStrategy.h"
@@ -89,6 +90,7 @@ class MainComponent final : public juce::Component,
   void onPreviewRendered();
   void onAddExternalRenderer();
   void onPrefetchLame();
+  void onModelsMenu();
 
   void updateMeterPanel(const automaster::MasteringReport& report);
   void refreshModelPacks();
@@ -109,6 +111,10 @@ class MainComponent final : public juce::Component,
   void appendTaskHistory(const juce::String& line);
   void applyProjectProfile(const domain::ProjectProfile& profile);
   void populateMasterPresetSelectors();
+  void browseAndDownloadModels();
+  void showInstalledModels();
+  void checkModelUpdates();
+  void showModelIntegrityAndLicenses();
 
   domain::MasterPreset selectedMasterPreset() const;
   domain::MasterPreset selectedPlatformPreset() const;
@@ -122,6 +128,7 @@ class MainComponent final : public juce::Component,
   juce::TextButton regenerateCacheButton_ {"Regenerate Cache"};
   juce::TextButton saveSessionButton_ {"Save Session"};
   juce::TextButton loadSessionButton_ {"Load Session"};
+  juce::TextButton modelsMenuButton_ {"Models"};
   juce::TextButton autoMixButton_ {"Auto Mix"};
   juce::TextButton autoMasterButton_ {"Auto Master"};
   juce::TextButton batchImportButton_ {"Batch Folder"};
@@ -221,6 +228,7 @@ class MainComponent final : public juce::Component,
   std::unique_ptr<juce::FileChooser> externalRendererChooser_;
   std::vector<juce::String> taskHistoryLines_;
   std::vector<domain::ProjectProfile> projectProfiles_;
+  std::vector<ai::HubModelInfo> discoveredHubModels_;
 };
 
 } // namespace automix::app

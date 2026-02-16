@@ -1,5 +1,6 @@
 #pragma once
 
+#include <map>
 #include <string>
 
 namespace automix::domain {
@@ -18,6 +19,8 @@ struct RenderSettings {
   int mp3VbrQuality = 4;
   int processingThreads = 0;
   bool preferHardwareAcceleration = true;
+  std::string metadataPolicy = "copy_all";
+  std::map<std::string, std::string> metadataTemplate;
   std::string rendererName = "BuiltIn";
   std::string externalRendererPath;
   int externalRendererTimeoutMs = 300000;

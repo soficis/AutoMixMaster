@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -22,6 +23,8 @@ struct ProjectProfile {
   std::string masterModelPackId = "none";
   std::string safetyPolicyId = "balanced";
   int preferredStemCount = 4;
+  std::string metadataPolicy = "copy_common";
+  std::map<std::string, std::string> metadataTemplate;
   std::vector<std::string> pinnedRendererIds;
 };
 

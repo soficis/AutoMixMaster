@@ -41,6 +41,8 @@ TEST_CASE("Project profile loader merges asset profiles with defaults", "[profil
       {"masterModelPackId", "demo-master-v1"},
       {"safetyPolicyId", "strict"},
       {"preferredStemCount", 12},
+      {"metadataPolicy", "override_template"},
+      {"metadataTemplate", nlohmann::json{{"album", "AutoMix Album"}}},
       {"pinnedRendererIds", nlohmann::json::array({"BuiltIn", "PhaseLimiter"})},
   });
 
@@ -57,6 +59,8 @@ TEST_CASE("Project profile loader merges asset profiles with defaults", "[profil
   REQUIRE(custom->mp3UseVbr == true);
   REQUIRE(custom->mp3VbrQuality == 9);
   REQUIRE(custom->preferredStemCount == 6);
+  REQUIRE(custom->metadataPolicy == "override_template");
+  REQUIRE(custom->metadataTemplate.at("album") == "AutoMix Album");
   REQUIRE(custom->pinnedRendererIds.size() == 2);
 
   const auto builtIn = automix::domain::findProjectProfile(profiles, "default");

@@ -4,47 +4,52 @@ AutoMixMaster is a JUCE/CMake desktop app for deterministic stem mixing and mast
 
 `Analysis -> MixPlan -> MasterPlan -> Renderer -> Audio + JSON report`
 
-This branch implements the **v2 roadmap** in `docs/roadmap.md` including native ONNX session support (when linked), advanced separation variants, precision transport UX, trust-policy renderer discovery, and expanded developer tooling for evaluation, catalog processing, and collaboration.
+This branch implements the **v2 roadmap** in `docs/roadmap.md` and follow-up Phase V/Future Suggestion work, including an automated Hugging Face model browser/downloader, metadata policy profiles, and expanded automation APIs/tooling.
 
 ## Since Last Published `ai_dev` Commit
 
-Compared to `origin/ai_dev` commit `7311aa8`, this working tree adds:
+Compared to published `origin/ai_dev` commit `a6b7173`, this working tree adds:
 
-1. Native ONNX Runtime session wiring
-- CMake now auto-detects ONNX Runtime headers/libs when `ENABLE_ONNX=ON` and enables true native sessions (`AUTOMIX_HAS_NATIVE_ORT=1`) when found.
-- Runtime provider canonicalization/tuning and native profiling artifact capture are now included.
+1. Automatic AI model browser + downloader (Hugging Face)
+- New app `Models` menu with:
+  - `Browse & Download Models`
+  - `Installed Models`
+  - `Check Updates`
+  - `Integrity & Licenses`
+  - `Open Model Hub Folder`
+- New `src/ai/HuggingFaceModelHub.*` service for discovery, model-info fetch, revision-pinned install, install registry/logging, and update checks.
+- Discovery is dynamic (no fixed manual catalog), focused on proven music-audio model families (`demucs`, `mdx23c`, `bs-roformer`, `mel-band-roformer`, `open-unmix`, `clap`, `panns`, `basic-pitch`).
 
-2. Advanced separator variants + QA bundle
-- `StemSeparator` now supports 2/4/6 stem variants with per-run `targetStemCount`, `gpuMemoryBudgetMb`, and `maxStreams` controls.
-- Variant discovery supports `separator_pack.json` and fallback model filenames.
-- Separation runs now emit `separation_qa_report.json` with `energyLeakage`, `residualDistortion`, and `transientRetention`.
+2. Secure Hugging Face token handling
+- Gated/private access supports env-based token resolution:
+  - `AUTOMIX_HF_TOKEN`
+  - `HF_TOKEN`
+  - `HUGGINGFACE_TOKEN`
+  - `HUGGINGFACE_HUB_TOKEN`
+- Tokens are not persisted in config files/logs; install metadata stores only `tokenUsed` boolean.
 
-3. Session/profile/trust-policy data model expansion
-- Added project profile catalog support and default profile loader: `assets/profiles/project_profiles.json`.
-- Added renderer trust policy support: `assets/renderers/trust_policy.json`.
-- Session serialization now includes timeline state, profile/safety identifiers, and MP3 mode fields.
+3. Future suggestions implemented end-to-end
+- Profile sharing simplified to import/export workflows (`profile-export`, `profile-import`).
+- Adaptive fix-chain assistant (`adaptive-assistant`).
+- Guided collaboration review (`session-review`).
+- Batch Studio remote API (`batch-studio-api` launcher + `tools/batch_studio_api.py`).
+- Continuous eval trend automation (`eval-trend`) and nightly CI workflow.
+- Metadata policy profiles fully wired through domain, renderer pipeline, and reports.
 
-4. UI/transport and responsiveness hardening
-- Main window is now resizable (`1280x720` default).
-- Added loop in/out controls, timeline zoom, fine-scrub behavior, and loop overlay in waveform preview.
-- Session loading, stem import/separation, and export preflight checks are pushed off the UI thread with stale-result guards.
-- Task center history and progress updates are throttled to reduce UI stalls.
+4. Metadata policy profile system
+- Added profile/session/render settings fields:
+  - `metadataPolicy`
+  - `metadataTemplate`
+- Implemented policy engine with `copy_all`, `copy_common`/`copy_common_only`, `strip`, and `override_template`.
+- Built-in and external renderer paths now apply policy before writing exports.
 
-5. Render/export pipeline upgrades
-- Added `Final` / `Balanced` / `Quick` export speed modes with Quick mode defaults for fast turnaround.
-- MP3 now supports CBR and true VBR paths (`mp3UseVbr`, `mp3VbrQuality`), including external LAME VBR mode.
-- Export metadata is preserved from original mix (or stem fallback) and mapped to MP3 ID3 tags.
-- Offline render pipeline adds stem/raw mix caching and adaptive block-sizing for repeated renders.
+5. CI + test coverage updates
+- Added nightly trend workflow: `.github/workflows/nightly_golden_eval.yml`.
+- Added metadata policy unit tests and expanded profile/session serialization coverage.
 
-6. Renderer trust/compliance/reporting parity
-- External descriptor trust evaluation supports signature metadata (`fnv1a64`) and optional signed-only enforcement.
-- Discovered external renderers now emit capability snapshots (`*.capabilities.snapshot.json`).
-- `ExternalLimiter` and `PhaseLimiter` now apply original-mix soft-target guidance when no master plan is pinned, matching built-in behavior.
-- Render reports now include plan-source and decision-log provenance metadata.
-
-7. Dev tools and test coverage expansion
-- `automix_dev_tools` now includes comparator, catalog processing, session diff/merge, external compatibility, golden eval, plan diff, model/limiter catalog installers, and LAME fallback installer.
-- Added/expanded tests for project profile loading, trust-policy enforcement, transport looping, separator variants/QA output, and session schema fields.
+6. Non-functional repository normalization
+- Large repository-wide line-ending/style normalization touched many files (source, config, tests, and bundled PhaseLimiter license/resource files).
+- Effective logic changes remain concentrated in the files listed above; most other touched files are formatting/EOL-only churn.
 
 ## Implemented Scope (v2)
 
@@ -75,27 +80,29 @@ Compared to `origin/ai_dev` commit `7311aa8`, this working tree adds:
 
 ## Product Suggestions Implemented
 
-1. Project Profiles
-- Data-driven profile bundles (platform target, renderer, codec, model packs, safety policy, preferred stem count).
-- Profile selector in UI with auto-application to render/model settings.
-- Strict safety policy pinning blocks export when renderer is not profile-pinned.
+1. Profile Sharing (import/export)
+- Simplified marketplace scope to direct sharing workflows.
+- Added `automix_dev_tools profile-export` and `profile-import`.
 
-2. Multi-Render Comparator
-- `automix_dev_tools compare-renders` renders multiple targets and ranks by loudness/compliance/artifact risk score.
-- JSON and CSV comparator reports are generated.
+2. Adaptive Assistant
+- Added `automix_dev_tools adaptive-assistant` to generate fix chains from stem health + optional comparator context.
 
-3. Stem Health Assistant
-- Pre-export diagnostics for masking, pumping, harshness, and mono risk.
-- Integrated into app export flow and available via CLI (`stem-health`).
+3. Continuous Evaluation
+- Added `automix_dev_tools eval-trend`.
+- Added nightly CI workflow for golden-eval trend artifacts.
 
-4. Catalog Processing Mode
-- `catalog-process` headless queue runner with JSON/CSV deliverables.
-- Resumable checkpoints via `--checkpoint` and `--resume`.
-- Per-item failure handling (unreadable files are marked failed, not fatal to whole run).
+4. Batch Studio API
+- Added `tools/batch_studio_api.py` (`/health`, `/v1/catalog/process`, `/v1/reports/ingest`).
+- Added launcher command `automix_dev_tools batch-studio-api`.
 
-5. Creator Collaboration Mode
-- `session-diff` for deterministic JSON patch output.
-- `session-merge` three-way deterministic merge with conflict reporting and left/right preference policy.
+5. Guided Collaboration Review
+- Added `automix_dev_tools session-review` with semantic highlights over session diffs.
+
+6. Metadata Policy Profiles
+- Added profile-level metadata policy + template support through serialization, profiles, and renderers.
+
+7. Asynchronous Mastering Engine
+- Long-running render/master tasks run in worker threads with cancellation checkpoints and adaptive chunk sizing.
 
 ## Build
 
@@ -134,7 +141,7 @@ Built executable:
 ctest --test-dir build-codex --output-on-failure -j4
 ```
 
-As of **February 15, 2026**, this branch passes **55/55 tests**.
+As of **February 15, 2026**, this branch passes **58/58 tests**.
 Coverage includes project profile loading, renderer trust-policy enforcement, transport loop behavior, separator variant/QA outputs, and session schema round-trip fields.
 
 ## GUI Workflow
@@ -216,9 +223,18 @@ automix_dev_tools compare-renders --session <session.json> [--renderers <id,id,.
 automix_dev_tools catalog-process --input <folder> --output <folder> [--checkpoint <path>] [--resume] [--renderer <id>] [--format <fmt>] [--analysis-threads <n>] [--render-parallelism <n>] [--csv <path>] [--json <path>]
 automix_dev_tools session-diff --base <session.json> --head <session.json> [--out <patch.json>] [--summary]
 automix_dev_tools session-merge --base <session.json> --left <session.json> --right <session.json> --out <session.json> [--prefer <left|right>] [--report <report.json>] [--json]
+automix_dev_tools profile-export --out <profiles.json> [--id <profile_id>]
+automix_dev_tools profile-import --in <profiles.json> [--out <assets/profiles/project_profiles.json>]
+automix_dev_tools adaptive-assistant --session <session.json> [--compare-report <comparison_report.json>] [--out <fixes.json>] [--json]
+automix_dev_tools session-review --base <session.json> --head <session.json> [--out <review.json>] [--json]
+automix_dev_tools model-browse [--limit <n>] [--token-env <ENV_VAR>] [--out <catalog.json>] [--json]
+automix_dev_tools model-install --repo <org/model> [--dest <assets/modelhub>] [--token-env <ENV_VAR>] [--force] [--out <report.json>] [--json]
+automix_dev_tools model-health [--root <assets/modelhub>] [--out <report.json>] [--json]
 automix_dev_tools external-limiter-compat --binary <path> [--timeout-ms <ms>] [--required-features <f1,f2>] [--out <report.json>] [--json]
 automix_dev_tools golden-eval [--baseline <baselines.json>] [--work-dir <dir>] [--out <report.json>] [--json]
+automix_dev_tools eval-trend [--baseline <baselines.json>] [--work-dir <dir>] [--trend <trend.json>] [--out <summary.json>] [--json]
 automix_dev_tools plan-diff --session <session.json> [--mix-model <path>] [--master-model <path>] [--out <report.json>] [--json]
+automix_dev_tools batch-studio-api [--host <ip>] [--port <n>] [--automix-bin <path>] [--output-root <dir>] [--api-key <key>]
 automix_dev_tools list-supported-models
 automix_dev_tools install-supported-model --id <model_id> [--dest <assets/models>]
 automix_dev_tools list-supported-limiters
@@ -257,6 +273,24 @@ Runtime specialization metadata supported:
 - `defaultIntraOpThreads`
 - `defaultInterOpThreads`
 - `enableProfiling`
+
+## Hugging Face Model Hub
+
+Model browser/downloader installs into `assets/modelhub` and tracks:
+- per-model metadata: `<install-dir>/modelhub.json`
+- install registry: `assets/modelhub/install_registry.json`
+- append-only install log: `assets/modelhub/install_log.jsonl`
+
+Token support for gated models:
+- `AUTOMIX_HF_TOKEN`
+- `HF_TOKEN`
+- `HUGGINGFACE_TOKEN`
+- `HUGGINGFACE_HUB_TOKEN`
+
+Security notes:
+- Tokens are read from environment variables at runtime.
+- Raw token values are not written to disk by AutoMixMaster.
+- Model metadata records only whether a token was used (`tokenUsed`).
 
 ## Key CMake Options
 

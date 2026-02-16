@@ -7,11 +7,14 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <sstream>
 #include <thread>
+
+#include <nlohmann/json.hpp>
 
 #include "ai/AutoMasterStrategyAI.h"
 #include "ai/AutoMixStrategyAI.h"
@@ -209,6 +212,33 @@ std::string buildExportHealthCacheKey(const domain::Session& session,
   return key.str();
 }
 
+std::filesystem::path modelHubRootPath() {
+  return std::filesystem::path("assets") / "modelhub";
+}
+
+nlohmann::json loadJsonIfPresent(const std::filesystem::path& path) {
+  try {
+    std::ifstream in(path);
+    if (!in.is_open()) {
+      return nlohmann::json::array();
+    }
+    nlohmann::json parsed;
+    in >> parsed;
+    return parsed;
+  } catch (...) {
+    return nlohmann::json::array();
+  }
+}
+
+juce::String modelLabel(const ai::HubModelInfo& model) {
+  juce::String label = model.repoId + " [" + model.useCase + "]";
+  label += " dls=" + juce::String(model.downloads);
+  if (model.recommended) {
+    label += " *";
+  }
+  return label;
+}
+
 } // namespace
 
 void MainComponent::AnalysisTableModel::setEntries(const std::vector<analysis::StemAnalysisEntry>* entries) {
@@ -281,6 +311,7 @@ MainComponent::MainComponent() {
   addAndMakeVisible(regenerateCacheButton_);
   addAndMakeVisible(saveSessionButton_);
   addAndMakeVisible(loadSessionButton_);
+  addAndMakeVisible(modelsMenuButton_);
   addAndMakeVisible(autoMixButton_);
   addAndMakeVisible(autoMasterButton_);
   addAndMakeVisible(batchImportButton_);
@@ -345,6 +376,7 @@ MainComponent::MainComponent() {
   regenerateCacheButton_.addListener(this);
   saveSessionButton_.addListener(this);
   loadSessionButton_.addListener(this);
+  modelsMenuButton_.addListener(this);
   autoMixButton_.addListener(this);
   autoMasterButton_.addListener(this);
   batchImportButton_.addListener(this);
@@ -508,6 +540,7 @@ MainComponent::~MainComponent() {
   regenerateCacheButton_.removeListener(this);
   saveSessionButton_.removeListener(this);
   loadSessionButton_.removeListener(this);
+  modelsMenuButton_.removeListener(this);
   autoMixButton_.removeListener(this);
   autoMasterButton_.removeListener(this);
   batchImportButton_.removeListener(this);
@@ -566,6 +599,7 @@ void MainComponent::resized() {
   regenerateCacheButton_.setBounds(top.removeFromLeft(110).reduced(2));
   saveSessionButton_.setBounds(top.removeFromLeft(88).reduced(2));
   loadSessionButton_.setBounds(top.removeFromLeft(88).reduced(2));
+  modelsMenuButton_.setBounds(top.removeFromLeft(84).reduced(2));
   autoMixButton_.setBounds(top.removeFromLeft(84).reduced(2));
   autoMasterButton_.setBounds(top.removeFromLeft(96).reduced(2));
   batchImportButton_.setBounds(top.removeFromLeft(96).reduced(2));
@@ -662,6 +696,11 @@ void MainComponent::buttonClicked(juce::Button* button) {
 
   if (button == &loadSessionButton_) {
     onLoadSession();
+    return;
+  }
+
+  if (button == &modelsMenuButton_) {
+    onModelsMenu();
     return;
   }
 
@@ -1309,6 +1348,8 @@ void MainComponent::applyProjectProfile(const domain::ProjectProfile& profile) {
   session_.renderSettings.lossyBitrateKbps = profile.lossyBitrateKbps;
   session_.renderSettings.mp3UseVbr = profile.mp3UseVbr;
   session_.renderSettings.mp3VbrQuality = profile.mp3VbrQuality;
+  session_.renderSettings.metadataPolicy = profile.metadataPolicy;
+  session_.renderSettings.metadataTemplate = profile.metadataTemplate;
   session_.renderSettings.exportSpeedMode = selectedExportSpeedMode();
   if (isQuickExportModeSelected()) {
     applyQuickExportDefaults();
@@ -1731,6 +1772,8 @@ domain::RenderSettings MainComponent::buildCurrentRenderSettings(const std::stri
   }
   settings.processingThreads = 0;
   settings.preferHardwareAcceleration = true;
+  settings.metadataPolicy = session_.renderSettings.metadataPolicy.empty() ? "copy_all" : session_.renderSettings.metadataPolicy;
+  settings.metadataTemplate = session_.renderSettings.metadataTemplate;
 
   const auto formatIt = codecFormatByComboId_.find(exportFormatBox_.getSelectedId());
   settings.outputFormat = formatIt != codecFormatByComboId_.end() ? formatIt->second : "wav";
@@ -2188,6 +2231,283 @@ void MainComponent::onPrefetchLame() {
       safeThis->reportEditor_.setText(report);
     });
   }).detach();
+}
+
+void MainComponent::onModelsMenu() {
+  juce::PopupMenu menu;
+  menu.addItem(1, "Browse & Download Models");
+  menu.addItem(2, "Installed Models");
+  menu.addItem(3, "Check Updates");
+  menu.addItem(4, "Integrity & Licenses");
+  menu.addSeparator();
+  menu.addItem(5, "Open Model Hub Folder");
+
+  juce::Component::SafePointer<MainComponent> safeThis(this);
+  menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&modelsMenuButton_),
+                     [safeThis](const int result) {
+                       if (safeThis == nullptr) {
+                         return;
+                       }
+                       switch (result) {
+                         case 1:
+                           safeThis->browseAndDownloadModels();
+                           break;
+                         case 2:
+                           safeThis->showInstalledModels();
+                           break;
+                         case 3:
+                           safeThis->checkModelUpdates();
+                           break;
+                         case 4:
+                           safeThis->showModelIntegrityAndLicenses();
+                           break;
+                         case 5: {
+                           const auto folder = juce::File(modelHubRootPath().string());
+                           folder.createDirectory();
+                           folder.revealToUser();
+                           break;
+                         }
+                         default:
+                           break;
+                       }
+                     });
+}
+
+void MainComponent::browseAndDownloadModels() {
+  statusLabel_.setText("Models: fetching Hugging Face catalog...", juce::dontSendNotification);
+  appendTaskHistory("Models catalog fetch started");
+
+  juce::Component::SafePointer<MainComponent> safeThis(this);
+  std::thread([safeThis]() {
+    ai::HuggingFaceModelHub hub;
+    ai::HubModelQueryOptions options;
+    options.maxResultsPerQuery = 6;
+    auto models = hub.discoverRecommended(options);
+    if (models.size() > 20) {
+      models.resize(20);
+    }
+
+    juce::MessageManager::callAsync([safeThis, models = std::move(models)]() mutable {
+      if (safeThis == nullptr) {
+        return;
+      }
+
+      if (models.empty()) {
+        safeThis->statusLabel_.setText("Models: no catalog results", juce::dontSendNotification);
+        safeThis->appendTaskHistory("Models catalog returned no results");
+        safeThis->reportEditor_.setText(
+            safeThis->reportEditor_.getText() +
+            "\nModel browser: no public compatible entries returned by Hugging Face queries.");
+        return;
+      }
+
+      safeThis->discoveredHubModels_ = models;
+      juce::PopupMenu modelMenu;
+      int itemId = 1000;
+      for (const auto& model : safeThis->discoveredHubModels_) {
+        modelMenu.addItem(itemId++, modelLabel(model));
+      }
+      modelMenu.addSeparator();
+      modelMenu.addItem(1900, "Refresh");
+
+      safeThis->statusLabel_.setText("Models: select model to download", juce::dontSendNotification);
+      safeThis->appendTaskHistory("Models catalog loaded (" +
+                                  juce::String(static_cast<int>(safeThis->discoveredHubModels_.size())) + " entries)");
+
+      juce::Component::SafePointer<MainComponent> nestedSafe = safeThis;
+      modelMenu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&safeThis->modelsMenuButton_),
+                              [nestedSafe](const int selection) {
+                                if (nestedSafe == nullptr) {
+                                  return;
+                                }
+                                if (selection == 1900) {
+                                  nestedSafe->browseAndDownloadModels();
+                                  return;
+                                }
+                                if (selection < 1000 ||
+                                    selection >= 1000 + static_cast<int>(nestedSafe->discoveredHubModels_.size())) {
+                                  return;
+                                }
+
+                                const auto model = nestedSafe->discoveredHubModels_[static_cast<size_t>(selection - 1000)];
+                                nestedSafe->statusLabel_.setText("Models: installing " + juce::String(model.repoId),
+                                                                 juce::dontSendNotification);
+                                nestedSafe->appendTaskHistory("Model install started: " + juce::String(model.repoId));
+
+                                juce::Component::SafePointer<MainComponent> installSafe = nestedSafe;
+                                std::thread([installSafe, model]() {
+                                  ai::HuggingFaceModelHub hub;
+                                  ai::HubInstallOptions installOptions;
+                                  installOptions.destinationRoot = modelHubRootPath();
+                                  const auto install = hub.installModel(model.repoId, installOptions);
+
+                                  juce::MessageManager::callAsync([installSafe, model, install]() {
+                                    if (installSafe == nullptr) {
+                                      return;
+                                    }
+
+                                    if (install.success) {
+                                      installSafe->statusLabel_.setText("Model installed: " + juce::String(model.repoId),
+                                                                        juce::dontSendNotification);
+                                      installSafe->appendTaskHistory("Model installed: " + juce::String(model.repoId));
+                                    } else {
+                                      installSafe->statusLabel_.setText("Model install failed", juce::dontSendNotification);
+                                      installSafe->appendTaskHistory("Model install failed: " + juce::String(model.repoId));
+                                    }
+
+                                    juce::String report = installSafe->reportEditor_.getText();
+                                    if (!report.isEmpty()) {
+                                      report += "\n";
+                                    }
+                                    report += "Model install: " + juce::String(model.repoId) + "\n";
+                                    report += "Revision: " + juce::String(install.revision) + "\n";
+                                    report += "Result: " + juce::String(install.success ? "success" : "failed") + "\n";
+                                    report += "Detail: " + juce::String(install.message) + "\n";
+                                    if (!install.installPath.empty()) {
+                                      report += "Path: " + juce::String(install.installPath.string()) + "\n";
+                                    }
+                                    report += "Token usage: env-based token is supported via AUTOMIX_HF_TOKEN/HF_TOKEN/HUGGINGFACE_TOKEN.\n";
+                                    installSafe->reportEditor_.setText(report);
+                                  });
+                                }).detach();
+                              });
+    });
+  }).detach();
+}
+
+void MainComponent::showInstalledModels() {
+  const auto registryPath = modelHubRootPath() / "install_registry.json";
+  const auto registry = loadJsonIfPresent(registryPath);
+  if (!registry.is_array() || registry.empty()) {
+    statusLabel_.setText("Models: no installed hub models", juce::dontSendNotification);
+    reportEditor_.setText(reportEditor_.getText() + "\nNo installed modelhub entries found at " +
+                          juce::String(registryPath.string()));
+    return;
+  }
+
+  juce::String report = "Installed Models\n";
+  report += "Registry: " + juce::String(registryPath.string()) + "\n\n";
+  for (const auto& item : registry) {
+    if (!item.is_object()) {
+      continue;
+    }
+    report += "- " + juce::String(item.value("repoId", "")) +
+              " rev=" + juce::String(item.value("revision", "")) +
+              " useCase=" + juce::String(item.value("useCase", "")) +
+              " license=" + juce::String(item.value("license", "")) + "\n";
+  }
+
+  statusLabel_.setText("Models: installed list loaded", juce::dontSendNotification);
+  appendTaskHistory("Loaded installed model list");
+  reportEditor_.setText(report);
+}
+
+void MainComponent::checkModelUpdates() {
+  const auto registryPath = modelHubRootPath() / "install_registry.json";
+  const auto registry = loadJsonIfPresent(registryPath);
+  if (!registry.is_array() || registry.empty()) {
+    statusLabel_.setText("Models: no installed hub models", juce::dontSendNotification);
+    return;
+  }
+
+  statusLabel_.setText("Models: checking updates...", juce::dontSendNotification);
+  appendTaskHistory("Model update check started");
+
+  std::vector<std::string> repoIds;
+  repoIds.reserve(registry.size());
+  for (const auto& item : registry) {
+    if (item.is_object()) {
+      const auto repoId = item.value("repoId", "");
+      if (!repoId.empty()) {
+        repoIds.push_back(repoId);
+      }
+    }
+  }
+
+  juce::Component::SafePointer<MainComponent> safeThis(this);
+  std::thread([safeThis, repoIds = std::move(repoIds), registryPath]() {
+    ai::HuggingFaceModelHub hub;
+    juce::String report = "Model Update Check\n";
+    report += "Registry: " + juce::String(registryPath.string()) + "\n\n";
+    int updatesAvailable = 0;
+
+    for (const auto& repoId : repoIds) {
+      const auto localRegistry = loadJsonIfPresent(registryPath);
+      std::string localRevision;
+      if (localRegistry.is_array()) {
+        for (const auto& item : localRegistry) {
+          if (item.is_object() && item.value("repoId", "") == repoId) {
+            localRevision = item.value("revision", "");
+            break;
+          }
+        }
+      }
+
+      const auto remote = hub.modelInfo(repoId);
+      if (!remote.has_value()) {
+        report += "- " + juce::String(repoId) + ": unable to fetch remote metadata\n";
+        continue;
+      }
+
+      const bool changed = !localRevision.empty() && localRevision != remote->revision;
+      if (changed) {
+        ++updatesAvailable;
+      }
+      report += "- " + juce::String(repoId) +
+                " local=" + juce::String(localRevision) +
+                " remote=" + juce::String(remote->revision) +
+                " status=" + juce::String(changed ? "update-available" : "up-to-date") + "\n";
+    }
+
+    juce::MessageManager::callAsync([safeThis, report, updatesAvailable]() {
+      if (safeThis == nullptr) {
+        return;
+      }
+      safeThis->statusLabel_.setText("Models: update check complete (" + juce::String(updatesAvailable) + " updates)",
+                                     juce::dontSendNotification);
+      safeThis->appendTaskHistory("Model update check completed");
+      safeThis->reportEditor_.setText(report);
+    });
+  }).detach();
+}
+
+void MainComponent::showModelIntegrityAndLicenses() {
+  const auto registryPath = modelHubRootPath() / "install_registry.json";
+  const auto registry = loadJsonIfPresent(registryPath);
+  if (!registry.is_array() || registry.empty()) {
+    statusLabel_.setText("Models: no installed hub models", juce::dontSendNotification);
+    return;
+  }
+
+  juce::String report = "Model Integrity & Licenses\n";
+  report += "Registry: " + juce::String(registryPath.string()) + "\n\n";
+  int validCount = 0;
+  int missingCount = 0;
+
+  for (const auto& item : registry) {
+    if (!item.is_object()) {
+      continue;
+    }
+    const std::string repoId = item.value("repoId", "");
+    const std::filesystem::path installPath(item.value("installPath", ""));
+    const std::filesystem::path primaryFile = installPath / item.value("primaryFile", "");
+    std::error_code error;
+    const bool present = std::filesystem::is_regular_file(primaryFile, error) && !error;
+    if (present) {
+      ++validCount;
+    } else {
+      ++missingCount;
+    }
+    report += "- " + juce::String(repoId) +
+              " integrity=" + juce::String(present ? "ok" : "missing") +
+              " license=" + juce::String(item.value("license", "unknown")) +
+              " source=" + juce::String(item.value("sourceUrl", "")) + "\n";
+  }
+
+  statusLabel_.setText("Models: integrity check complete", juce::dontSendNotification);
+  appendTaskHistory("Model integrity check completed");
+  report += "\nSummary: ok=" + juce::String(validCount) + " missing=" + juce::String(missingCount) + "\n";
+  reportEditor_.setText(report);
 }
 
 void MainComponent::updateMeterPanel(const automaster::MasteringReport& report) {

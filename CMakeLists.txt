@@ -110,6 +110,7 @@ add_library(automix_core
   src/renderers/PhaseLimiterRenderer.cpp
   src/renderers/RendererFactory.cpp
   src/platform/ThirdPartyComponentRegistry.cpp
+  src/ai/HuggingFaceModelHub.cpp
   src/ai/ModelPackLoader.cpp
   src/ai/ModelManager.cpp
   src/ai/ModelStrategy.cpp
@@ -122,6 +123,7 @@ add_library(automix_core
   src/ai/StemSeparator.cpp
   src/ai/StemRoleClassifierAI.cpp
   src/util/LameDownloader.cpp
+  src/util/MetadataPolicy.cpp
   src/util/WavWriter.cpp
 )
 
@@ -274,6 +276,7 @@ if(BUILD_TESTING)
     tests/unit/RendererRegistryTests.cpp
     tests/unit/RendererRegistryTrustPolicyTests.cpp
     tests/unit/ProjectProfileTests.cpp
+    tests/unit/MetadataPolicyTests.cpp
     tests/unit/AutoMasterTests.cpp
     tests/unit/AiExtensionTests.cpp
     tests/unit/LoudnessMeterTests.cpp

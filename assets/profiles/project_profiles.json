@@ -14,6 +14,8 @@
     "masterModelPackId": "none",
     "safetyPolicyId": "balanced",
     "preferredStemCount": 4,
+    "metadataPolicy": "copy_common",
+    "metadataTemplate": {},
     "pinnedRendererIds": ["BuiltIn"]
   },
   {
@@ -31,6 +33,8 @@
     "masterModelPackId": "demo-master-v1",
     "safetyPolicyId": "strict",
     "preferredStemCount": 4,
+    "metadataPolicy": "copy_common",
+    "metadataTemplate": {},
     "pinnedRendererIds": ["BuiltIn", "PhaseLimiter"]
   },
   {
@@ -48,6 +52,8 @@
     "masterModelPackId": "none",
     "safetyPolicyId": "balanced",
     "preferredStemCount": 2,
+    "metadataPolicy": "strip",
+    "metadataTemplate": {},
     "pinnedRendererIds": ["BuiltIn"]
   }
 ]

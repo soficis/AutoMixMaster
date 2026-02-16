@@ -22,6 +22,7 @@
 #include "engine/OfflineRenderPipeline.h"
 #include "renderers/BuiltInRenderer.h"
 #include "renderers/PhaseLimiterDiscovery.h"
+#include "util/MetadataPolicy.h"
 #include "util/WavWriter.h"
 
 namespace automix::renderers {
@@ -284,6 +285,12 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
         renderState.logs.push_back("Metadata copy skipped: " + std::string(error.what()));
       }
     }
+    std::vector<std::string> metadataPolicyNotes;
+    const auto exportMetadata =
+        util::applyMetadataPolicy(sourceMetadata, settings.metadataPolicy, settings.metadataTemplate, &metadataPolicyNotes);
+    for (const auto& note : metadataPolicyNotes) {
+      renderState.logs.push_back(note);
+    }
 
     ai::MasteringCompliance compliance;
     const auto boundedPlan = compliance.enforcePlanBounds(plan);
@@ -297,7 +304,7 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
                  settings.lossyQuality,
                  settings.mp3UseVbr,
                  settings.mp3VbrQuality,
-                 sourceMetadata);
+                 exportMetadata);
 
     const auto spectrumMetrics = analyzer.analyzeBuffer(mastered);
 
@@ -326,6 +333,7 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
         {"lossyQuality", settings.lossyQuality},
         {"mp3Mode", settings.mp3UseVbr ? "vbr" : "cbr"},
         {"mp3VbrQuality", settings.mp3VbrQuality},
+        {"metadataPolicy", settings.metadataPolicy},
         {"preGainDb", boundedPlan.preGainDb},
         {"targetLufs", boundedPlan.targetLufs},
         {"targetTruePeakDbtp", boundedPlan.truePeakDbtp},

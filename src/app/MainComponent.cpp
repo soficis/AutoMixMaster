@@ -16,25 +16,31 @@
 
 #include <nlohmann/json.hpp>
 
-#include "ai/AutoMasterStrategyAI.h"
-#include "ai/AutoMixStrategyAI.h"
-#include "ai/IModelInference.h"
-#include "ai/OnnxModelInference.h"
-#include "ai/RtNeuralInference.h"
-#include "ai/StemSeparator.h"
-#include "automaster/OriginalMixReference.h"
-#include "analysis/StemHealthAssistant.h"
-#include "engine/AudioFileIO.h"
-#include "engine/AudioResampler.h"
-#include "engine/BatchQueueRunner.h"
 #include "engine/OfflineRenderPipeline.h"
 #include "renderers/ExternalLimiterRenderer.h"
-#include "renderers/RendererFactory.h"
 #include "util/LameDownloader.h"
+#include "util/StringUtils.h"
 #include "util/WavWriter.h"
 
 namespace automix::app {
 namespace {
+
+using ::automix::util::toLower;
+using ::automix::util::extensionForFormat;
+
+class BackgroundJob final : public juce::ThreadPoolJob {
+ public:
+  explicit BackgroundJob(std::function<void()> task)
+      : juce::ThreadPoolJob("BackgroundJob"), task_(std::move(task)) {}
+
+  JobStatus runJob() override {
+    task_();
+    return jobHasFinished;
+  }
+
+ private:
+  std::function<void()> task_;
+};
 
 juce::String toJuceText(const std::vector<std::string>& lines) {
   juce::String output;
@@ -57,33 +63,6 @@ std::vector<std::string> splitDelimited(const std::string& text, const char deli
   return out;
 }
 
-std::string toLower(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  return value;
-}
-
-std::string extensionForFormat(const std::string& format) {
-  const auto normalized = toLower(format);
-  if (normalized == "wav") {
-    return ".wav";
-  }
-  if (normalized == "flac") {
-    return ".flac";
-  }
-  if (normalized == "aiff" || normalized == "aif") {
-    return ".aiff";
-  }
-  if (normalized == "ogg" || normalized == "vorbis") {
-    return ".ogg";
-  }
-  if (normalized == "mp3") {
-    return ".mp3";
-  }
-  return ".wav";
-}
-
 constexpr const char* kExportSpeedModeFinal = "final";
 constexpr const char* kExportSpeedModeBalanced = "balanced";
 constexpr const char* kExportSpeedModeQuick = "quick";
@@ -100,52 +79,6 @@ const ai::ModelPack* findPackById(const ai::ModelManager& manager, const std::st
   return nullptr;
 }
 
-std::unique_ptr<ai::IModelInference> createInferenceBackend(const ai::ModelPack* pack,
-                                                            const std::string& providerPreference,
-                                                            std::string* diagnosticsOut) {
-  if (pack == nullptr) {
-    return nullptr;
-  }
-
-  std::unique_ptr<ai::IModelInference> backend;
-  const auto engine = toLower(pack->engine);
-  if (engine.find("onnx") != std::string::npos || engine == "unknown") {
-    auto onnx = std::make_unique<ai::OnnxModelInference>();
-
-    auto resolvedProvider = providerPreference;
-    if ((resolvedProvider.empty() || toLower(resolvedProvider) == "auto") && !pack->providerAffinity.empty()) {
-      resolvedProvider = pack->providerAffinity.front();
-    }
-    onnx->setExecutionProviderPreference(resolvedProvider);
-    onnx->setGraphOptimizationEnabled(true);
-    onnx->setWarmupEnabled(true);
-    onnx->setPreferQuantizedVariants(toLower(pack->preferredPrecision) != "fp32");
-    onnx->setPreferredPrecision(pack->preferredPrecision.empty() ? "auto" : pack->preferredPrecision);
-    onnx->setThreadConfiguration(pack->defaultIntraOpThreads.value_or(0), pack->defaultInterOpThreads.value_or(0));
-    onnx->setProfilingEnabled(pack->enableProfiling);
-    backend = std::move(onnx);
-  }
-  if (!backend && engine.find("rtneural") != std::string::npos) {
-    backend = std::make_unique<ai::RtNeuralInference>();
-  }
-  if (!backend) {
-    backend = std::make_unique<ai::RtNeuralInference>();
-  }
-
-  const auto modelPath = pack->rootPath / pack->modelFile;
-  if (!backend->loadModel(modelPath)) {
-    return nullptr;
-  }
-
-  if (diagnosticsOut != nullptr) {
-    if (const auto* onnx = dynamic_cast<const ai::OnnxModelInference*>(backend.get()); onnx != nullptr) {
-      *diagnosticsOut = onnx->backendDiagnostics();
-    }
-  }
-
-  return backend;
-}
-
 std::string formatDuration(const double seconds) {
   const auto clamped = std::max(0.0, seconds);
   const int total = static_cast<int>(std::lround(clamped));
@@ -158,76 +91,6 @@ std::string formatDuration(const double seconds) {
   }
   output << secs;
   return output.str();
-}
-
-struct ExportHealthCacheEntry {
-  std::string key;
-  juce::String text;
-  bool hasCriticalIssues = false;
-  size_t issueCount = 0;
-};
-
-std::mutex& exportHealthCacheMutex() {
-  static std::mutex mutex;
-  return mutex;
-}
-
-std::optional<ExportHealthCacheEntry>& exportHealthCache() {
-  static std::optional<ExportHealthCacheEntry> cache;
-  return cache;
-}
-
-std::string buildExportHealthCacheKey(const domain::Session& session,
-                                      const std::vector<analysis::StemAnalysisEntry>& analysisEntries) {
-  std::ostringstream key;
-  key << "stems=" << session.stems.size() << "|entries=" << analysisEntries.size() << '|';
-
-  for (const auto& stem : session.stems) {
-    key << stem.id << ':' << stem.filePath << ':' << stem.enabled;
-    if (stem.busId.has_value()) {
-      key << ':' << stem.busId.value();
-    }
-
-    std::error_code error;
-    const auto writeTime = std::filesystem::last_write_time(stem.filePath, error);
-    if (!error) {
-      const auto ticks = std::chrono::duration_cast<std::chrono::nanoseconds>(writeTime.time_since_epoch()).count();
-      key << ':' << ticks;
-    }
-    const auto size = std::filesystem::file_size(stem.filePath, error);
-    if (!error) {
-      key << ':' << size;
-    }
-    key << '|';
-  }
-
-  if (session.mixPlan.has_value()) {
-    key << "mixPlan:" << session.mixPlan->dryWet
-        << ':' << session.mixPlan->mixBusHeadroomDb
-        << ':' << session.mixPlan->stemDecisions.size();
-  } else {
-    key << "mixPlan:none";
-  }
-
-  return key.str();
-}
-
-std::filesystem::path modelHubRootPath() {
-  return std::filesystem::path("assets") / "modelhub";
-}
-
-nlohmann::json loadJsonIfPresent(const std::filesystem::path& path) {
-  try {
-    std::ifstream in(path);
-    if (!in.is_open()) {
-      return nlohmann::json::array();
-    }
-    nlohmann::json parsed;
-    in >> parsed;
-    return parsed;
-  } catch (...) {
-    return nlohmann::json::array();
-  }
 }
 
 juce::String modelLabel(const ai::HubModelInfo& model) {
@@ -516,6 +379,276 @@ MainComponent::MainComponent() {
   refreshProjectProfiles();
   refreshStemRoutingSelectors();
 
+  {
+    ModelController::Callbacks modelCallbacks;
+    modelCallbacks.onStatus = [this](const std::string& msg) {
+      juce::MessageManager::callAsync([safeThis = juce::Component::SafePointer<MainComponent>(this), msg]() {
+        if (safeThis != nullptr) {
+          safeThis->statusLabel_.setText(juce::String(msg), juce::dontSendNotification);
+        }
+      });
+    };
+    modelCallbacks.onTaskHistory = [this](const std::string& msg) {
+      juce::MessageManager::callAsync([safeThis = juce::Component::SafePointer<MainComponent>(this), msg]() {
+        if (safeThis != nullptr) {
+          safeThis->appendTaskHistory(juce::String(msg));
+        }
+      });
+    };
+    modelCallbacks.onReport = [this](const std::string& text) {
+      juce::MessageManager::callAsync([safeThis = juce::Component::SafePointer<MainComponent>(this), text]() {
+        if (safeThis != nullptr) {
+          safeThis->reportEditor_.setText(juce::String(text));
+        }
+      });
+    };
+    modelCallbacks.onModelPacksChanged = [this]() {
+      juce::MessageManager::callAsync([safeThis = juce::Component::SafePointer<MainComponent>(this)]() {
+        if (safeThis != nullptr) {
+          safeThis->refreshModelPacks();
+        }
+      });
+    };
+    modelCallbacks.onCatalogReady = [this]() {
+      const auto& models = modelController_->discoveredModels();
+      if (models.empty()) {
+        return;
+      }
+
+      juce::PopupMenu modelMenu;
+      int itemId = 1000;
+      for (const auto& model : models) {
+        modelMenu.addItem(itemId++, modelLabel(model));
+      }
+      modelMenu.addSeparator();
+      modelMenu.addItem(1900, "Refresh");
+
+      juce::Component::SafePointer<MainComponent> safeThis(this);
+      modelMenu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&modelsMenuButton_),
+                              [safeThis](const int selection) {
+                                if (safeThis == nullptr) {
+                                  return;
+                                }
+                                if (selection == 1900) {
+                                  safeThis->modelController_->fetchCatalog();
+                                  return;
+                                }
+                                const auto& discovered = safeThis->modelController_->discoveredModels();
+                                if (selection < 1000 ||
+                                    selection >= 1000 + static_cast<int>(discovered.size())) {
+                                  return;
+                                }
+                                const auto& model = discovered[static_cast<size_t>(selection - 1000)];
+                                safeThis->modelController_->installModel(model.repoId);
+                              });
+    };
+    modelController_ = std::make_unique<ModelController>(modelManager_, backgroundPool_, std::move(modelCallbacks));
+  }
+
+  {
+    ImportController::Callbacks importCallbacks;
+    importCallbacks.onStatus = [this](const std::string& msg) {
+      juce::MessageManager::callAsync([safeThis = juce::Component::SafePointer<MainComponent>(this), msg]() {
+        if (safeThis != nullptr) {
+          safeThis->statusLabel_.setText(juce::String(msg), juce::dontSendNotification);
+        }
+      });
+    };
+    importCallbacks.onTaskHistory = [this](const std::string& msg) {
+      juce::MessageManager::callAsync([safeThis = juce::Component::SafePointer<MainComponent>(this), msg]() {
+        if (safeThis != nullptr) {
+          safeThis->appendTaskHistory(juce::String(msg));
+        }
+      });
+    };
+    importCallbacks.onImportComplete = [this](ImportResult result) {
+      session_.stems = std::move(result.stems);
+      statusLabel_.setText(
+          "Imported " + juce::String(static_cast<int>(session_.stems.size())) + " stems",
+          juce::dontSendNotification);
+      appendTaskHistory("Imported " + juce::String(static_cast<int>(session_.stems.size())) + " stems");
+
+      analysisEntries_.clear();
+      analysisTableModel_.setEntries(&analysisEntries_);
+      analysisTable_.updateContent();
+
+      refreshStemRoutingSelectors();
+      reportEditor_.setText(juce::String("Imported files:\n") + toJuceText(result.logLines));
+      rebuildPreviewBuffersAsync();
+    };
+    importController_ = std::make_unique<ImportController>(backgroundPool_, std::move(importCallbacks));
+  }
+
+  {
+    ExportController::Callbacks exportCallbacks;
+    exportCallbacks.onStatus = [this](const std::string& msg) {
+      juce::MessageManager::callAsync([safeThis = juce::Component::SafePointer<MainComponent>(this), msg]() {
+        if (safeThis != nullptr) {
+          safeThis->statusLabel_.setText(juce::String(msg), juce::dontSendNotification);
+        }
+      });
+    };
+    exportCallbacks.onTaskHistory = [this](const std::string& msg) {
+      juce::MessageManager::callAsync([safeThis = juce::Component::SafePointer<MainComponent>(this), msg]() {
+        if (safeThis != nullptr) {
+          safeThis->appendTaskHistory(juce::String(msg));
+        }
+      });
+    };
+    exportCallbacks.onExportComplete = [this](ExportResult result) {
+      taskRunning_.store(false);
+      cancelButton_.setEnabled(false);
+
+      if (!result.analysisEntries.empty()) {
+        analysisEntries_ = std::move(result.analysisEntries);
+        analysisTableModel_.setEntries(&analysisEntries_);
+        analysisTable_.updateContent();
+      }
+
+      if (!result.crashMessage.isEmpty()) {
+        statusLabel_.setText("Export crashed", juce::dontSendNotification);
+        reportEditor_.setText(result.crashMessage);
+        appendTaskHistory("Export crashed");
+        return;
+      }
+
+      if (result.cancelled) {
+        statusLabel_.setText("Export cancelled", juce::dontSendNotification);
+        appendTaskHistory("Export cancelled");
+        return;
+      }
+
+      const bool quickExportMode = toLower(result.exportSpeedMode) == "quick";
+      if (quickExportMode) {
+        appendTaskHistory("Quick export mode active: stem-health preflight skipped");
+      } else if (result.healthIssueCount > 0) {
+        appendTaskHistory("Stem health check found " + juce::String(static_cast<int>(result.healthIssueCount)) + " issue(s)");
+      } else {
+        appendTaskHistory("Stem health check passed");
+      }
+
+      statusLabel_.setText(result.success ? "Export complete" : "Export failed",
+                           juce::dontSendNotification);
+      if (result.healthHasCriticalIssues && result.success) {
+        statusLabel_.setText("Export complete with critical stem health warnings", juce::dontSendNotification);
+      }
+      appendTaskHistory(result.success ? "Export completed" : "Export failed");
+      juce::String report = juce::String("Renderer: ") + juce::String(result.rendererName) +
+                            juce::String("\nExport mode: ") + juce::String(result.exportSpeedMode) +
+                            juce::String("\nOutput: ") + juce::String(result.outputAudioPath) +
+                            juce::String("\nReport: ") + juce::String(result.reportPath) +
+                            juce::String("\n\nLogs:\n") + toJuceText(result.logs);
+      if (!result.healthText.isEmpty()) {
+        report += "\n\n";
+        report += result.healthText;
+      }
+      reportEditor_.setText(report);
+    };
+    exportController_ = std::make_unique<ExportController>(backgroundPool_, std::move(exportCallbacks));
+  }
+
+  {
+    ProcessingController::Callbacks processingCallbacks;
+    processingCallbacks.onStatus = [this](const std::string& msg) {
+      juce::MessageManager::callAsync([safeThis = juce::Component::SafePointer<MainComponent>(this), msg]() {
+        if (safeThis != nullptr) {
+          safeThis->statusLabel_.setText(juce::String(msg), juce::dontSendNotification);
+        }
+      });
+    };
+    processingCallbacks.onTaskHistory = [this](const std::string& msg) {
+      juce::MessageManager::callAsync([safeThis = juce::Component::SafePointer<MainComponent>(this), msg]() {
+        if (safeThis != nullptr) {
+          safeThis->appendTaskHistory(juce::String(msg));
+        }
+      });
+    };
+    processingCallbacks.onAutoMixComplete = [this](AutoMixResult result) {
+      taskRunning_.store(false);
+      cancelButton_.setEnabled(false);
+
+      if (!result.errorText.isEmpty()) {
+        statusLabel_.setText("Auto Mix failed", juce::dontSendNotification);
+        reportEditor_.setText(result.errorText);
+        appendTaskHistory("Auto Mix failed");
+        return;
+      }
+
+      if (result.cancelled) {
+        statusLabel_.setText("Auto Mix cancelled", juce::dontSendNotification);
+        appendTaskHistory("Auto Mix cancelled");
+        return;
+      }
+
+      analysisEntries_ = std::move(result.analysisEntries);
+      analysisTableModel_.setEntries(&analysisEntries_);
+      analysisTable_.updateContent();
+
+      if (result.mixPlan.has_value()) {
+        session_.mixPlan = result.mixPlan.value();
+      }
+
+      if (!result.reportText.isEmpty()) {
+        reportEditor_.setText(result.reportText);
+      }
+
+      statusLabel_.setText("Auto Mix plan generated", juce::dontSendNotification);
+      appendTaskHistory("Auto Mix completed");
+      rebuildPreviewBuffersAsync();
+    };
+    processingCallbacks.onAutoMasterComplete = [this](AutoMasterResult result) {
+      taskRunning_.store(false);
+      cancelButton_.setEnabled(false);
+
+      if (!result.errorText.isEmpty()) {
+        statusLabel_.setText("Auto Master failed", juce::dontSendNotification);
+        reportEditor_.setText(result.errorText);
+        appendTaskHistory("Auto Master failed");
+        return;
+      }
+
+      if (result.cancelled) {
+        statusLabel_.setText("Auto Master cancelled", juce::dontSendNotification);
+        appendTaskHistory("Auto Master cancelled");
+        return;
+      }
+
+      session_.masterPlan = std::move(result.masterPlan);
+      previewEngine_.setBuffers(result.rawMixBuffer, result.previewMaster);
+      previewEngine_.setSource(engine::PreviewSource::OriginalMix);
+      previewEngine_.stop();
+      updateTransportFromBuffer(previewEngine_.buildCrossfadedPreview(1024));
+      updateMeterPanel(result.previewReport);
+
+      statusLabel_.setText("Auto Master plan generated", juce::dontSendNotification);
+      appendTaskHistory("Auto Master completed");
+      if (!result.reportAppend.isEmpty()) {
+        reportEditor_.setText(reportEditor_.getText() + result.reportAppend);
+      }
+    };
+    processingCallbacks.onBatchComplete = [this](BatchResult result) {
+      taskRunning_.store(false);
+      cancelButton_.setEnabled(false);
+
+      if (!result.errorText.isEmpty()) {
+        if (result.summary.isEmpty()) {
+          statusLabel_.setText("Batch preparation failed", juce::dontSendNotification);
+          reportEditor_.setText(result.errorText);
+          appendTaskHistory("Batch preparation failed");
+        } else {
+          statusLabel_.setText("Batch folder has no supported audio files", juce::dontSendNotification);
+          appendTaskHistory("Batch preparation found no supported files");
+        }
+        return;
+      }
+
+      statusLabel_.setText("Batch complete", juce::dontSendNotification);
+      reportEditor_.setText(result.summary);
+      appendTaskHistory("Batch completed");
+    };
+    processingController_ = std::make_unique<ProcessingController>(backgroundPool_, std::move(processingCallbacks));
+  }
+
   const auto deviceError = audioDeviceManager_.initialise(0, 2, nullptr, true);
   audioDeviceManager_.addAudioCallback(this);
   if (!deviceError.isEmpty()) {
@@ -530,6 +663,9 @@ MainComponent::MainComponent() {
 }
 
 MainComponent::~MainComponent() {
+  cancelRender_.store(true);
+  backgroundPool_.removeAllJobs(true, 5000);
+
   stopTimer();
   audioDeviceManager_.removeAudioCallback(this);
   transportController_.removeChangeListener(this);
@@ -1543,7 +1679,7 @@ void MainComponent::rebuildPreviewBuffersAsync() {
   const auto previousProgress = transportController_.progress();
 
   juce::Component::SafePointer<MainComponent> safeThis(this);
-  std::thread([safeThis,
+  backgroundPool_.addJob(new BackgroundJob([safeThis,
                generation,
                previewSession = std::move(previewSession),
                soloStemId,
@@ -1622,7 +1758,7 @@ void MainComponent::rebuildPreviewBuffersAsync() {
         safeThis->reportEditor_.setText(safeThis->reportEditor_.getText() + "\nPreview rebuild skipped: " + message);
       });
     }
-  }).detach();
+  }), true);
 }
 
 void MainComponent::updateTransportFromBuffer(const engine::AudioBuffer& buffer) {
@@ -1872,95 +2008,9 @@ void MainComponent::onImport() {
       selectedFiles.push_back(files.getReference(i));
     }
 
-    const bool useSeparation = separatedStemsToggle_.getToggleState();
-    const int preferredStemCount = session_.preferredStemCount;
-    statusLabel_.setText("Importing files...", juce::dontSendNotification);
-    appendTaskHistory("Import started");
-
-    juce::Component::SafePointer<MainComponent> safeThis(this);
-    std::thread([safeThis, selectedFiles = std::move(selectedFiles), useSeparation, preferredStemCount]() mutable {
-      std::vector<domain::Stem> importedStems;
-      std::vector<std::string> importLines;
-
-      if (selectedFiles.size() == 1 && useSeparation) {
-        try {
-          const auto mixPath = std::filesystem::path(selectedFiles.front().getFullPathName().toStdString());
-          const auto outputDir = mixPath.parent_path() / (mixPath.stem().string() + "_separated");
-
-          ai::StemSeparator separator;
-          ai::StemSeparator::SeparationOptions separationOptions;
-          separationOptions.targetStemCount = preferredStemCount;
-          const auto separationResult = separator.separate(mixPath, outputDir, separationOptions);
-          if (separationResult.success) {
-            importedStems = separationResult.stems;
-            importLines.push_back("Separated import from: " + mixPath.string());
-            importLines.push_back("Variant stems: " + std::to_string(separationResult.stemVariantCount));
-            for (const auto& stem : separationResult.stems) {
-              std::string line = "  stem -> " + stem.filePath + " role=" + domain::toString(stem.role);
-              if (stem.separationConfidence.has_value()) {
-                line += " confidence=" + std::to_string(stem.separationConfidence.value());
-              }
-              if (stem.separationArtifactRisk.has_value()) {
-                line += " artifactRisk=" + std::to_string(stem.separationArtifactRisk.value());
-              }
-              importLines.push_back(line);
-            }
-            if (!separationResult.qaReportPath.empty()) {
-              importLines.push_back("Separation QA report: " + separationResult.qaReportPath.string());
-            }
-            importLines.push_back("QA energyLeakage=" + std::to_string(separationResult.qaMetrics.energyLeakage) +
-                                  " residualDistortion=" + std::to_string(separationResult.qaMetrics.residualDistortion) +
-                                  " transientRetention=" + std::to_string(separationResult.qaMetrics.transientRetention));
-            importLines.push_back(separationResult.logMessage);
-          } else {
-            importLines.push_back("Separation failed, importing original mix file as stem.");
-            importLines.push_back(separationResult.logMessage);
-          }
-        } catch (const std::exception& error) {
-          importLines.push_back("Separation error: " + std::string(error.what()));
-        } catch (...) {
-          importLines.push_back("Separation error: unknown failure");
-        }
-      }
-
-      if (importedStems.empty()) {
-        for (size_t i = 0; i < selectedFiles.size(); ++i) {
-          const auto& file = selectedFiles[i];
-
-          domain::Stem stem;
-          stem.id = "stem_" + std::to_string(i + 1);
-          stem.name = file.getFileNameWithoutExtension().toStdString();
-          stem.filePath = file.getFullPathName().toStdString();
-          stem.origin = useSeparation ? domain::StemOrigin::Separated : domain::StemOrigin::Recorded;
-          stem.enabled = true;
-          importedStems.push_back(stem);
-
-          importLines.push_back(stem.name + " -> " + stem.filePath);
-        }
-      }
-
-      juce::MessageManager::callAsync(
-          [safeThis, importedStems = std::move(importedStems), importLines = std::move(importLines)]() mutable {
-            if (safeThis == nullptr) {
-              return;
-            }
-
-            safeThis->session_.stems = std::move(importedStems);
-            safeThis->statusLabel_.setText(
-                "Imported " + juce::String(static_cast<int>(safeThis->session_.stems.size())) + " stems",
-                juce::dontSendNotification);
-            safeThis->appendTaskHistory("Imported " + juce::String(static_cast<int>(safeThis->session_.stems.size())) + " stems");
-
-            safeThis->analysisEntries_.clear();
-            safeThis->analysisTableModel_.setEntries(&safeThis->analysisEntries_);
-            safeThis->analysisTable_.updateContent();
-
-            safeThis->refreshStemRoutingSelectors();
-            safeThis->reportEditor_.setText(juce::String("Imported files:\n") + toJuceText(importLines));
-            safeThis->rebuildPreviewBuffersAsync();
-          });
-    }).detach();
-
+    importController_->importFiles(std::move(selectedFiles),
+                                   separatedStemsToggle_.getToggleState(),
+                                   session_.preferredStemCount);
     importChooser_.reset();
   });
 }
@@ -2005,10 +2055,7 @@ void MainComponent::onClearOriginalMix() {
 
 void MainComponent::onRegenerateCachedRenders() {
   engine::OfflineRenderPipeline::clearCaches();
-  {
-    std::scoped_lock lock(exportHealthCacheMutex());
-    exportHealthCache().reset();
-  }
+  ExportController::clearHealthCache();
 
   statusLabel_.setText("Render caches cleared", juce::dontSendNotification);
   appendTaskHistory("Render caches cleared; next render will regenerate intermediates");
@@ -2068,7 +2115,7 @@ void MainComponent::onLoadSession() {
     appendTaskHistory("Session load started: " + selected.getFullPathName());
 
     juce::Component::SafePointer<MainComponent> safeThis(this);
-    std::thread([safeThis, selectedPath]() {
+    backgroundPool_.addJob(new BackgroundJob([safeThis, selectedPath]() {
       engine::SessionRepository repository;
       std::optional<domain::Session> loadedSession;
       juce::String errorMessage;
@@ -2094,7 +2141,7 @@ void MainComponent::onLoadSession() {
           safeThis->appendTaskHistory("Session load failed");
         }
       });
-    }).detach();
+    }), true);
 
     loadSessionChooser_.reset();
   });
@@ -2157,7 +2204,7 @@ void MainComponent::onAddExternalRenderer() {
     appendTaskHistory("External renderer validation started: " + juce::String(selectedName));
 
     juce::Component::SafePointer<MainComponent> safeThis(this);
-    std::thread([safeThis, selectedPath, selectedName]() {
+    backgroundPool_.addJob(new BackgroundJob([safeThis, selectedPath, selectedName]() {
       const auto validation = renderers::ExternalLimiterRenderer::validateBinary(selectedPath);
       juce::MessageManager::callAsync([safeThis, selectedPath, selectedName, validation]() {
         if (safeThis == nullptr) {
@@ -2182,7 +2229,7 @@ void MainComponent::onAddExternalRenderer() {
                                         " (" + juce::String(validation.diagnostics) + ")" +
                                         "\nLicense note: user-supplied tool is not distributed by this app.");
       });
-    }).detach();
+    }), true);
 
     externalRendererChooser_.reset();
   });
@@ -2198,7 +2245,7 @@ void MainComponent::onPrefetchLame() {
   statusLabel_.setText("Prefetching LAME...", juce::dontSendNotification);
 
   juce::Component::SafePointer<MainComponent> safeThis(this);
-  std::thread([safeThis]() {
+  backgroundPool_.addJob(new BackgroundJob([safeThis]() {
     const auto result = util::LameDownloader::ensureAvailable();
     juce::MessageManager::callAsync([safeThis, result]() {
       if (safeThis == nullptr) {
@@ -2230,7 +2277,7 @@ void MainComponent::onPrefetchLame() {
       }
       safeThis->reportEditor_.setText(report);
     });
-  }).detach();
+  }), true);
 }
 
 void MainComponent::onModelsMenu() {
@@ -2250,19 +2297,20 @@ void MainComponent::onModelsMenu() {
                        }
                        switch (result) {
                          case 1:
-                           safeThis->browseAndDownloadModels();
+                           safeThis->modelController_->fetchCatalog();
                            break;
                          case 2:
-                           safeThis->showInstalledModels();
+                           safeThis->modelController_->showInstalled();
                            break;
                          case 3:
-                           safeThis->checkModelUpdates();
+                           safeThis->modelController_->checkUpdates();
                            break;
                          case 4:
-                           safeThis->showModelIntegrityAndLicenses();
+                           safeThis->modelController_->verifyIntegrity();
                            break;
                          case 5: {
-                           const auto folder = juce::File(modelHubRootPath().string());
+                           const auto folder = juce::File(
+                               (std::filesystem::path("assets") / "modelhub").string());
                            folder.createDirectory();
                            folder.revealToUser();
                            break;
@@ -2271,243 +2319,6 @@ void MainComponent::onModelsMenu() {
                            break;
                        }
                      });
-}
-
-void MainComponent::browseAndDownloadModels() {
-  statusLabel_.setText("Models: fetching Hugging Face catalog...", juce::dontSendNotification);
-  appendTaskHistory("Models catalog fetch started");
-
-  juce::Component::SafePointer<MainComponent> safeThis(this);
-  std::thread([safeThis]() {
-    ai::HuggingFaceModelHub hub;
-    ai::HubModelQueryOptions options;
-    options.maxResultsPerQuery = 6;
-    auto models = hub.discoverRecommended(options);
-    if (models.size() > 20) {
-      models.resize(20);
-    }
-
-    juce::MessageManager::callAsync([safeThis, models = std::move(models)]() mutable {
-      if (safeThis == nullptr) {
-        return;
-      }
-
-      if (models.empty()) {
-        safeThis->statusLabel_.setText("Models: no catalog results", juce::dontSendNotification);
-        safeThis->appendTaskHistory("Models catalog returned no results");
-        safeThis->reportEditor_.setText(
-            safeThis->reportEditor_.getText() +
-            "\nModel browser: no public compatible entries returned by Hugging Face queries.");
-        return;
-      }
-
-      safeThis->discoveredHubModels_ = models;
-      juce::PopupMenu modelMenu;
-      int itemId = 1000;
-      for (const auto& model : safeThis->discoveredHubModels_) {
-        modelMenu.addItem(itemId++, modelLabel(model));
-      }
-      modelMenu.addSeparator();
-      modelMenu.addItem(1900, "Refresh");
-
-      safeThis->statusLabel_.setText("Models: select model to download", juce::dontSendNotification);
-      safeThis->appendTaskHistory("Models catalog loaded (" +
-                                  juce::String(static_cast<int>(safeThis->discoveredHubModels_.size())) + " entries)");
-
-      juce::Component::SafePointer<MainComponent> nestedSafe = safeThis;
-      modelMenu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&safeThis->modelsMenuButton_),
-                              [nestedSafe](const int selection) {
-                                if (nestedSafe == nullptr) {
-                                  return;
-                                }
-                                if (selection == 1900) {
-                                  nestedSafe->browseAndDownloadModels();
-                                  return;
-                                }
-                                if (selection < 1000 ||
-                                    selection >= 1000 + static_cast<int>(nestedSafe->discoveredHubModels_.size())) {
-                                  return;
-                                }
-
-                                const auto model = nestedSafe->discoveredHubModels_[static_cast<size_t>(selection - 1000)];
-                                nestedSafe->statusLabel_.setText("Models: installing " + juce::String(model.repoId),
-                                                                 juce::dontSendNotification);
-                                nestedSafe->appendTaskHistory("Model install started: " + juce::String(model.repoId));
-
-                                juce::Component::SafePointer<MainComponent> installSafe = nestedSafe;
-                                std::thread([installSafe, model]() {
-                                  ai::HuggingFaceModelHub hub;
-                                  ai::HubInstallOptions installOptions;
-                                  installOptions.destinationRoot = modelHubRootPath();
-                                  const auto install = hub.installModel(model.repoId, installOptions);
-
-                                  juce::MessageManager::callAsync([installSafe, model, install]() {
-                                    if (installSafe == nullptr) {
-                                      return;
-                                    }
-
-                                    if (install.success) {
-                                      installSafe->statusLabel_.setText("Model installed: " + juce::String(model.repoId),
-                                                                        juce::dontSendNotification);
-                                      installSafe->appendTaskHistory("Model installed: " + juce::String(model.repoId));
-                                    } else {
-                                      installSafe->statusLabel_.setText("Model install failed", juce::dontSendNotification);
-                                      installSafe->appendTaskHistory("Model install failed: " + juce::String(model.repoId));
-                                    }
-
-                                    juce::String report = installSafe->reportEditor_.getText();
-                                    if (!report.isEmpty()) {
-                                      report += "\n";
-                                    }
-                                    report += "Model install: " + juce::String(model.repoId) + "\n";
-                                    report += "Revision: " + juce::String(install.revision) + "\n";
-                                    report += "Result: " + juce::String(install.success ? "success" : "failed") + "\n";
-                                    report += "Detail: " + juce::String(install.message) + "\n";
-                                    if (!install.installPath.empty()) {
-                                      report += "Path: " + juce::String(install.installPath.string()) + "\n";
-                                    }
-                                    report += "Token usage: env-based token is supported via AUTOMIX_HF_TOKEN/HF_TOKEN/HUGGINGFACE_TOKEN.\n";
-                                    installSafe->reportEditor_.setText(report);
-                                  });
-                                }).detach();
-                              });
-    });
-  }).detach();
-}
-
-void MainComponent::showInstalledModels() {
-  const auto registryPath = modelHubRootPath() / "install_registry.json";
-  const auto registry = loadJsonIfPresent(registryPath);
-  if (!registry.is_array() || registry.empty()) {
-    statusLabel_.setText("Models: no installed hub models", juce::dontSendNotification);
-    reportEditor_.setText(reportEditor_.getText() + "\nNo installed modelhub entries found at " +
-                          juce::String(registryPath.string()));
-    return;
-  }
-
-  juce::String report = "Installed Models\n";
-  report += "Registry: " + juce::String(registryPath.string()) + "\n\n";
-  for (const auto& item : registry) {
-    if (!item.is_object()) {
-      continue;
-    }
-    report += "- " + juce::String(item.value("repoId", "")) +
-              " rev=" + juce::String(item.value("revision", "")) +
-              " useCase=" + juce::String(item.value("useCase", "")) +
-              " license=" + juce::String(item.value("license", "")) + "\n";
-  }
-
-  statusLabel_.setText("Models: installed list loaded", juce::dontSendNotification);
-  appendTaskHistory("Loaded installed model list");
-  reportEditor_.setText(report);
-}
-
-void MainComponent::checkModelUpdates() {
-  const auto registryPath = modelHubRootPath() / "install_registry.json";
-  const auto registry = loadJsonIfPresent(registryPath);
-  if (!registry.is_array() || registry.empty()) {
-    statusLabel_.setText("Models: no installed hub models", juce::dontSendNotification);
-    return;
-  }
-
-  statusLabel_.setText("Models: checking updates...", juce::dontSendNotification);
-  appendTaskHistory("Model update check started");
-
-  std::vector<std::string> repoIds;
-  repoIds.reserve(registry.size());
-  for (const auto& item : registry) {
-    if (item.is_object()) {
-      const auto repoId = item.value("repoId", "");
-      if (!repoId.empty()) {
-        repoIds.push_back(repoId);
-      }
-    }
-  }
-
-  juce::Component::SafePointer<MainComponent> safeThis(this);
-  std::thread([safeThis, repoIds = std::move(repoIds), registryPath]() {
-    ai::HuggingFaceModelHub hub;
-    juce::String report = "Model Update Check\n";
-    report += "Registry: " + juce::String(registryPath.string()) + "\n\n";
-    int updatesAvailable = 0;
-
-    for (const auto& repoId : repoIds) {
-      const auto localRegistry = loadJsonIfPresent(registryPath);
-      std::string localRevision;
-      if (localRegistry.is_array()) {
-        for (const auto& item : localRegistry) {
-          if (item.is_object() && item.value("repoId", "") == repoId) {
-            localRevision = item.value("revision", "");
-            break;
-          }
-        }
-      }
-
-      const auto remote = hub.modelInfo(repoId);
-      if (!remote.has_value()) {
-        report += "- " + juce::String(repoId) + ": unable to fetch remote metadata\n";
-        continue;
-      }
-
-      const bool changed = !localRevision.empty() && localRevision != remote->revision;
-      if (changed) {
-        ++updatesAvailable;
-      }
-      report += "- " + juce::String(repoId) +
-                " local=" + juce::String(localRevision) +
-                " remote=" + juce::String(remote->revision) +
-                " status=" + juce::String(changed ? "update-available" : "up-to-date") + "\n";
-    }
-
-    juce::MessageManager::callAsync([safeThis, report, updatesAvailable]() {
-      if (safeThis == nullptr) {
-        return;
-      }
-      safeThis->statusLabel_.setText("Models: update check complete (" + juce::String(updatesAvailable) + " updates)",
-                                     juce::dontSendNotification);
-      safeThis->appendTaskHistory("Model update check completed");
-      safeThis->reportEditor_.setText(report);
-    });
-  }).detach();
-}
-
-void MainComponent::showModelIntegrityAndLicenses() {
-  const auto registryPath = modelHubRootPath() / "install_registry.json";
-  const auto registry = loadJsonIfPresent(registryPath);
-  if (!registry.is_array() || registry.empty()) {
-    statusLabel_.setText("Models: no installed hub models", juce::dontSendNotification);
-    return;
-  }
-
-  juce::String report = "Model Integrity & Licenses\n";
-  report += "Registry: " + juce::String(registryPath.string()) + "\n\n";
-  int validCount = 0;
-  int missingCount = 0;
-
-  for (const auto& item : registry) {
-    if (!item.is_object()) {
-      continue;
-    }
-    const std::string repoId = item.value("repoId", "");
-    const std::filesystem::path installPath(item.value("installPath", ""));
-    const std::filesystem::path primaryFile = installPath / item.value("primaryFile", "");
-    std::error_code error;
-    const bool present = std::filesystem::is_regular_file(primaryFile, error) && !error;
-    if (present) {
-      ++validCount;
-    } else {
-      ++missingCount;
-    }
-    report += "- " + juce::String(repoId) +
-              " integrity=" + juce::String(present ? "ok" : "missing") +
-              " license=" + juce::String(item.value("license", "unknown")) +
-              " source=" + juce::String(item.value("sourceUrl", "")) + "\n";
-  }
-
-  statusLabel_.setText("Models: integrity check complete", juce::dontSendNotification);
-  appendTaskHistory("Model integrity check completed");
-  report += "\nSummary: ok=" + juce::String(validCount) + " missing=" + juce::String(missingCount) + "\n";
-  reportEditor_.setText(report);
 }
 
 void MainComponent::updateMeterPanel(const automaster::MasteringReport& report) {
@@ -2534,121 +2345,12 @@ void MainComponent::onAutoMix() {
   statusLabel_.setText("Auto Mix started", juce::dontSendNotification);
   appendTaskHistory("Auto Mix started");
 
-  const auto sessionSnapshot = session_;
   std::optional<ai::ModelPack> mixPack;
   if (const auto* selected = findPackById(modelManager_, modelManager_.activePackId("mix")); selected != nullptr) {
     mixPack = *selected;
   }
 
-  juce::Component::SafePointer<MainComponent> safeThis(this);
-  std::thread([safeThis, sessionSnapshot, mixPack]() mutable {
-    std::vector<analysis::StemAnalysisEntry> analysisEntries;
-    std::optional<domain::MixPlan> plan;
-    juce::String reportText;
-    juce::String errorText;
-    bool cancelled = false;
-
-    auto updateStatus = [safeThis](const juce::String& text) {
-      if (safeThis == nullptr) {
-        return;
-      }
-      juce::MessageManager::callAsync([safeThis, text]() {
-        if (safeThis == nullptr) {
-          return;
-        }
-        safeThis->statusLabel_.setText(text, juce::dontSendNotification);
-        safeThis->appendTaskHistory(text);
-      });
-    };
-
-    try {
-      updateStatus("Auto Mix: analyzing...");
-      analysis::StemAnalyzer analyzer;
-      analysisEntries = analyzer.analyzeSession(sessionSnapshot);
-
-      if (safeThis != nullptr && safeThis->cancelRender_.load()) {
-        cancelled = true;
-      }
-
-      if (!cancelled) {
-        updateStatus("Auto Mix: building plan...");
-        automix::HeuristicAutoMixStrategy heuristicMix;
-        const auto heuristicPlan = heuristicMix.buildPlan(sessionSnapshot, analysisEntries, 1.0);
-        plan = heuristicPlan;
-
-        ai::AutoMixStrategyAI aiMix;
-        std::string backendDiagnostics;
-        std::unique_ptr<ai::IModelInference> inference;
-        if (mixPack.has_value()) {
-          inference = createInferenceBackend(&mixPack.value(), sessionSnapshot.renderSettings.gpuExecutionProvider, &backendDiagnostics);
-        }
-
-        if (inference != nullptr) {
-          auto aiPlan = aiMix.buildPlan(sessionSnapshot, analysisEntries, heuristicPlan, inference.get());
-          if (mixPack.has_value()) {
-            aiPlan.decisionLog.push_back("AI pack: " + mixPack->id + " license=" + mixPack->licenseId);
-          }
-          if (!backendDiagnostics.empty()) {
-            aiPlan.decisionLog.push_back("Inference backend: " + backendDiagnostics);
-          }
-          plan = std::move(aiPlan);
-        }
-
-        reportText = juce::String("Analysis report JSON:\n") + analyzer.toJsonReport(analysisEntries);
-        if (plan.has_value()) {
-          reportText += juce::String("\n\nMix decisions:\n") + toJuceText(plan->decisionLog);
-        }
-      }
-    } catch (const std::exception& error) {
-      errorText = "Auto Mix failed:\n" + juce::String(error.what());
-    } catch (...) {
-      errorText = "Auto Mix failed:\nUnknown error";
-    }
-
-    juce::MessageManager::callAsync(
-        [safeThis,
-         analysisEntries = std::move(analysisEntries),
-         plan = std::move(plan),
-         reportText,
-         errorText,
-         cancelled]() mutable {
-          if (safeThis == nullptr) {
-            return;
-          }
-
-          safeThis->taskRunning_.store(false);
-          safeThis->cancelButton_.setEnabled(false);
-
-          if (!errorText.isEmpty()) {
-            safeThis->statusLabel_.setText("Auto Mix failed", juce::dontSendNotification);
-            safeThis->reportEditor_.setText(errorText);
-            safeThis->appendTaskHistory("Auto Mix failed");
-            return;
-          }
-
-          if (cancelled || safeThis->cancelRender_.load()) {
-            safeThis->statusLabel_.setText("Auto Mix cancelled", juce::dontSendNotification);
-            safeThis->appendTaskHistory("Auto Mix cancelled");
-            return;
-          }
-
-          safeThis->analysisEntries_ = std::move(analysisEntries);
-          safeThis->analysisTableModel_.setEntries(&safeThis->analysisEntries_);
-          safeThis->analysisTable_.updateContent();
-
-          if (plan.has_value()) {
-            safeThis->session_.mixPlan = plan.value();
-          }
-
-          if (!reportText.isEmpty()) {
-            safeThis->reportEditor_.setText(reportText);
-          }
-
-          safeThis->statusLabel_.setText("Auto Mix plan generated", juce::dontSendNotification);
-          safeThis->appendTaskHistory("Auto Mix completed");
-          safeThis->rebuildPreviewBuffersAsync();
-        });
-  }).detach();
+  processingController_->runAutoMix(session_, mixPack, cancelRender_);
 }
 
 void MainComponent::onAutoMaster() {
@@ -2674,190 +2376,12 @@ void MainComponent::onAutoMaster() {
   }
 
   const auto settings = buildCurrentRenderSettings("");
-  const auto sessionSnapshot = session_;
   std::optional<ai::ModelPack> masterPack;
   if (const auto* selected = findPackById(modelManager_, modelManager_.activePackId("master")); selected != nullptr) {
     masterPack = *selected;
   }
 
-  juce::Component::SafePointer<MainComponent> safeThis(this);
-  std::thread([safeThis, sessionSnapshot, settings, preset, masterPack]() mutable {
-    domain::MasterPlan masterPlan;
-    engine::AudioBuffer rawMixBuffer;
-    engine::AudioBuffer previewMaster;
-    automaster::MasteringReport previewReport;
-    juce::String reportAppend;
-    juce::String errorText;
-    bool cancelled = false;
-
-    try {
-      engine::OfflineRenderPipeline pipeline;
-      std::atomic_bool* cancelPtr = nullptr;
-      if (safeThis != nullptr) {
-        cancelPtr = &safeThis->cancelRender_;
-      }
-      std::mutex progressMutex;
-      auto lastProgressEmit = std::chrono::steady_clock::time_point {};
-      double lastProgressFraction = -1.0;
-      std::string lastProgressStage;
-
-      const auto rawMix = pipeline.renderRawMix(
-          sessionSnapshot,
-          settings,
-          [safeThis, &progressMutex, &lastProgressEmit, &lastProgressFraction, &lastProgressStage](const engine::RenderProgress& progress) {
-            if (safeThis == nullptr) {
-              return;
-            }
-            bool emit = false;
-            bool stageChanged = false;
-            {
-              std::scoped_lock lock(progressMutex);
-              const auto now = std::chrono::steady_clock::now();
-              stageChanged = progress.stage != lastProgressStage;
-              const bool finalProgress = progress.fraction >= 0.999;
-              const bool timeGateOpen =
-                  lastProgressEmit.time_since_epoch().count() == 0 ||
-                  now - lastProgressEmit >= std::chrono::milliseconds(160);
-              const bool deltaGateOpen = std::abs(progress.fraction - lastProgressFraction) >= 0.02;
-              emit = stageChanged || finalProgress || (timeGateOpen && deltaGateOpen);
-              if (emit) {
-                lastProgressEmit = now;
-                lastProgressFraction = progress.fraction;
-                lastProgressStage = progress.stage;
-              }
-            }
-            if (!emit) {
-              return;
-            }
-
-            juce::MessageManager::callAsync([safeThis, progress]() {
-              if (safeThis == nullptr) {
-                return;
-              }
-              const bool cacheHit = progress.stage == "Mix render cache hit";
-              if (cacheHit) {
-                safeThis->statusLabel_.setText("Auto Master: Using cached mix render (fast path)",
-                                               juce::dontSendNotification);
-                safeThis->appendTaskHistory("Auto Master using cached mix render");
-                return;
-              }
-
-              safeThis->statusLabel_.setText("Auto Master: " + juce::String(progress.stage) + " " +
-                                                 juce::String(progress.fraction * 100.0, 1) + "%",
-                                             juce::dontSendNotification);
-              if (progress.fraction >= 0.999 || progress.stage != "Summing stem buses") {
-                safeThis->appendTaskHistory("Auto Master " + juce::String(progress.stage) + " " +
-                                            juce::String(progress.fraction * 100.0, 1) + "%");
-              }
-            });
-          },
-          cancelPtr);
-
-      if (rawMix.cancelled) {
-        cancelled = true;
-      } else {
-        rawMixBuffer = rawMix.mixBuffer;
-      }
-
-      if (!cancelled) {
-        automaster::HeuristicAutoMasterStrategy autoMasterStrategy;
-        analysis::StemAnalyzer analyzer;
-        masterPlan = autoMasterStrategy.buildPlan(preset, rawMixBuffer);
-
-        if (sessionSnapshot.originalMixPath.has_value()) {
-          try {
-            engine::AudioFileIO fileIO;
-            engine::AudioResampler resampler;
-            auto originalMix = fileIO.readAudioFile(sessionSnapshot.originalMixPath.value());
-            if (originalMix.getSampleRate() != rawMixBuffer.getSampleRate()) {
-              originalMix = resampler.resampleLinear(originalMix, rawMixBuffer.getSampleRate());
-            }
-
-            automaster::OriginalMixReference referenceTarget;
-            masterPlan = referenceTarget.applySoftTarget(masterPlan,
-                                                         rawMixBuffer,
-                                                         originalMix,
-                                                         autoMasterStrategy,
-                                                         analyzer);
-          } catch (const std::exception& error) {
-            reportAppend += "\nOriginal mix target skipped: " + juce::String(error.what());
-          }
-        }
-
-        std::string backendDiagnostics;
-        std::unique_ptr<ai::IModelInference> masterInference;
-        if (masterPack.has_value()) {
-          masterInference = createInferenceBackend(&masterPack.value(), settings.gpuExecutionProvider, &backendDiagnostics);
-        }
-
-        ai::AutoMasterStrategyAI aiMaster;
-        if (masterInference != nullptr) {
-          const auto mixMetrics = analyzer.analyzeBuffer(rawMixBuffer);
-          masterPlan = aiMaster.buildPlan(mixMetrics, masterPlan, masterInference.get());
-          if (masterPack.has_value()) {
-            masterPlan.decisionLog.push_back("AI pack: " + masterPack->id + " license=" + masterPack->licenseId);
-          }
-          if (!backendDiagnostics.empty()) {
-            masterPlan.decisionLog.push_back("Inference backend: " + backendDiagnostics);
-          }
-        }
-
-        if (masterInference != nullptr) {
-          previewMaster = aiMaster.applyPlan(rawMixBuffer, masterPlan, autoMasterStrategy, &previewReport);
-        } else {
-          previewMaster = autoMasterStrategy.applyPlan(rawMixBuffer, masterPlan, &previewReport);
-        }
-
-        reportAppend += "\nMaster decisions:\n" + toJuceText(masterPlan.decisionLog);
-      }
-    } catch (const std::exception& error) {
-      errorText = "Auto Master failed:\n" + juce::String(error.what());
-    } catch (...) {
-      errorText = "Auto Master failed:\nUnknown error";
-    }
-
-    juce::MessageManager::callAsync([safeThis,
-                                     masterPlan = std::move(masterPlan),
-                                     rawMixBuffer = std::move(rawMixBuffer),
-                                     previewMaster = std::move(previewMaster),
-                                     previewReport,
-                                     reportAppend,
-                                     errorText,
-                                     cancelled]() mutable {
-      if (safeThis == nullptr) {
-        return;
-      }
-
-      safeThis->taskRunning_.store(false);
-      safeThis->cancelButton_.setEnabled(false);
-
-      if (!errorText.isEmpty()) {
-        safeThis->statusLabel_.setText("Auto Master failed", juce::dontSendNotification);
-        safeThis->reportEditor_.setText(errorText);
-        safeThis->appendTaskHistory("Auto Master failed");
-        return;
-      }
-
-      if (cancelled) {
-        safeThis->statusLabel_.setText("Auto Master cancelled", juce::dontSendNotification);
-        safeThis->appendTaskHistory("Auto Master cancelled");
-        return;
-      }
-
-      safeThis->session_.masterPlan = std::move(masterPlan);
-      safeThis->previewEngine_.setBuffers(rawMixBuffer, previewMaster);
-      safeThis->previewEngine_.setSource(engine::PreviewSource::OriginalMix);
-      safeThis->previewEngine_.stop();
-      safeThis->updateTransportFromBuffer(safeThis->previewEngine_.buildCrossfadedPreview(1024));
-      safeThis->updateMeterPanel(previewReport);
-
-      safeThis->statusLabel_.setText("Auto Master plan generated", juce::dontSendNotification);
-      safeThis->appendTaskHistory("Auto Master completed");
-      if (!reportAppend.isEmpty()) {
-        safeThis->reportEditor_.setText(safeThis->reportEditor_.getText() + reportAppend);
-      }
-    });
-  }).detach();
+  processingController_->runAutoMaster(session_, settings, preset, masterPack, cancelRender_);
 }
 
 void MainComponent::onBatchImport() {
@@ -2883,147 +2407,9 @@ void MainComponent::onBatchImport() {
     appendTaskHistory("Batch started: " + folder.getFullPathName());
 
     const std::filesystem::path inputFolder(folder.getFullPathName().toStdString());
-    const std::filesystem::path outputFolder = inputFolder / "automix_batch_exports";
     const auto baseRenderSettings = buildCurrentRenderSettings("");
-    juce::Component::SafePointer<MainComponent> safeThis(this);
 
-    std::thread([safeThis, inputFolder, outputFolder, baseRenderSettings]() mutable {
-      std::vector<domain::BatchItem> items;
-      juce::String prepError;
-      try {
-        std::filesystem::create_directories(outputFolder);
-        engine::BatchQueueRunner batchQueueRunner;
-        items = batchQueueRunner.buildItemsFromFolder(inputFolder, outputFolder);
-      } catch (const std::exception& error) {
-        prepError = error.what();
-      } catch (...) {
-        prepError = "Unknown batch preparation error";
-      }
-
-      if (safeThis == nullptr) {
-        return;
-      }
-
-      if (!prepError.isEmpty() || items.empty()) {
-        juce::MessageManager::callAsync([safeThis, prepError]() {
-          if (safeThis == nullptr) {
-            return;
-          }
-          safeThis->taskRunning_.store(false);
-          safeThis->cancelButton_.setEnabled(false);
-          if (!prepError.isEmpty()) {
-            safeThis->statusLabel_.setText("Batch preparation failed", juce::dontSendNotification);
-            safeThis->reportEditor_.setText("Batch preparation error:\n" + prepError);
-            safeThis->appendTaskHistory("Batch preparation failed");
-          } else {
-            safeThis->statusLabel_.setText("Batch folder has no supported audio files", juce::dontSendNotification);
-            safeThis->appendTaskHistory("Batch preparation found no supported files");
-          }
-        });
-        return;
-      }
-
-      juce::MessageManager::callAsync([safeThis]() {
-        if (safeThis == nullptr) {
-          return;
-        }
-        safeThis->statusLabel_.setText("Batch started", juce::dontSendNotification);
-      });
-
-      domain::BatchJob job;
-      job.items = std::move(items);
-      job.settings.outputFolder = outputFolder;
-      job.settings.parallelAnalysis = true;
-      const int hardwareThreads = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
-      job.settings.analysisThreads = std::max(1, hardwareThreads / 2);
-      job.settings.renderParallelism = std::max(1, hardwareThreads / 2);
-      job.settings.renderSettings = baseRenderSettings;
-
-      engine::BatchQueueRunner runner;
-      std::atomic_bool* cancelPtr = nullptr;
-      if (safeThis != nullptr) {
-        cancelPtr = &safeThis->cancelRender_;
-      }
-      std::mutex progressMutex;
-      auto lastProgressEmit = std::chrono::steady_clock::time_point {};
-      size_t lastItemIndex = std::numeric_limits<size_t>::max();
-      double lastProgress = -1.0;
-      std::string lastStage;
-
-      const auto result = runner.process(
-          job,
-          [safeThis, &progressMutex, &lastProgressEmit, &lastItemIndex, &lastProgress, &lastStage](const size_t itemIndex,
-                                                                                                     const double progress,
-                                                                                                     const std::string& stage) {
-            if (safeThis == nullptr) {
-              return;
-            }
-            bool emit = false;
-            {
-              std::scoped_lock lock(progressMutex);
-              const auto now = std::chrono::steady_clock::now();
-              const bool itemChanged = itemIndex != lastItemIndex;
-              const bool stageChanged = stage != lastStage;
-              const bool finalProgress = progress >= 0.999;
-              const bool timeGateOpen =
-                  lastProgressEmit.time_since_epoch().count() == 0 ||
-                  now - lastProgressEmit >= std::chrono::milliseconds(220);
-              const bool deltaGateOpen = std::abs(progress - lastProgress) >= 0.03;
-              emit = itemChanged || stageChanged || finalProgress || (timeGateOpen && deltaGateOpen);
-              if (emit) {
-                lastProgressEmit = now;
-                lastItemIndex = itemIndex;
-                lastProgress = progress;
-                lastStage = stage;
-              }
-            }
-            if (!emit) {
-              return;
-            }
-
-            juce::MessageManager::callAsync([safeThis, itemIndex, progress, stage]() {
-              if (safeThis == nullptr) {
-                return;
-              }
-              safeThis->statusLabel_.setText("Batch item " + juce::String(static_cast<int>(itemIndex + 1)) +
-                                                 " " + stage + " (" + juce::String(progress * 100.0, 1) + "%)",
-                                             juce::dontSendNotification);
-              safeThis->appendTaskHistory("Batch item " + juce::String(static_cast<int>(itemIndex + 1)) +
-                                          " " + stage + " " + juce::String(progress * 100.0, 1) + "%");
-            });
-          },
-          cancelPtr);
-
-      if (safeThis == nullptr) {
-        return;
-      }
-
-      juce::String summary;
-      summary << "Batch completed\n";
-      summary << "Completed: " << result.completed << "\n";
-      summary << "Failed: " << result.failed << "\n";
-      summary << "Cancelled: " << result.cancelled << "\n";
-
-      for (const auto& item : job.items) {
-        summary << item.session.sessionName << " -> " << juce::String(item.outputPath.string()) << " ["
-                << juce::String(domain::toString(item.status)) << "]";
-        if (!item.error.empty()) {
-          summary << " error=" << juce::String(item.error);
-        }
-        summary << "\n";
-      }
-
-      juce::MessageManager::callAsync([safeThis, summary]() {
-        if (safeThis == nullptr) {
-          return;
-        }
-        safeThis->taskRunning_.store(false);
-        safeThis->cancelButton_.setEnabled(false);
-        safeThis->statusLabel_.setText("Batch complete", juce::dontSendNotification);
-        safeThis->reportEditor_.setText(summary);
-        safeThis->appendTaskHistory("Batch completed");
-      });
-    }).detach();
+    processingController_->runBatch(inputFolder, baseRenderSettings, cancelRender_);
 
     batchImportChooser_.reset();
   });
@@ -3075,9 +2461,6 @@ void MainComponent::onExport() {
     }
 
     auto settings = buildCurrentRenderSettings(selected.getFullPathName().toStdString());
-    const auto sessionCopy = session_;
-    const auto analysisSnapshot = analysisEntries_;
-    const bool quickExportMode = toLower(settings.exportSpeedMode) == kExportSpeedModeQuick;
 
     cancelRender_.store(false);
     taskRunning_.store(true);
@@ -3085,187 +2468,7 @@ void MainComponent::onExport() {
     statusLabel_.setText("Export started", juce::dontSendNotification);
     appendTaskHistory("Export started: " + selected.getFullPathName());
 
-    juce::Component::SafePointer<MainComponent> safeThis(this);
-    std::thread([safeThis, sessionCopy, settings, quickExportMode, analysisSnapshot = std::move(analysisSnapshot)]() mutable {
-      renderers::RenderResult renderResult;
-      juce::String crashMessage;
-      juce::String healthText;
-      std::vector<analysis::StemAnalysisEntry> analysisEntriesLocal = std::move(analysisSnapshot);
-      bool healthHasCriticalIssues = false;
-      size_t healthIssueCount = 0;
-      try {
-        if (quickExportMode) {
-          healthText = "Quick export mode: stem-health preflight skipped for faster turnaround.";
-        } else {
-          if (analysisEntriesLocal.empty()) {
-            if (safeThis != nullptr) {
-              juce::MessageManager::callAsync([safeThis]() {
-                if (safeThis == nullptr) {
-                  return;
-                }
-                safeThis->statusLabel_.setText("Export: analyzing stems", juce::dontSendNotification);
-              });
-            }
-
-            analysis::StemAnalyzer analyzer;
-            analysisEntriesLocal = analyzer.analyzeSession(sessionCopy);
-          }
-          const auto healthCacheKey = buildExportHealthCacheKey(sessionCopy, analysisEntriesLocal);
-          bool healthCacheHit = false;
-          {
-            std::scoped_lock lock(exportHealthCacheMutex());
-            const auto& cached = exportHealthCache();
-            if (cached.has_value() && cached->key == healthCacheKey) {
-              healthText = cached->text;
-              healthHasCriticalIssues = cached->hasCriticalIssues;
-              healthIssueCount = cached->issueCount;
-              healthCacheHit = true;
-            }
-          }
-
-          if (!healthCacheHit) {
-            analysis::StemHealthAssistant healthAssistant;
-            const auto healthReport = healthAssistant.analyze(sessionCopy, analysisEntriesLocal);
-            healthText = juce::String(healthAssistant.toText(healthReport));
-            healthHasCriticalIssues = healthReport.hasCriticalIssues;
-            healthIssueCount = healthReport.issues.size();
-
-            std::scoped_lock lock(exportHealthCacheMutex());
-            exportHealthCache() = ExportHealthCacheEntry{
-                .key = healthCacheKey,
-                .text = healthText,
-                .hasCriticalIssues = healthHasCriticalIssues,
-                .issueCount = healthIssueCount,
-            };
-          }
-        }
-
-        auto renderer = renderers::createRenderer(settings.rendererName);
-        std::atomic_bool* cancelPtr = nullptr;
-        if (safeThis != nullptr) {
-          cancelPtr = &safeThis->cancelRender_;
-        }
-
-        std::mutex progressMutex;
-        auto lastProgressEmit = std::chrono::steady_clock::time_point {};
-        double lastProgressFraction = -1.0;
-        std::string lastProgressStage;
-
-        renderResult = renderer->render(
-            sessionCopy,
-            settings,
-            [safeThis, &progressMutex, &lastProgressEmit, &lastProgressFraction, &lastProgressStage](const double progress,
-                                                                                                      const std::string& stage) {
-              if (safeThis == nullptr) {
-                return;
-              }
-              bool emit = false;
-              {
-                std::scoped_lock lock(progressMutex);
-                const auto now = std::chrono::steady_clock::now();
-                const bool stageChanged = stage != lastProgressStage;
-                const bool finalProgress = progress >= 0.999;
-                const bool timeGateOpen =
-                    lastProgressEmit.time_since_epoch().count() == 0 ||
-                    now - lastProgressEmit >= std::chrono::milliseconds(180);
-                const bool deltaGateOpen = std::abs(progress - lastProgressFraction) >= 0.02;
-                emit = stageChanged || finalProgress || (timeGateOpen && deltaGateOpen);
-                if (emit) {
-                  lastProgressEmit = now;
-                  lastProgressFraction = progress;
-                  lastProgressStage = stage;
-                }
-              }
-              if (!emit) {
-                return;
-              }
-
-              juce::MessageManager::callAsync([safeThis, progress, stage]() {
-                if (safeThis == nullptr) {
-                  return;
-                }
-                if (stage == "Mix render cache hit") {
-                  safeThis->statusLabel_.setText("Export: Using cached mix render (fast path)",
-                                                 juce::dontSendNotification);
-                  safeThis->appendTaskHistory("Export using cached mix render");
-                  return;
-                }
-                safeThis->statusLabel_.setText("Export: " + juce::String(stage) + " (" + juce::String(progress * 100.0, 1) + "%)",
-                                               juce::dontSendNotification);
-                if (progress >= 0.999 || stage != "Summing stem buses") {
-                  safeThis->appendTaskHistory("Export " + juce::String(stage) + " " +
-                                              juce::String(progress * 100.0, 1) + "%");
-                }
-              });
-            },
-            cancelPtr);
-      } catch (const std::exception& error) {
-        crashMessage = "Export exception:\n" + juce::String(error.what());
-      } catch (...) {
-        crashMessage = "Export exception:\nUnknown error";
-      }
-
-      const auto exportSpeedMode = settings.exportSpeedMode;
-      juce::MessageManager::callAsync([safeThis,
-                                       renderResult,
-                                       crashMessage,
-                                       analysisEntriesLocal = std::move(analysisEntriesLocal),
-                                       quickExportMode,
-                                       exportSpeedMode,
-                                       healthText,
-                                       healthHasCriticalIssues,
-                                       healthIssueCount]() mutable {
-        if (safeThis == nullptr) {
-          return;
-        }
-
-        safeThis->taskRunning_.store(false);
-        safeThis->cancelButton_.setEnabled(false);
-        if (!analysisEntriesLocal.empty()) {
-          safeThis->analysisEntries_ = std::move(analysisEntriesLocal);
-          safeThis->analysisTableModel_.setEntries(&safeThis->analysisEntries_);
-          safeThis->analysisTable_.updateContent();
-        }
-
-        if (!crashMessage.isEmpty()) {
-          safeThis->statusLabel_.setText("Export crashed", juce::dontSendNotification);
-          safeThis->reportEditor_.setText(crashMessage);
-          safeThis->appendTaskHistory("Export crashed");
-          return;
-        }
-
-        if (renderResult.cancelled) {
-          safeThis->statusLabel_.setText("Export cancelled", juce::dontSendNotification);
-          safeThis->appendTaskHistory("Export cancelled");
-          return;
-        }
-
-        if (quickExportMode) {
-          safeThis->appendTaskHistory("Quick export mode active: stem-health preflight skipped");
-        } else if (healthIssueCount > 0) {
-          safeThis->appendTaskHistory("Stem health check found " + juce::String(static_cast<int>(healthIssueCount)) + " issue(s)");
-        } else {
-          safeThis->appendTaskHistory("Stem health check passed");
-        }
-
-        safeThis->statusLabel_.setText(renderResult.success ? "Export complete" : "Export failed",
-                                       juce::dontSendNotification);
-        if (healthHasCriticalIssues && renderResult.success) {
-          safeThis->statusLabel_.setText("Export complete with critical stem health warnings", juce::dontSendNotification);
-        }
-        safeThis->appendTaskHistory(renderResult.success ? "Export completed" : "Export failed");
-        juce::String report = juce::String("Renderer: ") + juce::String(renderResult.rendererName) +
-                              juce::String("\nExport mode: ") + juce::String(exportSpeedMode) +
-                              juce::String("\nOutput: ") + juce::String(renderResult.outputAudioPath) +
-                              juce::String("\nReport: ") + juce::String(renderResult.reportPath) +
-                              juce::String("\n\nLogs:\n") + toJuceText(renderResult.logs);
-        if (!healthText.isEmpty()) {
-          report += "\n\n";
-          report += healthText;
-        }
-        safeThis->reportEditor_.setText(report);
-      });
-    }).detach();
+    exportController_->runExport(session_, settings, analysisEntries_, cancelRender_);
 
     exportChooser_.reset();
   });

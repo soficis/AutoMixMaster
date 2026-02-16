@@ -225,6 +225,10 @@ target_sources(AutoMixMasterApp PRIVATE
   src/app/Main.cpp
   src/app/MainComponent.cpp
   src/app/WaveformPreviewComponent.cpp
+  src/app/controllers/ModelController.cpp
+  src/app/controllers/ImportController.cpp
+  src/app/controllers/ExportController.cpp
+  src/app/controllers/ProcessingController.cpp
 )
 
 target_include_directories(AutoMixMasterApp PRIVATE src)
@@ -246,9 +250,15 @@ target_compile_definitions(AutoMixMasterApp PRIVATE
 if(BUILD_TOOLS)
   add_executable(automix_dev_tools
     tools/dev_tools.cpp
+    tools/commands/DevToolsUtils.cpp
+    tools/commands/ModelCommands.cpp
+    tools/commands/SessionCommands.cpp
+    tools/commands/RenderCommands.cpp
+    tools/commands/EvalCommands.cpp
+    tools/commands/BatchCommands.cpp
     tests/regression/RegressionHarness.cpp
   )
-  target_include_directories(automix_dev_tools PRIVATE src tests/regression)
+  target_include_directories(automix_dev_tools PRIVATE src tools tests/regression)
   target_link_libraries(automix_dev_tools PRIVATE automix_core)
   target_compile_definitions(automix_dev_tools PRIVATE AUTOMIX_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 endif()

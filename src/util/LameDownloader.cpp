@@ -18,8 +18,15 @@
 
 #include <juce_core/juce_core.h>
 
+#include "util/FileUtils.h"
+#include "util/StringUtils.h"
+
 namespace automix::util {
 namespace {
+
+using ::automix::util::toLower;
+using ::automix::util::trim;
+using ::automix::util::isRegularFile;
 
 constexpr const char* kDefaultLameVersion = "3.100";
 constexpr int kDownloadTimeoutMs = 180000;
@@ -59,32 +66,6 @@ struct TempDirectory {
 
   std::filesystem::path path;
 };
-
-std::string toLower(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  return value;
-}
-
-std::string trim(std::string value) {
-  const auto first = std::find_if_not(value.begin(), value.end(), [](const unsigned char c) {
-    return std::isspace(c) != 0;
-  });
-  const auto last = std::find_if_not(value.rbegin(), value.rend(), [](const unsigned char c) {
-    return std::isspace(c) != 0;
-  }).base();
-
-  if (first >= last) {
-    return "";
-  }
-
-  value = std::string(first, last);
-  if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
-    value = value.substr(1, value.size() - 2);
-  }
-  return value;
-}
 
 std::string joinLines(const std::vector<std::string>& lines) {
   std::ostringstream os;
@@ -133,11 +114,6 @@ bool flagEnabled(const char* key) {
 
   const auto lower = toLower(value.value());
   return lower == "1" || lower == "true" || lower == "yes" || lower == "on";
-}
-
-bool isRegularFile(const std::filesystem::path& path) {
-  std::error_code error;
-  return std::filesystem::is_regular_file(path, error) && !error;
 }
 
 std::string binaryName() {

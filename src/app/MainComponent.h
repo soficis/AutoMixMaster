@@ -23,6 +23,10 @@
 #include "engine/AudioPreviewEngine.h"
 #include "engine/SessionRepository.h"
 #include "engine/TransportController.h"
+#include "app/controllers/ModelController.h"
+#include "app/controllers/ImportController.h"
+#include "app/controllers/ExportController.h"
+#include "app/controllers/ProcessingController.h"
 #include "renderers/RendererRegistry.h"
 
 namespace automix::app {
@@ -111,10 +115,6 @@ class MainComponent final : public juce::Component,
   void appendTaskHistory(const juce::String& line);
   void applyProjectProfile(const domain::ProjectProfile& profile);
   void populateMasterPresetSelectors();
-  void browseAndDownloadModels();
-  void showInstalledModels();
-  void checkModelUpdates();
-  void showModelIntegrityAndLicenses();
 
   domain::MasterPreset selectedMasterPreset() const;
   domain::MasterPreset selectedPlatformPreset() const;
@@ -211,6 +211,7 @@ class MainComponent final : public juce::Component,
   std::map<int, std::string> stemIdBySoloComboId_;
   std::map<int, std::string> stemIdByMuteComboId_;
   std::map<int, std::string> projectProfileIdByComboId_;
+  juce::ThreadPool backgroundPool_ {3};
   std::atomic_bool cancelRender_ {false};
   std::atomic_bool taskRunning_ {false};
   std::atomic_uint64_t previewBuildGeneration_ {0};
@@ -228,7 +229,10 @@ class MainComponent final : public juce::Component,
   std::unique_ptr<juce::FileChooser> externalRendererChooser_;
   std::vector<juce::String> taskHistoryLines_;
   std::vector<domain::ProjectProfile> projectProfiles_;
-  std::vector<ai::HubModelInfo> discoveredHubModels_;
+  std::unique_ptr<ModelController> modelController_;
+  std::unique_ptr<ImportController> importController_;
+  std::unique_ptr<ExportController> exportController_;
+  std::unique_ptr<ProcessingController> processingController_;
 };
 
 } // namespace automix::app

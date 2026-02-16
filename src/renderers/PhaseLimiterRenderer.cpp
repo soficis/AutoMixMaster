@@ -23,10 +23,13 @@
 #include "renderers/BuiltInRenderer.h"
 #include "renderers/PhaseLimiterDiscovery.h"
 #include "util/MetadataPolicy.h"
+#include "util/MetadataSourceResolver.h"
 #include "util/WavWriter.h"
 
 namespace automix::renderers {
 namespace {
+
+using ::automix::util::metadataSourcePath;
 
 constexpr int kPhaseLimiterSampleRate = 44100;
 constexpr int kPhaseLimiterBitDepth = 16;
@@ -35,40 +38,6 @@ constexpr size_t kMaxProcessOutputCaptureBytes = 32768;
 bool pathExists(const std::filesystem::path& path) {
   std::error_code error;
   return std::filesystem::exists(path, error);
-}
-
-std::optional<std::filesystem::path> metadataSourcePath(const domain::Session& session) {
-  if (session.originalMixPath.has_value()) {
-    const std::filesystem::path originalPath(session.originalMixPath.value());
-    std::error_code error;
-    if (std::filesystem::is_regular_file(originalPath, error) && !error) {
-      return originalPath;
-    }
-  }
-
-  for (const auto& stem : session.stems) {
-    if (!stem.enabled || stem.filePath.empty()) {
-      continue;
-    }
-    const std::filesystem::path stemPath(stem.filePath);
-    std::error_code error;
-    if (std::filesystem::is_regular_file(stemPath, error) && !error) {
-      return stemPath;
-    }
-  }
-
-  for (const auto& stem : session.stems) {
-    if (stem.filePath.empty()) {
-      continue;
-    }
-    const std::filesystem::path stemPath(stem.filePath);
-    std::error_code error;
-    if (std::filesystem::is_regular_file(stemPath, error) && !error) {
-      return stemPath;
-    }
-  }
-
-  return std::nullopt;
 }
 
 class CurrentWorkingDirectoryGuard final {

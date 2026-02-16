@@ -16,17 +16,15 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_core/juce_core.h>
 
+#include "util/FileUtils.h"
 #include "util/LameDownloader.h"
+#include "util/StringUtils.h"
 
 namespace automix::util {
 namespace {
 
-std::string toLower(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  return value;
-}
+using ::automix::util::toLower;
+using ::automix::util::isRegularFile;
 
 int qualityIndexFromRequested(const juce::StringArray& options, const int requestedQuality) {
   if (options.isEmpty()) {
@@ -126,11 +124,6 @@ std::vector<std::string> lameExecutableNames() {
 #else
   return {"lame"};
 #endif
-}
-
-bool isRegularFile(const std::filesystem::path& path) {
-  std::error_code error;
-  return std::filesystem::is_regular_file(path, error) && !error;
 }
 
 std::string trimPathToken(std::string token) {

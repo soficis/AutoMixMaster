@@ -5,7 +5,6 @@
 #include <fstream>
 #include <optional>
 #include <set>
-#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -13,6 +12,7 @@
 
 #include "renderers/ExternalLimiterRenderer.h"
 #include "renderers/PhaseLimiterDiscovery.h"
+#include "util/HashUtils.h"
 
 namespace automix::renderers {
 namespace {
@@ -26,22 +26,6 @@ struct TrustPolicy {
 bool hasBinary(const std::filesystem::path& path) {
   std::error_code error;
   return std::filesystem::is_regular_file(path, error);
-}
-
-uint64_t fnv1a64(const std::string& input) {
-  uint64_t hash = 14695981039346656037ull;
-  constexpr uint64_t prime = 1099511628211ull;
-  for (const auto c : input) {
-    hash ^= static_cast<uint8_t>(c);
-    hash *= prime;
-  }
-  return hash;
-}
-
-std::string toHex(const uint64_t value) {
-  std::ostringstream out;
-  out << std::hex << value;
-  return out.str();
 }
 
 std::vector<std::filesystem::path> trustPolicyCandidates() {
@@ -129,7 +113,7 @@ bool verifyDescriptorSignature(const nlohmann::json& descriptor,
 
   auto canonical = descriptor;
   canonical.erase("signature");
-  const auto digest = toHex(fnv1a64(canonical.dump()));
+  const auto digest = util::toHex(util::fnv1a64(canonical.dump()));
   return digest == signatureValue;
 }
 

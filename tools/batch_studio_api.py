@@ -50,6 +50,19 @@ def _append_jsonl(path: pathlib.Path, payload: Dict[str, Any]) -> None:
         fp.write(json.dumps(payload, ensure_ascii=True) + "\n")
 
 
+def _is_path_contained(user_path: str, allowed_root: pathlib.Path) -> bool:
+    """Return True if *user_path* resolves inside *allowed_root*.
+
+    Prevents directory-traversal attacks when the API is network-exposed.
+    """
+    try:
+        resolved = pathlib.Path(user_path).resolve()
+        root_resolved = allowed_root.resolve()
+        return resolved == root_resolved or resolved.is_relative_to(root_resolved)
+    except (ValueError, OSError):
+        return False
+
+
 def make_handler(
     *,
     automix_bin: str,
@@ -95,6 +108,21 @@ def make_handler(
                     self,
                     HTTPStatus.BAD_REQUEST,
                     {"error": "input and output are required"},
+                )
+                return
+
+            if not _is_path_contained(str(input_dir), output_root):
+                _json_response(
+                    self,
+                    HTTPStatus.FORBIDDEN,
+                    {"error": "input directory is outside the allowed root"},
+                )
+                return
+            if not _is_path_contained(str(output_dir), output_root):
+                _json_response(
+                    self,
+                    HTTPStatus.FORBIDDEN,
+                    {"error": "output directory is outside the allowed root"},
                 )
                 return
 
@@ -187,6 +215,13 @@ def make_handler(
                 record["report"] = report_obj
 
             if report_path:
+                if not _is_path_contained(str(report_path), output_root):
+                    _json_response(
+                        self,
+                        HTTPStatus.FORBIDDEN,
+                        {"error": "report_path is outside the allowed root"},
+                    )
+                    return
                 path = pathlib.Path(str(report_path))
                 record["report_path"] = str(path)
                 if path.exists():

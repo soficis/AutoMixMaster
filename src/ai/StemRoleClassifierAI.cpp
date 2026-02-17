@@ -5,15 +5,12 @@
 #include <cctype>
 
 #include "ai/FeatureSchema.h"
+#include "util/StringUtils.h"
 
 namespace automix::ai {
 namespace {
 
-std::string toLower(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return value;
-}
+using ::automix::util::toLower;
 
 RolePrediction predictFromName(const std::string& stemName) {
   const auto name = toLower(stemName);

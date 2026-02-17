@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace automix::ai {
@@ -25,6 +26,7 @@ struct HubModelInfo {
   std::string primaryFile;
   std::vector<std::string> tags;
   std::vector<std::string> files;
+  std::unordered_map<std::string, std::string> fileSha256;
 };
 
 struct HubModelQueryOptions {

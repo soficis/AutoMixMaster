@@ -1,54 +1,8 @@
-# Build artifacts
+# === Build & Output ===
 build*/
-build_clean/
-
-# CMake generated files
-CMakeCache.txt
-CMakeFiles/
-cmake_install.cmake
-CTestTestfile.cmake
-DartConfiguration.tcl
-
-# IDE and editor files
-.vscode/
-.vs/
-*.vcxproj.user
-*.slnx.user
-
-# Analysis and cache files
-.cache/
-.clangd/
-*.sarif
-*.analysis
-assets/**/analysis_data/
-
-# Documentation
-docs/
-
-# Personal data and sensitive files
-.env
-personal/
-*.key
-*.pem
-.ssh/
-*.id_rsa
-*.id_dsa
-config.ini
-
-# Temporary files and directories
-tmp/
-tmpclaude-*/
-tmpclaude-*
-nul
-*.tmp
-*.log
-
-# Operating system files
-Thumbs.db
-.DS_Store
-Desktop.ini
-
-# Compiled binaries and libraries
+out/
+bin/
+_deps/
 *.exe
 *.dll
 *.lib
@@ -56,13 +10,70 @@ Desktop.ini
 *.ilk
 *.obj
 *.o
+*.exp
+artefacts/
+*artefacts/
+ntml
+docs/
 
-# Test artifacts
+# === CMake ===
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+DartConfiguration.tcl
+CMakeUserPresets.json
+
+# === IDE & Editors ===
+.vs/
+.vscode/
+.idea/
+*.vcxproj.user
+*.slnx.user
+*.suo
+*.db
+*.opendb
+.cache/
+.clangd/
+
+# === Python ===
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.venv/
+venv/
+
+# === Logs & Temporary ===
+*.log
+*.tmp
+tmp/
+tmpclaude*
+build_config_output*.txt
+changed_files.txt
+current_diff.txt
+local_commits.txt
+full_status.txt
+nul
+
+# === Analysis & Data ===
+*.sarif
+*.analysis
+assets/**/analysis_data/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# === Testing ===
 Testing/
 *.xml
+tests/regression/output/
 
-# Dependencies (if any)
-_deps/
-
-# Artifacts directory (if exists)
-artefacts/
+# === Personal & Security ===
+.env
+personal/
+*.key
+*.pem
+.ssh/
+config.ini

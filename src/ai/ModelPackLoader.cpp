@@ -2,11 +2,11 @@
 
 #include <cstdint>
 #include <fstream>
-#include <sstream>
 
 #include <nlohmann/json.hpp>
 
 #include "ai/FeatureSchema.h"
+#include "util/HashUtils.h"
 
 namespace automix::ai {
 namespace {
@@ -126,18 +126,17 @@ std::string ModelPackLoader::computeChecksum(const std::filesystem::path& filePa
     return "";
   }
 
-  uint64_t hash = 14695981039346656037ull;
-  constexpr uint64_t prime = 1099511628211ull;
-
-  char byte = 0;
-  while (in.get(byte)) {
-    hash ^= static_cast<uint8_t>(byte);
-    hash *= prime;
+  uint64_t hash = util::kFnv1a64OffsetBasis;
+  char buffer[4096];
+  while (in.good()) {
+    in.read(buffer, static_cast<std::streamsize>(sizeof(buffer)));
+    const auto readCount = static_cast<size_t>(in.gcount());
+    if (readCount > 0) {
+      hash = util::fnv1a64Update(hash, buffer, readCount);
+    }
   }
 
-  std::ostringstream output;
-  output << std::hex << hash;
-  return output.str();
+  return util::toHex(hash);
 }
 
 } // namespace automix::ai

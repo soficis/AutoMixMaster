@@ -4,15 +4,12 @@
 #include <cctype>
 #include <set>
 
+#include "util/StringUtils.h"
+
 namespace automix::util {
 namespace {
 
-std::string toLower(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  return value;
-}
+using ::automix::util::toLower;
 
 std::string normalizeKey(const std::string& key) {
   std::string normalized;

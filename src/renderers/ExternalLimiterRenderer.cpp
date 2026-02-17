@@ -22,44 +22,13 @@
 #include "engine/OfflineRenderPipeline.h"
 #include "renderers/BuiltInRenderer.h"
 #include "util/MetadataPolicy.h"
+#include "util/MetadataSourceResolver.h"
 #include "util/WavWriter.h"
 
 namespace automix::renderers {
 namespace {
 
-std::optional<std::filesystem::path> metadataSourcePath(const domain::Session& session) {
-  if (session.originalMixPath.has_value()) {
-    const std::filesystem::path originalPath(session.originalMixPath.value());
-    std::error_code error;
-    if (std::filesystem::is_regular_file(originalPath, error) && !error) {
-      return originalPath;
-    }
-  }
-
-  for (const auto& stem : session.stems) {
-    if (!stem.enabled || stem.filePath.empty()) {
-      continue;
-    }
-    const std::filesystem::path stemPath(stem.filePath);
-    std::error_code error;
-    if (std::filesystem::is_regular_file(stemPath, error) && !error) {
-      return stemPath;
-    }
-  }
-
-  for (const auto& stem : session.stems) {
-    if (stem.filePath.empty()) {
-      continue;
-    }
-    const std::filesystem::path stemPath(stem.filePath);
-    std::error_code error;
-    if (std::filesystem::is_regular_file(stemPath, error) && !error) {
-      return stemPath;
-    }
-  }
-
-  return std::nullopt;
-}
+using ::automix::util::metadataSourcePath;
 
 RenderResult fallbackToBuiltIn(const domain::Session& session,
                                const domain::RenderSettings& settings,

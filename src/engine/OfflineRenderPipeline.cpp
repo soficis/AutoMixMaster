@@ -21,9 +21,12 @@
 #include "engine/AudioFileIO.h"
 #include "engine/AudioResampler.h"
 #include "engine/ResidualBlendProcessor.h"
+#include "util/StringUtils.h"
 
 namespace automix::engine {
 namespace {
+
+using ::automix::util::toLower;
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kSqrtHalf = 0.7071067811865476;
@@ -499,12 +502,6 @@ AudioBuffer processStemBuffer(const AudioBuffer& input,
   }
 
   return output;
-}
-
-std::string toLower(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return value;
 }
 
 std::string defaultBusIdForStem(const domain::Stem& stem) {

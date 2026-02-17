@@ -224,7 +224,17 @@ juce_add_gui_app(AutoMixMasterApp
 target_sources(AutoMixMasterApp PRIVATE
   src/app/Main.cpp
   src/app/MainComponent.cpp
+  src/app/MainComponentBackend.cpp
+  src/app/MainComponentControllers.cpp
   src/app/WaveformPreviewComponent.cpp
+  src/app/controllers/ModelController.cpp
+  src/app/controllers/ImportController.cpp
+  src/app/controllers/ExportController.cpp
+  src/app/controllers/ProfileController.cpp
+  src/app/controllers/PreviewController.cpp
+  src/app/controllers/ProcessingController.cpp
+  src/app/controllers/SessionController.cpp
+  src/app/controllers/OriginalMixController.cpp
 )
 
 target_include_directories(AutoMixMasterApp PRIVATE src)
@@ -246,9 +256,15 @@ target_compile_definitions(AutoMixMasterApp PRIVATE
 if(BUILD_TOOLS)
   add_executable(automix_dev_tools
     tools/dev_tools.cpp
+    tools/commands/DevToolsUtils.cpp
+    tools/commands/ModelCommands.cpp
+    tools/commands/SessionCommands.cpp
+    tools/commands/RenderCommands.cpp
+    tools/commands/EvalCommands.cpp
+    tools/commands/BatchCommands.cpp
     tests/regression/RegressionHarness.cpp
   )
-  target_include_directories(automix_dev_tools PRIVATE src tests/regression)
+  target_include_directories(automix_dev_tools PRIVATE src tools tests/regression)
   target_link_libraries(automix_dev_tools PRIVATE automix_core)
   target_compile_definitions(automix_dev_tools PRIVATE AUTOMIX_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 endif()
@@ -264,8 +280,17 @@ if(BUILD_TESTING)
   FetchContent_MakeAvailable(Catch2)
 
   add_executable(automix_tests
+    src/app/controllers/ModelController.cpp
+    src/app/controllers/ImportController.cpp
+    src/app/controllers/ExportController.cpp
+    src/app/controllers/ProfileController.cpp
+    src/app/controllers/PreviewController.cpp
+    src/app/controllers/ProcessingController.cpp
+    src/app/controllers/SessionController.cpp
+    src/app/controllers/OriginalMixController.cpp
     tests/unit/TestMain.cpp
     tests/unit/SessionSerializationTests.cpp
+    tests/unit/ControllerTests.cpp
     tests/unit/AudioIoTests.cpp
     tests/unit/AnalysisTests.cpp
     tests/unit/StemOriginSafetyTests.cpp
@@ -321,4 +346,14 @@ if(BUILD_TESTING)
   include(CTest)
   include(${Catch2_SOURCE_DIR}/extras/Catch.cmake)
   catch_discover_tests(automix_tests)
+
+  find_package(Python3 COMPONENTS Interpreter)
+  if(Python3_Interpreter_FOUND)
+    add_test(
+      NAME batch_studio_api_path_containment_tests
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/python/test_batch_studio_api.py
+    )
+  else()
+    message(WARNING "Python3 interpreter not found; skipping batch_studio_api_path_containment_tests.")
+  endif()
 endif()

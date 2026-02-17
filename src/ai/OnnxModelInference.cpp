@@ -17,6 +17,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "util/StringUtils.h"
+
 #ifndef AUTOMIX_HAS_NATIVE_ORT
 #define AUTOMIX_HAS_NATIVE_ORT 0
 #endif
@@ -28,17 +30,12 @@
 namespace automix::ai {
 namespace {
 
+using ::automix::util::toLower;
+
 double clamp01(const double value) { return std::clamp(value, 0.0, 1.0); }
 
 double normalizeFeatureValue(const double value) {
   return std::copysign(std::log1p(std::abs(value)), value);
-}
-
-std::string toLower(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  return value;
 }
 
 std::string canonicalProviderName(const std::string& rawProvider) {

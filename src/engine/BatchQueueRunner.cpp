@@ -10,41 +10,18 @@
 #include "analysis/StemAnalyzer.h"
 #include "automix/HeuristicAutoMixStrategy.h"
 #include "renderers/RendererFactory.h"
+#include "util/StringUtils.h"
 #include "util/WavWriter.h"
 
 namespace automix::engine {
 namespace {
 
-std::string toLower(std::string text) {
-  std::transform(text.begin(), text.end(), text.begin(), [](const unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  return text;
-}
+using ::automix::util::toLower;
+using ::automix::util::extensionForFormat;
 
 bool hasAudioExtension(const std::filesystem::path& path) {
   const std::string ext = toLower(path.extension().string());
   return ext == ".wav" || ext == ".aif" || ext == ".aiff" || ext == ".flac" || ext == ".mp3" || ext == ".ogg";
-}
-
-std::string extensionForFormat(const std::string& format) {
-  const auto normalized = toLower(format);
-  if (normalized == "wav") {
-    return ".wav";
-  }
-  if (normalized == "aiff" || normalized == "aif") {
-    return ".aiff";
-  }
-  if (normalized == "flac") {
-    return ".flac";
-  }
-  if (normalized == "ogg" || normalized == "vorbis") {
-    return ".ogg";
-  }
-  if (normalized == "mp3") {
-    return ".mp3";
-  }
-  return ".wav";
 }
 
 void runAnalysisForItem(domain::BatchItem& item) {

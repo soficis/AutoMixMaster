@@ -45,8 +45,21 @@ ArtifactProfile ArtifactRiskEstimator::profile(const engine::AudioBuffer& buffer
   const double spectralFlatness = clamp01(metrics.spectralFlatness);
   const double centroidRisk = clamp01((metrics.spectralCentroidHz - 4500.0) / 4500.0);
   const double phaseInstability = 1.0 - std::abs(std::clamp(metrics.stereoCorrelation, -1.0, 1.0));
-  const double noiseDominance = clamp01(metrics.highEnergy * 0.30 + spectralFlatness * 0.35 + normalizedRoughness * 0.15 +
-                                        normalizedFluxInstability * 0.10 + spectralFluxNorm * 0.10);
+
+  // Weights for the noiseDominance estimate are normalized to sum to 1.0 so that the
+  // resulting score remains a convex combination of the contributing metrics.
+  const double noiseWeightHighEnergy            = 0.30;
+  const double noiseWeightSpectralFlatness      = 0.35;
+  const double noiseWeightNormalizedRoughness   = 0.15;
+  const double noiseWeightFluxInstability       = 0.10;
+  const double noiseWeightSpectralFluxNorm      = 0.10;
+
+  const double noiseDominance =
+      clamp01(metrics.highEnergy * noiseWeightHighEnergy +
+              spectralFlatness * noiseWeightSpectralFlatness +
+              normalizedRoughness * noiseWeightNormalizedRoughness +
+              normalizedFluxInstability * noiseWeightFluxInstability +
+              spectralFluxNorm * noiseWeightSpectralFluxNorm);
   const double harmonicity = clamp01(metrics.lowEnergy * 0.30 + metrics.midEnergy * 0.30 +
                                      (1.0 - spectralFlatness) * 0.30 - centroidRisk * 0.10);
 

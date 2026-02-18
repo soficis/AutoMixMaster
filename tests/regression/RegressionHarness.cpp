@@ -130,6 +130,7 @@ RenderMetrics metricsFromReport(const std::filesystem::path& reportPath) {
   RenderMetrics metrics;
   metrics.integratedLufs = reportJson.value("integratedLufs", -120.0);
   metrics.truePeakDbtp = reportJson.value("truePeakDbtp", 0.0);
+  metrics.monoCorrelation = reportJson.value("monoCorrelation", 1.0);
   metrics.spectrumLow = reportJson.value("spectrumLow", 0.0);
   metrics.spectrumMid = reportJson.value("spectrumMid", 0.0);
   metrics.spectrumHigh = reportJson.value("spectrumHigh", 0.0);
@@ -143,6 +144,9 @@ double defaultToleranceFor(const std::string& metricName) {
   }
   if (metricName == "truePeakDbtp") {
     return 0.35;
+  }
+  if (metricName == "monoCorrelation") {
+    return 0.15;
   }
   if (metricName == "stereoCorrelation") {
     return 0.20;
@@ -180,6 +184,9 @@ double metricValue(const RenderMetrics& metrics, const std::string& metricName) 
   }
   if (metricName == "truePeakDbtp") {
     return metrics.truePeakDbtp;
+  }
+  if (metricName == "monoCorrelation") {
+    return metrics.monoCorrelation;
   }
   if (metricName == "spectrumLow") {
     return metrics.spectrumLow;
@@ -250,9 +257,10 @@ void comparePipelineMetrics(const nlohmann::json& fixture,
                             const PipelineMetrics& actual,
                             std::vector<RegressionFailure>* failures) {
   const auto& expectedMetrics = fixture.at("pipelines").at(actual.pipelineName);
-  constexpr std::array<const char*, 6> metricNames = {
+  constexpr std::array<const char*, 7> metricNames = {
       "integratedLufs",
       "truePeakDbtp",
+      "monoCorrelation",
       "spectrumLow",
       "spectrumMid",
       "spectrumHigh",
@@ -261,6 +269,9 @@ void comparePipelineMetrics(const nlohmann::json& fixture,
 
   for (const auto* metric : metricNames) {
     const std::string metricName(metric);
+    if (!expectedMetrics.contains(metricName)) {
+      continue;
+    }
     const double expected = expectedMetrics.at(metricName).get<double>();
     const double observed = metricValue(actual.metrics, metricName);
     const double tolerance = toleranceForMetric(fixture, actual.pipelineName, metricName);

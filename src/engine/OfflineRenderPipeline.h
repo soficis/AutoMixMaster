@@ -25,6 +25,8 @@ using ProgressCallback = std::function<void(const RenderProgress&)>;
 
 class OfflineRenderPipeline {
  public:
+  static void clearCaches();
+
   OfflineRenderResult renderRawMix(const domain::Session& session,
                                    const domain::RenderSettings& settings,
                                    const ProgressCallback& onProgress,

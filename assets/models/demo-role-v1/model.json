@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "demo-role-v1",
+  "name": "Demo Role Classifier V1",
+  "type": "role_classifier",
+  "engine": "onnxruntime",
+  "version": "1.0.0",
+  "model_file": "model.onnx",
+  "license": "CC-BY-4.0",
+  "source": "AutoMixMaster demo catalog",
+  "feature_schema_version": "1.0.0",
+  "output_schema": {
+    "prob_vocals": "float",
+    "prob_bass": "float",
+    "prob_drums": "float",
+    "prob_fx": "float"
+  }
+}

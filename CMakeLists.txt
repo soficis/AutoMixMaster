@@ -223,12 +223,22 @@ juce_add_gui_app(AutoMixMasterApp
 
 target_sources(AutoMixMasterApp PRIVATE
   src/app/Main.cpp
-  src/app/MainComponent.cpp
-  src/app/WaveformPreviewComponent.cpp
+  src/app/style/AutoMixLookAndFeel.cpp
   src/app/controllers/ModelController.cpp
   src/app/controllers/ImportController.cpp
   src/app/controllers/ExportController.cpp
   src/app/controllers/ProcessingController.cpp
+  src/app/controllers/SessionController.cpp
+  src/app/controllers/PreviewController.cpp
+  src/app/controllers/ProfileController.cpp
+  src/app/ui/MainLayout.cpp
+  src/app/ui/HeaderBar.cpp
+  src/app/ui/HeroWaveform.cpp
+  src/app/ui/TransportBar.cpp
+  src/app/ui/GlowMeters.cpp
+  src/app/ui/TaskCenterPanel.cpp
+  src/app/ui/StemPanel.cpp
+  src/app/ui/ControlDeck.cpp
 )
 
 target_include_directories(AutoMixMasterApp PRIVATE src)

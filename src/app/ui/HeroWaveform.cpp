@@ -27,7 +27,10 @@ void HeroWaveform::setBuffer(const engine::AudioBuffer& buffer) {
     }
   }
 
-  cachedWidth_ = 0; // invalidate cache
+  buildMipLevels();
+  cachedWidth_ = 0; // invalidate display cache
+  cachedZoomFactor_ = 0.0;
+  cachedZoomCenter_ = 0.0;
   repaint();
 }
 
@@ -39,7 +42,7 @@ void HeroWaveform::setPlayheadProgress(double progress) {
 void HeroWaveform::setZoom(double zoomFactor, double centerProgress) {
   zoomFactor_ = std::max(1.0, zoomFactor);
   zoomCenter_ = centerProgress;
-  cachedWidth_ = 0;
+  cachedWidth_ = 0; // Force cache rebuild on next paint
   repaint();
 }
 
@@ -75,16 +78,52 @@ void HeroWaveform::resized() {
   cachedWidth_ = 0;
 }
 
+void HeroWaveform::buildMipLevels() {
+  for (int level = 0; level < kMipLevels; ++level) {
+    int factor = kMipFactors[level];
+    int mipCount = (rawSampleCount_ + factor - 1) / factor;
+    mipSampleCounts_[level] = mipCount;
+    mipPeaks_[level].resize(static_cast<size_t>(mipCount));
+
+    for (int i = 0; i < mipCount; ++i) {
+      int start = i * factor;
+      int end = std::min(start + factor, rawSampleCount_);
+      float peak = 0.0f;
+      for (int s = start; s < end; ++s) {
+        peak = std::max(peak, rawSamples_[static_cast<size_t>(s)]);
+      }
+      mipPeaks_[level][static_cast<size_t>(i)] = peak;
+    }
+  }
+}
+
 void HeroWaveform::buildWaveformCache() {
   int w = getWidth();
   if (w <= 0 || rawSampleCount_ == 0) {
     waveformPeaks_.clear();
     cachedWidth_ = w;
+    cachedZoomFactor_ = zoomFactor_;
+    cachedZoomCenter_ = zoomCenter_;
     return;
   }
 
   double visibleWidth = 1.0 / zoomFactor_;
   double viewStart = std::clamp(zoomCenter_ - visibleWidth * 0.5, 0.0, 1.0 - visibleWidth);
+
+  // Choose the coarsest mip level where each pixel spans at least 1 mip sample
+  double samplesPerPixel = (visibleWidth * rawSampleCount_) / static_cast<double>(w);
+  int bestLevel = 0;
+  for (int level = kMipLevels - 1; level >= 0; --level) {
+    double mipSamplesPerPixel = samplesPerPixel / static_cast<double>(kMipFactors[level]);
+    if (mipSamplesPerPixel >= 1.0) {
+      bestLevel = level;
+      break;
+    }
+  }
+
+  int factor = kMipFactors[bestLevel];
+  int mipCount = mipSampleCounts_[bestLevel];
+  const auto& mipData = mipPeaks_[bestLevel];
 
   waveformPeaks_.resize(static_cast<size_t>(w));
 
@@ -92,26 +131,28 @@ void HeroWaveform::buildWaveformCache() {
     double fracStart = viewStart + (static_cast<double>(px) / static_cast<double>(w)) * visibleWidth;
     double fracEnd = viewStart + (static_cast<double>(px + 1) / static_cast<double>(w)) * visibleWidth;
 
-    int sampleStart = static_cast<int>(fracStart * rawSampleCount_);
-    int sampleEnd = static_cast<int>(fracEnd * rawSampleCount_);
-    sampleStart = std::clamp(sampleStart, 0, rawSampleCount_ - 1);
-    sampleEnd = std::clamp(sampleEnd, sampleStart + 1, rawSampleCount_);
+    int mipStart = static_cast<int>(fracStart * rawSampleCount_) / factor;
+    int mipEnd = static_cast<int>(fracEnd * rawSampleCount_) / factor;
+    mipStart = std::clamp(mipStart, 0, mipCount - 1);
+    mipEnd = std::clamp(mipEnd, mipStart + 1, mipCount);
 
     float peak = 0.0f;
-    for (int s = sampleStart; s < sampleEnd; ++s) {
-      peak = std::max(peak, rawSamples_[static_cast<size_t>(s)]);
+    for (int s = mipStart; s < mipEnd; ++s) {
+      peak = std::max(peak, mipData[static_cast<size_t>(s)]);
     }
     waveformPeaks_[static_cast<size_t>(px)] = peak;
   }
 
   cachedWidth_ = w;
+  cachedZoomFactor_ = zoomFactor_;
+  cachedZoomCenter_ = zoomCenter_;
 }
 
 void HeroWaveform::paint(juce::Graphics& g) {
   auto bounds = getLocalBounds().toFloat();
   g.fillAll(colour(colours::background));
 
-  if (cachedWidth_ != getWidth()) {
+  if (cachedWidth_ != getWidth() || cachedZoomFactor_ != zoomFactor_ || cachedZoomCenter_ != zoomCenter_) {
     buildWaveformCache();
   }
 

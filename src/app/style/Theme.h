@@ -109,6 +109,25 @@ inline constexpr int marginLarge = 16;
 
 } // namespace spacing
 
+// ── Animation ────────────────────────────────────────────────────
+
+namespace animation {
+
+inline constexpr int hoverFadeMs = 120;
+inline constexpr int seekTweenMs = 200;
+inline constexpr float hoverScale = 1.03f;
+
+} // namespace animation
+
+// ── Focus ────────────────────────────────────────────────────────
+
+namespace focus {
+
+inline constexpr float ringWidth = 2.0f;
+inline constexpr juce::uint32 ringColour = 0xFF5A7AFF;
+
+} // namespace focus
+
 // ── Helpers ───────────────────────────────────────────────────────
 
 inline juce::Colour colour(juce::uint32 argb) {

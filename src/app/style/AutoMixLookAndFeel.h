@@ -41,6 +41,9 @@ public:
   void drawToggleButton(juce::Graphics& g, juce::ToggleButton& button, bool shouldDrawButtonAsHighlighted,
                         bool shouldDrawButtonAsDown) override;
 
+  // ── Focus ──────────────────────────────────────────────────────
+  static void drawFocusRing(juce::Graphics& g, juce::Component& component);
+
   // ── Font ───────────────────────────────────────────────────────
   juce::Font getTextButtonFont(juce::TextButton& button, int buttonHeight) override;
   juce::Font getComboBoxFont(juce::ComboBox& box) override;

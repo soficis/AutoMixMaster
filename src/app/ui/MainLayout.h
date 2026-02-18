@@ -54,6 +54,7 @@ public:
 
   void paint(juce::Graphics& g) override;
   void resized() override;
+  bool keyPressed(const juce::KeyPress& key) override;
 
 private:
   // Timer / Listener overrides
@@ -82,6 +83,7 @@ private:
   void onSaveSession();
   void onLoadSession();
   void onModelsMenu();
+  void onSettings();
 
   // UI update methods
   void updateTransportDisplay();
@@ -104,6 +106,7 @@ private:
   std::vector<renderers::ExternalRendererConfig> loadConfiguredExternalRenderers() const;
 
   // ── UI Components ───────────────────────────────────────────────
+  juce::TooltipWindow tooltipWindow_{this, 400};
   std::unique_ptr<HeaderBar> headerBar_;
   std::unique_ptr<HeroWaveform> heroWaveform_;
   std::unique_ptr<TransportBar> transportBar_;
@@ -163,6 +166,7 @@ private:
   std::unique_ptr<ImportController> importController_;
   std::unique_ptr<ExportController> exportController_;
   std::unique_ptr<ProcessingController> processingController_;
+  std::unique_ptr<PreviewController> previewController_;
 
   // Layout constants
   static constexpr int kHeaderHeight = 48;

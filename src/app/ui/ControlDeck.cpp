@@ -21,6 +21,22 @@ ControlDeck::ControlDeck() {
   addAndMakeVisible(batchButton_);
   addAndMakeVisible(exportButton_);
 
+  // Tooltips
+  importButton_.setTooltip("Import Stems (Ctrl+I)");
+  autoMixButton_.setTooltip("Auto Mix (Ctrl+M)");
+  autoMasterButton_.setTooltip("Auto Master");
+  batchButton_.setTooltip("Batch Process");
+  exportButton_.setTooltip("Export (Ctrl+E)");
+  separatedStemsToggle_.setTooltip("Use AI stem separation during import");
+  residualBlendSlider_.setTooltip("Control residual audio blend");
+
+  // Keyboard focus on action buttons
+  importButton_.setWantsKeyboardFocus(true);
+  autoMixButton_.setWantsKeyboardFocus(true);
+  autoMasterButton_.setWantsKeyboardFocus(true);
+  batchButton_.setWantsKeyboardFocus(true);
+  exportButton_.setWantsKeyboardFocus(true);
+
   importButton_.onClick = [this] {
     if (onImport)
       onImport();
@@ -114,13 +130,13 @@ void ControlDeck::resized() {
   stemPanel_->setBounds(stemArea);
   glowMeters_->setBounds(meterArea);
 
-  // Center panel layout
-  auto actionRow = centerArea.removeFromTop(36);
-  importButton_.setBounds(actionRow.removeFromLeft(72).reduced(2));
-  autoMixButton_.setBounds(actionRow.removeFromLeft(80).reduced(2));
-  autoMasterButton_.setBounds(actionRow.removeFromLeft(96).reduced(2));
-  batchButton_.setBounds(actionRow.removeFromLeft(64).reduced(2));
-  exportButton_.setBounds(actionRow.removeFromLeft(72).reduced(2));
+  // Center panel layout (40px action row for touch-friendly hit targets)
+  auto actionRow = centerArea.removeFromTop(40);
+  importButton_.setBounds(actionRow.removeFromLeft(76).reduced(2));
+  autoMixButton_.setBounds(actionRow.removeFromLeft(84).reduced(2));
+  autoMasterButton_.setBounds(actionRow.removeFromLeft(100).reduced(2));
+  batchButton_.setBounds(actionRow.removeFromLeft(68).reduced(2));
+  exportButton_.setBounds(actionRow.removeFromLeft(76).reduced(2));
 
   centerArea.removeFromTop(spacing::gapSmall);
   separatedStemsToggle_.setBounds(centerArea.removeFromTop(24).withWidth(140));

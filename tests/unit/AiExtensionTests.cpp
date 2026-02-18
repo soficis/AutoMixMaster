@@ -53,7 +53,21 @@ TEST_CASE("Model pack loader parses schema and defaults", "[ai]") {
 
   {
     std::ofstream meta(tempDir / "model.json");
-    meta << R"({"schema_version":1,"id":"mix-v1","name":"Mix V1","type":"mix_parameters","engine":"onnxruntime","version":"1.0.0","model_file":"model.onnx","license":"MIT","source":"unit-test","feature_schema_version":"1.0.0","output_schema":{"target_lufs":"float"}})";
+    meta << R"({
+  "schema_version": 1,
+  "id": "mix-v1",
+  "name": "Mix V1",
+  "type": "mix_parameters",
+  "engine": "onnxruntime",
+  "version": "1.0.0",
+  "model_file": "model.onnx",
+  "license": "MIT",
+  "source": "unit-test",
+  "feature_schema_version": "1.0.0",
+  "output_schema": {
+    "target_lufs": "float"
+  }
+})";
   }
 
   const auto pack = loader.load(tempDir);
@@ -76,13 +90,33 @@ TEST_CASE("Model manager scans packs and stores active selections", "[ai]") {
     std::ofstream model(roleDir / "model.onnx", std::ios::binary);
     model << "role";
     std::ofstream meta(roleDir / "model.json");
-    meta << R"({"id":"role-classifier-v1","type":"role_classifier","model_file":"model.onnx","license":"MIT","source":"unit-test","feature_schema_version":"1.0.0","output_schema":{"prob_vocals":"float"}})";
+    meta << R"({
+  "id": "role-classifier-v1",
+  "type": "role_classifier",
+  "model_file": "model.onnx",
+  "license": "MIT",
+  "source": "unit-test",
+  "feature_schema_version": "1.0.0",
+  "output_schema": {
+    "prob_vocals": "float"
+  }
+})";
   }
   {
     std::ofstream model(mixDir / "model.onnx", std::ios::binary);
     model << "mix";
     std::ofstream meta(mixDir / "model.json");
-    meta << R"({"id":"mix-params-v1","type":"mix_parameters","model_file":"model.onnx","license":"MIT","source":"unit-test","feature_schema_version":"1.0.0","output_schema":{"target_lufs":"float"}})";
+    meta << R"({
+  "id": "mix-params-v1",
+  "type": "mix_parameters",
+  "model_file": "model.onnx",
+  "license": "MIT",
+  "source": "unit-test",
+  "feature_schema_version": "1.0.0",
+  "output_schema": {
+    "target_lufs": "float"
+  }
+})";
   }
 
   automix::ai::ModelManager manager(root);
@@ -114,7 +148,13 @@ TEST_CASE("Model pack loader rejects packs missing licensing metadata", "[ai]") 
     std::ofstream model(root / "model.onnx", std::ios::binary);
     model << "dummy";
     std::ofstream meta(root / "model.json");
-    meta << R"({"id":"invalid-meta-pack","type":"mix_parameters","engine":"onnxruntime","model_file":"model.onnx","feature_schema_version":"1.0.0"})";
+    meta << R"({
+  "id": "invalid-meta-pack",
+  "type": "mix_parameters",
+  "engine": "onnxruntime",
+  "model_file": "model.onnx",
+  "feature_schema_version": "1.0.0"
+})";
   }
 
   automix::ai::ModelPackLoader loader;

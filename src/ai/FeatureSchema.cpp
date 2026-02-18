@@ -9,6 +9,53 @@ double vectorValueOrDefault(const std::vector<double>& values, const size_t inde
   return index < values.size() ? values[index] : 0.0;
 }
 
+struct SemanticVersion {
+  int major = 0;
+  int minor = 0;
+  int patch = 0;
+  bool valid = false;
+};
+
+SemanticVersion parseVersion(const std::string& versionStr) {
+  SemanticVersion version;
+  
+  if (versionStr.empty()) {
+    return version;
+  }
+  
+  size_t pos = 0;
+  size_t dotPos = versionStr.find('.');
+  
+  try {
+    // Parse major version
+    if (dotPos == std::string::npos) {
+      // Partial version with only major - not valid for strict semver
+      return version;
+    }
+    
+    version.major = std::stoi(versionStr.substr(pos, dotPos - pos));
+    pos = dotPos + 1;
+    
+    // Parse minor version
+    dotPos = versionStr.find('.', pos);
+    if (dotPos == std::string::npos) {
+      // Partial version with major.minor only - not valid for strict semver
+      return version;
+    }
+    
+    version.minor = std::stoi(versionStr.substr(pos, dotPos - pos));
+    pos = dotPos + 1;
+    
+    // Parse patch version
+    version.patch = std::stoi(versionStr.substr(pos));
+    version.valid = true;
+  } catch (...) {
+    version.valid = false;
+  }
+  
+  return version;
+}
+
 } // namespace
 
 const std::vector<std::string>& FeatureSchemaV1::names() {
@@ -83,7 +130,33 @@ const std::vector<std::string>& FeatureSchemaV1::names() {
   return kNames;
 }
 
-bool FeatureSchemaV1::isCompatible(const std::string& version) { return version == kVersion; }
+bool FeatureSchemaV1::isCompatible(const std::string& version) {
+  const auto current = parseVersion(kVersion);
+  const auto provided = parseVersion(version);
+  
+  // Both versions must be valid
+  if (!current.valid || !provided.valid) {
+    return false;
+  }
+  
+  // Major version must match exactly (breaking changes)
+  if (provided.major != current.major) {
+    return false;
+  }
+  
+  // Minor version must be >= current (backward compatible)
+  if (provided.minor < current.minor) {
+    return false;
+  }
+  
+  // If minor version is greater, patch doesn't matter (newer compatible version)
+  if (provided.minor > current.minor) {
+    return true;
+  }
+  
+  // Minor versions match, so patch must be >= current
+  return provided.patch >= current.patch;
+}
 
 size_t FeatureSchemaV1::featureCount() { return names().size(); }
 

@@ -29,8 +29,7 @@ SemanticVersion parseVersion(const std::string& versionStr) {
   try {
     // Parse major version
     if (dotPos == std::string::npos) {
-      version.major = std::stoi(versionStr);
-      version.valid = true;
+      // Partial version with only major - not valid for strict semver
       return version;
     }
     
@@ -40,8 +39,7 @@ SemanticVersion parseVersion(const std::string& versionStr) {
     // Parse minor version
     dotPos = versionStr.find('.', pos);
     if (dotPos == std::string::npos) {
-      version.minor = std::stoi(versionStr.substr(pos));
-      version.valid = true;
+      // Partial version with major.minor only - not valid for strict semver
       return version;
     }
     

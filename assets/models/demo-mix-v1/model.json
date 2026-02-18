@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "id": "demo-mix-v1",
+  "name": "Demo Mix Parameter V1",
+  "type": "mix_parameters",
+  "engine": "onnxruntime",
+  "version": "1.0.0",
+  "model_file": "model.onnx",
+  "license": "CC-BY-4.0",
+  "source": "AutoMixMaster demo catalog",
+  "feature_schema_version": "1.0.0",
+  "output_schema": {
+    "confidence": "float",
+    "global_gain_db": "float",
+    "global_pan_bias": "float"
+  }
+}

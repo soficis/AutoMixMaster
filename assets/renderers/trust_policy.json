@@ -1,0 +1,12 @@
+{
+  "enforceSignedDescriptors": false,
+  "trustedSigners": [
+    "automix_official",
+    "community_vendor"
+  ],
+  "profileRendererPins": {
+    "default": ["BuiltIn"],
+    "streaming_spotify": ["BuiltIn", "PhaseLimiter"],
+    "mobile_fast_turn": ["BuiltIn"]
+  }
+}

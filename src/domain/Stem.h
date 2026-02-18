@@ -15,6 +15,8 @@ struct Stem {
   StemRole role = StemRole::Unknown;
   StemOrigin origin = StemOrigin::Recorded;
   std::optional<std::string> busId;
+  std::optional<double> separationConfidence;
+  std::optional<double> separationArtifactRisk;
   bool enabled = true;
 };
 

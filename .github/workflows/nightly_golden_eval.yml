@@ -1,0 +1,41 @@
+name: Nightly Golden Eval
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  golden-eval:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build-codex -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DBUILD_TOOLS=ON
+
+      - name: Build
+        run: cmake --build build-codex --parallel
+
+      - name: Run Unit + Regression Tests
+        run: ctest --test-dir build-codex --output-on-failure -j4
+
+      - name: Update Eval Trend
+        run: |
+          ./build-codex/automix_dev_tools eval-trend \
+            --baseline tests/regression/baselines.json \
+            --work-dir artifacts/ci_eval \
+            --trend artifacts/eval/golden_trend.json \
+            --out artifacts/eval/nightly_summary.json \
+            --json
+
+      - name: Upload Eval Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-golden-eval
+          path: |
+            artifacts/eval/golden_trend.json
+            artifacts/eval/nightly_summary.json
+            artifacts/ci_eval

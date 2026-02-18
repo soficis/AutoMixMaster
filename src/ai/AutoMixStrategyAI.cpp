@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "ai/FeatureSchema.h"
+
 namespace automix::ai {
 namespace {
 
@@ -26,13 +28,10 @@ domain::MixPlan AutoMixStrategyAI::buildPlan(const domain::Session& session,
   }
 
   std::vector<double> features;
-  features.reserve(analysisEntries.size() * 5);
+  features.reserve(analysisEntries.size() * FeatureSchemaV1::featureCount());
   for (const auto& entry : analysisEntries) {
-    features.push_back(entry.metrics.rmsDb);
-    features.push_back(entry.metrics.lowEnergy);
-    features.push_back(entry.metrics.midEnergy);
-    features.push_back(entry.metrics.highEnergy);
-    features.push_back(entry.metrics.artifactRisk);
+    const auto stemFeatures = FeatureSchemaV1::extract(entry.metrics);
+    features.insert(features.end(), stemFeatures.begin(), stemFeatures.end());
   }
 
   const InferenceRequest request{
@@ -73,8 +72,13 @@ domain::MixPlan AutoMixStrategyAI::buildPlan(const domain::Session& session,
     }
 
     const double gainClamp = gainClampForOrigin(origin);
-    decision.gainDb = std::clamp(blend(decision.gainDb, aiGain, confidence), -gainClamp, gainClamp);
-    decision.pan = std::clamp(blend(decision.pan, aiPan, confidence), -1.0, 1.0);
+    const double gainDeviation = std::abs(aiGain - decision.gainDb);
+    const double panDeviation = std::abs(aiPan - decision.pan);
+    const double calibration = (gainDeviation > 9.0 ? 0.35 : 1.0) * (panDeviation > 0.8 ? 0.6 : 1.0);
+    const double effectiveConfidence = std::clamp(confidence * calibration, 0.0, 1.0);
+
+    decision.gainDb = std::clamp(blend(decision.gainDb, aiGain, effectiveConfidence), -gainClamp, gainClamp);
+    decision.pan = std::clamp(blend(decision.pan, aiPan, effectiveConfidence), -1.0, 1.0);
     decision.highPassHz = std::clamp(decision.highPassHz, 0.0, 240.0);
   }
 

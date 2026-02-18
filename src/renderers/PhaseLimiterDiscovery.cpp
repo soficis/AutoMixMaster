@@ -9,20 +9,14 @@
 
 #include <juce_core/juce_core.h>
 
+#include "util/FileUtils.h"
+#include "util/StringUtils.h"
+
 namespace automix::renderers {
 namespace {
 
-bool isRegularFile(const std::filesystem::path& path) {
-  std::error_code error;
-  return std::filesystem::is_regular_file(path, error);
-}
-
-std::string toLower(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char c) {
-    return static_cast<char>(std::tolower(c));
-  });
-  return value;
-}
+using ::automix::util::isRegularFile;
+using ::automix::util::toLower;
 
 std::vector<std::string> executableNames() {
 #if defined(_WIN32)

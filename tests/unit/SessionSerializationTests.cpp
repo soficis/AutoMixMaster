@@ -12,6 +12,24 @@ TEST_CASE("Session serialization round trip preserves required fields", "[sessio
   session.sessionName = "round_trip";
   session.originalMixPath = "C:/audio/original_mix.wav";
   session.residualBlend = 7.5;
+  session.renderSettings.outputFormat = "mp3";
+  session.renderSettings.exportSpeedMode = "quick";
+  session.renderSettings.lossyBitrateKbps = 256;
+  session.renderSettings.lossyQuality = 8;
+  session.renderSettings.mp3UseVbr = true;
+  session.renderSettings.mp3VbrQuality = 2;
+  session.renderSettings.processingThreads = 4;
+  session.renderSettings.preferHardwareAcceleration = true;
+  session.renderSettings.metadataPolicy = "override_template";
+  session.renderSettings.metadataTemplate = {{"artist", "AutoMixMaster"}, {"comment", "test"}};
+  session.timeline.loopEnabled = true;
+  session.timeline.loopInSeconds = 12.5;
+  session.timeline.loopOutSeconds = 28.0;
+  session.timeline.zoom = 4.0;
+  session.timeline.fineScrub = true;
+  session.projectProfileId = "streaming_spotify";
+  session.safetyPolicyId = "strict";
+  session.preferredStemCount = 6;
 
   automix::domain::Stem stem;
   stem.id = "s1";
@@ -38,6 +56,23 @@ TEST_CASE("Session serialization round trip preserves required fields", "[sessio
   REQUIRE(decoded.stems.front().origin == automix::domain::StemOrigin::Separated);
   REQUIRE(decoded.mixPlan.has_value());
   REQUIRE(decoded.mixPlan->dryWet == Catch::Approx(0.8));
+  REQUIRE(decoded.renderSettings.outputFormat == "mp3");
+  REQUIRE(decoded.renderSettings.exportSpeedMode == "quick");
+  REQUIRE(decoded.renderSettings.lossyBitrateKbps == 256);
+  REQUIRE(decoded.renderSettings.lossyQuality == 8);
+  REQUIRE(decoded.renderSettings.mp3UseVbr == true);
+  REQUIRE(decoded.renderSettings.mp3VbrQuality == 2);
+  REQUIRE(decoded.renderSettings.processingThreads == 4);
+  REQUIRE(decoded.renderSettings.metadataPolicy == "override_template");
+  REQUIRE(decoded.renderSettings.metadataTemplate.at("artist") == "AutoMixMaster");
+  REQUIRE(decoded.timeline.loopEnabled == true);
+  REQUIRE(decoded.timeline.loopInSeconds == Catch::Approx(12.5));
+  REQUIRE(decoded.timeline.loopOutSeconds == Catch::Approx(28.0));
+  REQUIRE(decoded.timeline.zoom == Catch::Approx(4.0));
+  REQUIRE(decoded.timeline.fineScrub == true);
+  REQUIRE(decoded.projectProfileId == "streaming_spotify");
+  REQUIRE(decoded.safetyPolicyId == "strict");
+  REQUIRE(decoded.preferredStemCount == 6);
 }
 
 TEST_CASE("Session deserialization handles missing optional fields", "[session]") {
@@ -54,6 +89,20 @@ TEST_CASE("Session deserialization handles missing optional fields", "[session]"
   REQUIRE(decoded.originalMixPath.has_value() == false);
   REQUIRE(decoded.residualBlend == Catch::Approx(0.0));
   REQUIRE(decoded.renderSettings.blockSize == 1024);
+  REQUIRE(decoded.renderSettings.outputFormat == "auto");
+  REQUIRE(decoded.renderSettings.exportSpeedMode == "final");
+  REQUIRE(decoded.renderSettings.lossyBitrateKbps == 320);
+  REQUIRE(decoded.renderSettings.lossyQuality == 7);
+  REQUIRE(decoded.renderSettings.mp3UseVbr == false);
+  REQUIRE(decoded.renderSettings.mp3VbrQuality == 4);
+  REQUIRE(decoded.renderSettings.metadataPolicy == "copy_all");
+  REQUIRE(decoded.renderSettings.metadataTemplate.empty());
+  REQUIRE(decoded.renderSettings.preferHardwareAcceleration == true);
+  REQUIRE(decoded.timeline.loopEnabled == false);
+  REQUIRE(decoded.timeline.zoom == Catch::Approx(1.0));
+  REQUIRE(decoded.projectProfileId == "default");
+  REQUIRE(decoded.safetyPolicyId == "balanced");
+  REQUIRE(decoded.preferredStemCount == 4);
   REQUIRE(decoded.stems.front().enabled == true);
   REQUIRE(decoded.stems.front().origin == automix::domain::StemOrigin::Recorded);
 }

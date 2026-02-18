@@ -249,6 +249,7 @@ target_link_libraries(AutoMixMasterApp
     juce::juce_gui_extra
     juce::juce_audio_devices
     juce::juce_audio_formats
+    juce::juce_audio_utils
     juce::juce_dsp
 )
 

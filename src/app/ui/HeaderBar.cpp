@@ -16,6 +16,18 @@ HeaderBar::HeaderBar() {
   addAndMakeVisible(modelsButton_);
   addAndMakeVisible(settingsButton_);
 
+  // Tooltips
+  saveButton_.setTooltip("Save Session (Ctrl+S)");
+  loadButton_.setTooltip("Load Session (Ctrl+O)");
+  modelsButton_.setTooltip("Model Manager (Ctrl+K)");
+  settingsButton_.setTooltip("Settings");
+
+  // Keyboard focus
+  saveButton_.setWantsKeyboardFocus(true);
+  loadButton_.setWantsKeyboardFocus(true);
+  modelsButton_.setWantsKeyboardFocus(true);
+  settingsButton_.setWantsKeyboardFocus(true);
+
   saveButton_.onClick = [this] {
     if (onSaveSession)
       onSaveSession();
@@ -42,9 +54,11 @@ void HeaderBar::paint(juce::Graphics& g) {
   g.setFont(typography::heading());
   g.drawText("AutoMixMaster", 16, 0, 200, getHeight(), juce::Justification::centredLeft);
 
-  // Bottom border
+  // Bottom border with subtle shadow
   g.setColour(colour(colours::surfaceBorder));
   g.fillRect(0, getHeight() - 1, getWidth(), 1);
+  g.setColour(colour(colours::background).withAlpha(0.3f));
+  g.fillRect(0, getHeight(), getWidth(), 2);
 }
 
 void HeaderBar::resized() {
@@ -53,12 +67,12 @@ void HeaderBar::resized() {
   // Logo takes left portion
   area.removeFromLeft(200);
 
-  // Buttons on the right
-  auto rightArea = area.removeFromRight(320);
-  settingsButton_.setBounds(rightArea.removeFromRight(72).reduced(2));
-  modelsButton_.setBounds(rightArea.removeFromRight(72).reduced(2));
-  loadButton_.setBounds(rightArea.removeFromRight(72).reduced(2));
-  saveButton_.setBounds(rightArea.removeFromRight(72).reduced(2));
+  // Buttons on the right (80px each for better hit targets)
+  auto rightArea = area.removeFromRight(340);
+  settingsButton_.setBounds(rightArea.removeFromRight(80).reduced(2));
+  modelsButton_.setBounds(rightArea.removeFromRight(80).reduced(2));
+  loadButton_.setBounds(rightArea.removeFromRight(80).reduced(2));
+  saveButton_.setBounds(rightArea.removeFromRight(80).reduced(2));
 
   // Session name in remaining center space
   sessionNameLabel_.setBounds(area);

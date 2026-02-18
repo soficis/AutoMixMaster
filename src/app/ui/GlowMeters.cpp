@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <sstream>
 
 namespace automix::app {
 
@@ -28,7 +27,7 @@ GlowMeters::GlowMeters() {
   addAndMakeVisible(shortTermLabel_);
   addAndMakeVisible(truePeakLabel_);
 
-  startTimerHz(30);
+  startTimerHz(20);
 }
 
 GlowMeters::~GlowMeters() {
@@ -91,23 +90,23 @@ void GlowMeters::timerCallback() {
     rightPeak_ = smooth(rightPeak_, targetRightPeak_, 0.01f, 0.02f);
   }
 
-  // Update text labels
-  std::ostringstream lufsText;
-  lufsText.precision(1);
-  lufsText << std::fixed << "LUFS: " << integratedLufs_;
-  lufsLabel_.setText(lufsText.str(), juce::dontSendNotification);
+  // Pre-allocated string updates (avoid ostringstream allocation per frame)
+  lufsText_ = "LUFS: " + juce::String(integratedLufs_, 1);
+  stText_ = "ST: " + juce::String(shortTermLufs_, 1);
+  tpText_ = "TP: " + juce::String(truePeakDbtp_, 1) + " dBTP";
 
-  std::ostringstream stText;
-  stText.precision(1);
-  stText << std::fixed << "ST: " << shortTermLufs_;
-  shortTermLabel_.setText(stText.str(), juce::dontSendNotification);
+  lufsLabel_.setText(lufsText_, juce::dontSendNotification);
+  shortTermLabel_.setText(stText_, juce::dontSendNotification);
+  truePeakLabel_.setText(tpText_, juce::dontSendNotification);
 
-  std::ostringstream tpText;
-  tpText.precision(1);
-  tpText << std::fixed << "TP: " << truePeakDbtp_ << " dBTP";
-  truePeakLabel_.setText(tpText.str(), juce::dontSendNotification);
-
-  repaint();
+  // Dirty-check: skip repaint if meter values haven't changed significantly
+  constexpr float threshold = 0.1f;
+  if (std::abs(leftLevel_ - lastRenderedLeft_) > threshold ||
+      std::abs(rightLevel_ - lastRenderedRight_) > threshold) {
+    lastRenderedLeft_ = leftLevel_;
+    lastRenderedRight_ = rightLevel_;
+    repaint();
+  }
 }
 
 void GlowMeters::drawMeter(juce::Graphics& g, juce::Rectangle<float> bounds, float levelDb,
@@ -126,6 +125,18 @@ void GlowMeters::drawMeter(juce::Graphics& g, juce::Rectangle<float> bounds, flo
   gradient.addColour(0.6, colour(colours::meterMid));
   g.setGradientFill(gradient);
   g.fillRoundedRectangle(fillBounds, metrics::cornerRadiusSmall);
+
+  // Subtle glow around active meter area
+  if (normalizedLevel > 0.05f) {
+    auto glowColour = colour(colours::meterLow).withAlpha(0.15f);
+    if (normalizedLevel > 0.8f)
+      glowColour = colour(colours::meterHigh).withAlpha(0.2f);
+    else if (normalizedLevel > 0.5f)
+      glowColour = colour(colours::meterMid).withAlpha(0.15f);
+
+    g.setColour(glowColour);
+    g.drawRoundedRectangle(fillBounds.expanded(2.0f), metrics::cornerRadiusSmall, 2.0f);
+  }
 
   // Peak hold indicator
   float normalizedPeak = dbToNormalized(peakDb);
@@ -148,8 +159,8 @@ void GlowMeters::paint(juce::Graphics& g) {
   float labelHeight = 54.0f;
   auto meterArea = area.withTrimmedBottom(labelHeight);
 
-  // Two meter bars side by side
-  float meterWidth = std::min(24.0f, meterArea.getWidth() * 0.3f);
+  // Two meter bars side by side (32px wide for better visibility)
+  float meterWidth = std::min(32.0f, meterArea.getWidth() * 0.35f);
   float gap = 4.0f;
   float totalMeterWidth = meterWidth * 2.0f + gap;
   float meterX = meterArea.getCentreX() - totalMeterWidth * 0.5f;

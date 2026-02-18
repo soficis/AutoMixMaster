@@ -30,9 +30,18 @@ public:
 private:
   double progressFromX(int x) const;
   void buildWaveformCache();
+  void buildMipLevels();
+
+  // Mip-level cached peak data (built once on setBuffer)
+  static constexpr int kMipLevels = 3;
+  static constexpr int kMipFactors[kMipLevels] = {1, 4, 16};
+  std::vector<float> mipPeaks_[kMipLevels];
+  int mipSampleCounts_[kMipLevels] = {0, 0, 0};
 
   std::vector<float> waveformPeaks_;
   int cachedWidth_ = 0;
+  double cachedZoomFactor_ = 0.0;
+  double cachedZoomCenter_ = 0.0;
   double playheadProgress_ = 0.0;
   double zoomFactor_ = 1.0;
   double zoomCenter_ = 0.5;

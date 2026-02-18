@@ -82,7 +82,7 @@ void AutoMixLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& b
   } else if (shouldDrawButtonAsDown) {
     bg = colour(colours::primaryPressed);
   } else if (shouldDrawButtonAsHighlighted) {
-    bg = colour(colours::primaryHover);
+    bg = colour(colours::primary).interpolatedWith(colour(colours::primaryHover), 0.6f);
   } else if (button.getToggleState()) {
     bg = colour(colours::primary);
   } else {
@@ -91,6 +91,9 @@ void AutoMixLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& b
 
   g.setColour(bg);
   g.fillRoundedRectangle(bounds, cornerSize);
+
+  // Focus ring
+  drawFocusRing(g, button);
 }
 
 void AutoMixLookAndFeel::drawButtonText(juce::Graphics& g, juce::TextButton& button,
@@ -189,8 +192,10 @@ void AutoMixLookAndFeel::drawLinearSlider(juce::Graphics& g, int x, int y, int w
                              trackWidth * 0.5f);
     }
 
-    // Thumb
+    // Thumb — enlarged on hover
     auto thumbRadius = metrics::sliderThumbRadius;
+    if (slider.isMouseOverOrDragging())
+      thumbRadius *= 1.2f;
     auto thumbY = static_cast<float>(y) + static_cast<float>(height) * 0.5f;
     g.setColour(slider.isEnabled() ? colour(colours::text) : colour(colours::textDisabled));
     g.fillEllipse(sliderPos - thumbRadius, thumbY - thumbRadius, thumbRadius * 2.0f, thumbRadius * 2.0f);
@@ -209,8 +214,10 @@ void AutoMixLookAndFeel::drawLinearSlider(juce::Graphics& g, int x, int y, int w
                              trackWidth * 0.5f);
     }
 
-    // Thumb
+    // Thumb — enlarged on hover
     auto thumbRadius = metrics::sliderThumbRadius;
+    if (slider.isMouseOverOrDragging())
+      thumbRadius *= 1.2f;
     auto thumbX = static_cast<float>(x) + static_cast<float>(width) * 0.5f;
     g.setColour(slider.isEnabled() ? colour(colours::text) : colour(colours::textDisabled));
     g.fillEllipse(thumbX - thumbRadius, sliderPos - thumbRadius, thumbRadius * 2.0f, thumbRadius * 2.0f);
@@ -370,6 +377,20 @@ juce::Font AutoMixLookAndFeel::getComboBoxFont(juce::ComboBox& /*box*/) {
 
 juce::Font AutoMixLookAndFeel::getLabelFont(juce::Label& /*label*/) {
   return typography::body();
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Focus Ring
+// ─────────────────────────────────────────────────────────────────
+
+void AutoMixLookAndFeel::drawFocusRing(juce::Graphics& g, juce::Component& component) {
+  if (component.hasKeyboardFocus(false)) {
+    auto w = static_cast<float>(component.getWidth());
+    auto h = static_cast<float>(component.getHeight());
+    g.setColour(colour(focus::ringColour));
+    g.drawRoundedRectangle(0.5f, 0.5f, w - 1.0f, h - 1.0f,
+                           metrics::cornerRadius, focus::ringWidth);
+  }
 }
 
 } // namespace automix::app

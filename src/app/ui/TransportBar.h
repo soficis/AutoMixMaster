@@ -14,6 +14,7 @@ public:
 
   void paint(juce::Graphics& g) override;
   void resized() override;
+  bool keyPressed(const juce::KeyPress& key) override;
 
   void setPlaying(bool playing);
   void setTimeDisplay(double currentSeconds, double totalSeconds);
@@ -28,6 +29,7 @@ public:
   std::function<void()> onSkipToEnd;
   std::function<void(double)> onVolumeChanged;
   std::function<void()> onLoopToggle;
+  std::function<void(double)> onSeekRelative; // seconds offset (+/- 5s)
 
 private:
   void sliderValueChanged(juce::Slider* slider) override;

@@ -10,6 +10,10 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
+
+#include <juce_audio_utils/juce_audio_utils.h>
+#include <nlohmann/json.hpp>
 
 namespace automix::app {
 
@@ -48,6 +52,8 @@ void updateStemPanelFromSession(StemPanel& panel, const domain::Session& session
 // ─────────────────────────────────────────────────────────────────
 
 MainLayout::MainLayout() {
+  setWantsKeyboardFocus(true);
+
   // 1. Create UI components
   headerBar_ = std::make_unique<HeaderBar>();
   heroWaveform_ = std::make_unique<HeroWaveform>();
@@ -280,6 +286,44 @@ MainLayout::MainLayout() {
     processingController_ = std::make_unique<ProcessingController>(backgroundPool_, std::move(cb));
   }
 
+  // --- PreviewController ---
+  {
+    PreviewController::Callbacks cb;
+    cb.onPreviewReady = [safe](PreviewBuildResult result) {
+      juce::MessageManager::callAsync([safe, result = std::move(result)]() {
+        if (!safe)
+          return;
+
+        // Discard stale results
+        if (result.generation < safe->previewBuildGeneration_.load())
+          return;
+
+        if (!result.success) {
+          if (result.errorText.isNotEmpty())
+            safe->appendTaskHistory("Preview build failed: " + result.errorText);
+          return;
+        }
+
+        // Update playback buffer
+        {
+          std::lock_guard<std::mutex> lock(safe->playbackBufferMutex_);
+          safe->playbackBuffer_ = result.preview;
+        }
+
+        // Update waveform and transport
+        safe->heroWaveform_->setBuffer(result.preview);
+        safe->updateTransportFromBuffer(result.preview);
+
+        // Restore playback position if possible
+        if (result.previousProgress > 0.0 && result.previousProgress < 1.0)
+          safe->transportController_.seekToFraction(result.previousProgress);
+
+        safe->appendTaskHistory("Preview updated");
+      });
+    };
+    previewController_ = std::make_unique<PreviewController>(backgroundPool_, std::move(cb));
+  }
+
   // 5. Audio device
   audioDeviceManager_.initialise(0, 2, nullptr, true);
   audioDeviceManager_.addAudioCallback(this);
@@ -324,6 +368,49 @@ void MainLayout::resized() {
   fb.items.add(juce::FlexItem(*taskCenter_).withHeight(static_cast<float>(kTaskCenterHeight)));
 
   fb.performLayout(area);
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Keyboard Shortcuts
+// ─────────────────────────────────────────────────────────────────
+
+bool MainLayout::keyPressed(const juce::KeyPress& key) {
+  auto ctrl = juce::ModifierKeys::ctrlModifier;
+  if (key == juce::KeyPress('s', ctrl, 0)) {
+    onSaveSession();
+    return true;
+  }
+  if (key == juce::KeyPress('o', ctrl, 0)) {
+    onLoadSession();
+    return true;
+  }
+  if (key == juce::KeyPress('i', ctrl, 0)) {
+    onImport();
+    return true;
+  }
+  if (key == juce::KeyPress('m', ctrl, 0)) {
+    onAutoMix();
+    return true;
+  }
+  if (key == juce::KeyPress('e', ctrl, 0)) {
+    onExport();
+    return true;
+  }
+  if (key == juce::KeyPress('k', ctrl, 0)) {
+    onModelsMenu();
+    return true;
+  }
+  if (key == juce::KeyPress::spaceKey) {
+    if (transportController_.isPlaying()) {
+      transportController_.pause();
+      transportBar_->setPlaying(false);
+    } else {
+      transportController_.play();
+      transportBar_->setPlaying(true);
+    }
+    return true;
+  }
+  return false;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -399,9 +486,7 @@ void MainLayout::wireHeaderCallbacks() {
   headerBar_->onSaveSession = [this] { onSaveSession(); };
   headerBar_->onLoadSession = [this] { onLoadSession(); };
   headerBar_->onModels = [this] { onModelsMenu(); };
-  headerBar_->onSettings = [this] {
-    appendTaskHistory("Settings dialog not yet implemented");
-  };
+  headerBar_->onSettings = [this] { onSettings(); };
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -434,6 +519,14 @@ void MainLayout::wireTransportCallbacks() {
     heroWaveform_->setLoopRange(tl.loopEnabled,
                                 transportController_.loopInProgress(),
                                 transportController_.loopOutProgress());
+  };
+  transportBar_->onSeekRelative = [this](double offsetSeconds) {
+    double newPos = transportController_.positionSeconds() + offsetSeconds;
+    double total = transportController_.totalSeconds();
+    if (total > 0.0) {
+      double frac = std::clamp(newPos / total, 0.0, 1.0);
+      transportController_.seekToFraction(frac);
+    }
   };
 }
 
@@ -806,6 +899,26 @@ void MainLayout::onModelsMenu() {
 }
 
 // ─────────────────────────────────────────────────────────────────
+// Action: Settings
+// ─────────────────────────────────────────────────────────────────
+
+void MainLayout::onSettings() {
+  auto* selector = new juce::AudioDeviceSelectorComponent(
+      audioDeviceManager_, 0, 0, 0, 2, false, false, true, false);
+  selector->setSize(500, 400);
+
+  juce::DialogWindow::LaunchOptions options;
+  options.content.setOwned(selector);
+  options.dialogTitle = "Audio Settings";
+  options.dialogBackgroundColour = colour(colours::surface);
+  options.escapeKeyTriggersCloseButton = true;
+  options.useNativeTitleBar = true;
+  options.resizable = false;
+  options.launchAsync();
+  appendTaskHistory("Settings dialog opened");
+}
+
+// ─────────────────────────────────────────────────────────────────
 // UI Update: Transport Display
 // ─────────────────────────────────────────────────────────────────
 
@@ -853,8 +966,46 @@ void MainLayout::updateMeterPanel(const automaster::MasteringReport& report) {
 }
 
 void MainLayout::rebuildPreviewBuffersAsync() {
-  // Simplified preview rebuild - just mix stems together
-  appendTaskHistory("Preview rebuild requested");
+  if (session_.stems.empty())
+    return;
+
+  // Build a session copy with solo/mute state applied from the StemPanel
+  domain::Session previewSession = session_;
+  auto displays = controlDeck_->getStemPanel().getStemDisplays();
+
+  bool anySoloed = false;
+  for (const auto& d : displays) {
+    if (d.solo) {
+      anySoloed = true;
+      break;
+    }
+  }
+
+  for (auto& stem : previewSession.stems) {
+    for (const auto& d : displays) {
+      if (d.id == stem.id) {
+        if (d.mute) {
+          stem.enabled = false;
+        } else if (anySoloed) {
+          stem.enabled = d.solo;
+        } else {
+          stem.enabled = true;
+        }
+        break;
+      }
+    }
+  }
+
+  auto gen = ++previewBuildGeneration_;
+  double currentProgress = transportController_.progress();
+
+  PreviewBuildRequest request;
+  request.session = std::move(previewSession);
+  request.generation = gen;
+  request.previousProgress = currentProgress;
+
+  previewController_->rebuildPreview(std::move(request));
+  appendTaskHistory("Preview rebuild started");
 }
 
 void MainLayout::applyLoadedSession(domain::Session loadedSession, const juce::String& sourcePath) {
@@ -1038,7 +1189,67 @@ std::string MainLayout::selectedExportSpeedMode() const {
 }
 
 std::vector<renderers::ExternalRendererConfig> MainLayout::loadConfiguredExternalRenderers() const {
-  return {};
+  std::vector<renderers::ExternalRendererConfig> configs;
+
+  // Search for external_renderers.json in standard locations
+  std::vector<std::filesystem::path> candidates;
+  std::error_code ec;
+  auto cwd = std::filesystem::current_path(ec);
+  if (!ec) {
+    candidates.push_back(cwd / "external_renderers.json");
+    candidates.push_back(cwd / "assets" / "renderers" / "external_renderers.json");
+    auto parent = cwd.parent_path();
+    if (parent != cwd) {
+      candidates.push_back(parent / "assets" / "renderers" / "external_renderers.json");
+      auto grandparent = parent.parent_path();
+      if (grandparent != parent)
+        candidates.push_back(grandparent / "assets" / "renderers" / "external_renderers.json");
+    }
+  }
+
+  for (const auto& path : candidates) {
+    if (!std::filesystem::is_regular_file(path, ec) || ec)
+      continue;
+
+    try {
+      std::ifstream in(path);
+      if (!in.is_open())
+        continue;
+
+      nlohmann::json json;
+      in >> json;
+
+      if (!json.is_array())
+        continue;
+
+      for (const auto& entry : json) {
+        renderers::ExternalRendererConfig config;
+        config.id = entry.value("id", "");
+        config.name = entry.value("name", "");
+        config.version = entry.value("version", "unknown");
+        config.licenseId = entry.value("licenseId", "unknown");
+
+        std::string binaryPath = entry.value("binaryPath", "");
+        if (binaryPath.empty() || config.id.empty())
+          continue;
+
+        std::filesystem::path binary(binaryPath);
+        config.binaryPath = binary.is_absolute() ? binary : (path.parent_path() / binary);
+        config.bundledByDefault = entry.value("bundledByDefault", false);
+
+        if (entry.contains("pinnedProfileIds") && entry.at("pinnedProfileIds").is_array())
+          config.pinnedProfileIds = entry.at("pinnedProfileIds").get<std::vector<std::string>>();
+
+        configs.push_back(std::move(config));
+      }
+
+      break; // Use first valid config file found
+    } catch (...) {
+      continue;
+    }
+  }
+
+  return configs;
 }
 
 } // namespace automix::app

@@ -8,7 +8,14 @@
 namespace automix::ai {
 namespace {
 
+// Target LUFS convergence tolerance: 0.5 LU is below typical loudness
+// measurement uncertainty and small enough that further tightening yields
+// negligible perceptual benefit while increasing iteration cost.
 constexpr double kLoudnessToleranceLu = 0.5;
+
+// Upper bound on gain-correction iterations: the algorithm converges
+// geometrically in practice, so 4 passes are sufficient to reach
+// kLoudnessToleranceLu for realistic material without unnecessary CPU use.
 constexpr int kMaxCorrectionIterations = 4;
 
 double dbToLinear(const double db) { return std::pow(10.0, db / 20.0); }

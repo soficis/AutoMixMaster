@@ -31,15 +31,16 @@ std::vector<std::filesystem::path> parseEnvRoots() {
     return roots;
   }
 
+  constexpr char kPathDelimiter =
 #if defined(_WIN32)
-  constexpr char delimiter = ';';
+      ';';
 #else
-  constexpr char delimiter = ':';
+      ':';
 #endif
 
   std::stringstream stream(raw);
   std::string token;
-  while (std::getline(stream, token, delimiter)) {
+  while (std::getline(stream, token, kPathDelimiter)) {
     if (!token.empty()) {
       roots.emplace_back(token);
     }

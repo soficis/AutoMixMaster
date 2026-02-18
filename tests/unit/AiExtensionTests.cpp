@@ -187,10 +187,10 @@ TEST_CASE("Feature schema version compatibility uses semantic versioning", "[ai]
   REQUIRE_FALSE(automix::ai::FeatureSchemaV1::isCompatible("1.x.0"));
   REQUIRE_FALSE(automix::ai::FeatureSchemaV1::isCompatible("a.b.c"));
   
-  // Partial versions (missing components) should be handled
-  REQUIRE(automix::ai::FeatureSchemaV1::isCompatible("1"));
-  REQUIRE(automix::ai::FeatureSchemaV1::isCompatible("1.0"));
-  REQUIRE(automix::ai::FeatureSchemaV1::isCompatible("1.1"));
+  // Partial versions (missing components) should be rejected per strict semver
+  REQUIRE_FALSE(automix::ai::FeatureSchemaV1::isCompatible("1"));
+  REQUIRE_FALSE(automix::ai::FeatureSchemaV1::isCompatible("1.0"));
+  REQUIRE_FALSE(automix::ai::FeatureSchemaV1::isCompatible("1.1"));
   REQUIRE_FALSE(automix::ai::FeatureSchemaV1::isCompatible("0"));
   REQUIRE_FALSE(automix::ai::FeatureSchemaV1::isCompatible("2"));
 }

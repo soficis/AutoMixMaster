@@ -161,6 +161,40 @@ TEST_CASE("Feature schema exposes rich feature vector for AI plans", "[ai]") {
   REQUIRE(automix::ai::FeatureSchemaV1::featureCount() >= 20);
 }
 
+TEST_CASE("Feature schema version compatibility uses semantic versioning", "[ai]") {
+  // Exact version match should be compatible
+  REQUIRE(automix::ai::FeatureSchemaV1::isCompatible("1.0.0"));
+  
+  // Patch version updates should be compatible (backward compatible)
+  REQUIRE(automix::ai::FeatureSchemaV1::isCompatible("1.0.1"));
+  REQUIRE(automix::ai::FeatureSchemaV1::isCompatible("1.0.2"));
+  REQUIRE(automix::ai::FeatureSchemaV1::isCompatible("1.0.99"));
+  
+  // Minor version updates should be compatible (backward compatible)
+  REQUIRE(automix::ai::FeatureSchemaV1::isCompatible("1.1.0"));
+  REQUIRE(automix::ai::FeatureSchemaV1::isCompatible("1.2.0"));
+  REQUIRE(automix::ai::FeatureSchemaV1::isCompatible("1.99.0"));
+  REQUIRE(automix::ai::FeatureSchemaV1::isCompatible("1.1.5"));
+  
+  // Different major version should be incompatible (breaking changes)
+  REQUIRE_FALSE(automix::ai::FeatureSchemaV1::isCompatible("0.9.0"));
+  REQUIRE_FALSE(automix::ai::FeatureSchemaV1::isCompatible("2.0.0"));
+  REQUIRE_FALSE(automix::ai::FeatureSchemaV1::isCompatible("2.1.0"));
+  
+  // Invalid or malformed versions should be incompatible
+  REQUIRE_FALSE(automix::ai::FeatureSchemaV1::isCompatible(""));
+  REQUIRE_FALSE(automix::ai::FeatureSchemaV1::isCompatible("invalid"));
+  REQUIRE_FALSE(automix::ai::FeatureSchemaV1::isCompatible("1.x.0"));
+  REQUIRE_FALSE(automix::ai::FeatureSchemaV1::isCompatible("a.b.c"));
+  
+  // Partial versions (missing components) should be rejected per strict semver
+  REQUIRE_FALSE(automix::ai::FeatureSchemaV1::isCompatible("1"));
+  REQUIRE_FALSE(automix::ai::FeatureSchemaV1::isCompatible("1.0"));
+  REQUIRE_FALSE(automix::ai::FeatureSchemaV1::isCompatible("1.1"));
+  REQUIRE_FALSE(automix::ai::FeatureSchemaV1::isCompatible("0"));
+  REQUIRE_FALSE(automix::ai::FeatureSchemaV1::isCompatible("2"));
+}
+
 TEST_CASE("Model manager scans demo packs from assets roots", "[ai]") {
   automix::ai::ModelManager manager("missing_root_for_test");
   const auto packs = manager.scan();

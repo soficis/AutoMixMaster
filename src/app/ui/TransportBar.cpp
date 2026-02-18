@@ -8,6 +8,8 @@ namespace automix::app {
 using namespace theme;
 
 TransportBar::TransportBar() {
+  setWantsKeyboardFocus(true);
+
   addAndMakeVisible(skipStartButton_);
   addAndMakeVisible(playPauseButton_);
   addAndMakeVisible(stopButton_);
@@ -15,6 +17,20 @@ TransportBar::TransportBar() {
   addAndMakeVisible(timeLabel_);
   addAndMakeVisible(volumeSlider_);
   addAndMakeVisible(loopToggle_);
+
+  // Tooltips
+  skipStartButton_.setTooltip("Skip to Start (Home)");
+  playPauseButton_.setTooltip("Play / Pause (Space)");
+  stopButton_.setTooltip("Stop");
+  skipEndButton_.setTooltip("Skip to End (End)");
+  loopToggle_.setTooltip("Toggle Loop (L)");
+  volumeSlider_.setTooltip("Volume");
+
+  // Enable keyboard focus on buttons
+  skipStartButton_.setWantsKeyboardFocus(true);
+  playPauseButton_.setWantsKeyboardFocus(true);
+  stopButton_.setWantsKeyboardFocus(true);
+  skipEndButton_.setWantsKeyboardFocus(true);
 
   timeLabel_.setText("0:00 / 0:00", juce::dontSendNotification);
   timeLabel_.setFont(typography::body());
@@ -121,6 +137,48 @@ juce::String TransportBar::formatTime(double seconds) {
     out << '0';
   out << secs;
   return juce::String(out.str());
+}
+
+bool TransportBar::keyPressed(const juce::KeyPress& key) {
+  if (key == juce::KeyPress::spaceKey) {
+    if (isPlaying_) {
+      if (onPause) onPause();
+    } else {
+      if (onPlay) onPlay();
+    }
+    return true;
+  }
+  if (key == juce::KeyPress::leftKey) {
+    if (onSeekRelative) onSeekRelative(-5.0);
+    return true;
+  }
+  if (key == juce::KeyPress::rightKey) {
+    if (onSeekRelative) onSeekRelative(5.0);
+    return true;
+  }
+  if (key == juce::KeyPress::upKey) {
+    double newVol = std::min(1.0, volumeSlider_.getValue() + 0.05);
+    volumeSlider_.setValue(newVol, juce::sendNotificationSync);
+    return true;
+  }
+  if (key == juce::KeyPress::downKey) {
+    double newVol = std::max(0.0, volumeSlider_.getValue() - 0.05);
+    volumeSlider_.setValue(newVol, juce::sendNotificationSync);
+    return true;
+  }
+  if (key == juce::KeyPress::homeKey) {
+    if (onSkipToStart) onSkipToStart();
+    return true;
+  }
+  if (key == juce::KeyPress::endKey) {
+    if (onSkipToEnd) onSkipToEnd();
+    return true;
+  }
+  if (key.getTextCharacter() == 'l' || key.getTextCharacter() == 'L') {
+    if (onLoopToggle) onLoopToggle();
+    return true;
+  }
+  return false;
 }
 
 } // namespace automix::app

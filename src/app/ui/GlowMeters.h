@@ -43,6 +43,15 @@ private:
   double shortTermLufs_ = -70.0;
   double truePeakDbtp_ = -70.0;
 
+  // Previous rendered values for dirty-checking
+  float lastRenderedLeft_ = -60.0f;
+  float lastRenderedRight_ = -60.0f;
+
+  // Pre-allocated string buffers
+  juce::String lufsText_;
+  juce::String stText_;
+  juce::String tpText_;
+
   juce::Label lufsLabel_;
   juce::Label shortTermLabel_;
   juce::Label truePeakLabel_;

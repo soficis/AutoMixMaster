@@ -12,6 +12,14 @@
 
 namespace automix::domain {
 
+struct TimelineState {
+  bool loopEnabled = false;
+  double loopInSeconds = 0.0;
+  double loopOutSeconds = 0.0;
+  double zoom = 1.0;
+  bool fineScrub = false;
+};
+
 struct Session {
   int schemaVersion = 2;
   std::string sessionName;
@@ -22,6 +30,10 @@ struct Session {
   RenderSettings renderSettings;
   std::optional<MixPlan> mixPlan;
   std::optional<MasterPlan> masterPlan;
+  TimelineState timeline;
+  std::string projectProfileId = "default";
+  std::string safetyPolicyId = "balanced";
+  int preferredStemCount = 4;
 };
 
 } // namespace automix::domain

@@ -7,6 +7,7 @@ namespace automix::analysis {
 
 class ArtifactRiskEstimator {
  public:
+  ArtifactProfile profile(const engine::AudioBuffer& buffer, const AnalysisResult& metrics) const;
   double estimate(const engine::AudioBuffer& buffer, const AnalysisResult& metrics) const;
 };
 

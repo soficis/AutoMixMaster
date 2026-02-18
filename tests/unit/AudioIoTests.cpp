@@ -68,3 +68,11 @@ TEST_CASE("Resampling preserves tone behavior approximately", "[audioio]") {
   REQUIRE(ratio > 0.95);
   REQUIRE(ratio < 1.05);
 }
+
+TEST_CASE("Audio writer format resolution supports lossy formats", "[audioio]") {
+  REQUIRE(automix::util::WavWriter::resolveFormat("mix.wav", "mp3") == "mp3");
+  REQUIRE(automix::util::WavWriter::resolveFormat("mix.ogg", "auto") == "ogg");
+  REQUIRE(automix::util::WavWriter::isLossyFormat("mp3"));
+  REQUIRE(automix::util::WavWriter::isLossyFormat("ogg"));
+  REQUIRE_FALSE(automix::util::WavWriter::isLossyFormat("wav"));
+}

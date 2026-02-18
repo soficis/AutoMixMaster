@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "demo-master-v1",
+  "name": "Demo Master Parameter V1",
+  "type": "master_parameters",
+  "engine": "onnxruntime",
+  "version": "1.0.0",
+  "model_file": "model.onnx",
+  "license": "CC-BY-4.0",
+  "source": "AutoMixMaster demo catalog",
+  "feature_schema_version": "1.0.0",
+  "output_schema": {
+    "confidence": "float",
+    "target_lufs": "float",
+    "pre_gain_db": "float",
+    "limiter_ceiling_db": "float",
+    "glue_ratio": "float"
+  }
+}

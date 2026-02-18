@@ -4,14 +4,13 @@
 #include <array>
 #include <cctype>
 
+#include "ai/FeatureSchema.h"
+#include "util/StringUtils.h"
+
 namespace automix::ai {
 namespace {
 
-std::string toLower(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return value;
-}
+using ::automix::util::toLower;
 
 RolePrediction predictFromName(const std::string& stemName) {
   const auto name = toLower(stemName);
@@ -53,7 +52,7 @@ RolePrediction StemRoleClassifierAI::predict(const std::string& stemName,
   if (inference_ != nullptr && inference_->isAvailable()) {
     InferenceRequest request{
         .task = "role_classifier",
-        .features = {metrics.rmsDb, metrics.lowEnergy, metrics.midEnergy, metrics.highEnergy, metrics.artifactRisk},
+        .features = FeatureSchemaV1::extract(metrics),
     };
     const auto result = inference_->run(request);
     if (result.usedModel && !result.outputs.empty()) {

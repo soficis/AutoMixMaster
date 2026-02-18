@@ -14,6 +14,8 @@ class ModelManager {
   explicit ModelManager(std::filesystem::path rootPath = "ModelPacks");
 
   void setRootPath(const std::filesystem::path& rootPath);
+  void setRootPaths(const std::vector<std::filesystem::path>& rootPaths);
+  const std::vector<std::filesystem::path>& rootPaths() const;
   std::vector<ModelPack> scan();
   const std::vector<ModelPack>& availablePacks() const;
   std::vector<ModelPack> packsForType(const std::string& type) const;
@@ -22,7 +24,7 @@ class ModelManager {
   std::string activePackId(const std::string& task) const;
 
  private:
-  std::filesystem::path rootPath_;
+  std::vector<std::filesystem::path> rootPaths_;
   ModelPackLoader loader_;
   std::vector<ModelPack> availablePacks_;
   std::unordered_map<std::string, std::string> activePackByTask_;

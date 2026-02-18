@@ -2,6 +2,8 @@
 
 #include <fstream>
 #include <exception>
+#include <map>
+#include <optional>
 
 #include <nlohmann/json.hpp>
 
@@ -11,9 +13,16 @@
 #include "engine/AudioFileIO.h"
 #include "engine/AudioResampler.h"
 #include "engine/OfflineRenderPipeline.h"
+#include "util/MetadataPolicy.h"
+#include "util/MetadataSourceResolver.h"
 #include "util/WavWriter.h"
 
 namespace automix::renderers {
+namespace {
+
+using ::automix::util::metadataSourcePath;
+
+} // namespace
 
 bool BuiltInRenderer::isAvailable() const { return true; }
 
@@ -47,8 +56,9 @@ RenderResult BuiltInRenderer::render(const domain::Session& session,
   domain::MasterPlan plan =
       session.masterPlan.has_value() ? session.masterPlan.value()
                                      : strategy.buildPlan(domain::MasterPreset::DefaultStreaming, renderState.mixBuffer);
+  const bool usedSessionMasterPlan = session.masterPlan.has_value();
 
-  if (!session.masterPlan.has_value() && session.originalMixPath.has_value()) {
+  if (!usedSessionMasterPlan && session.originalMixPath.has_value()) {
     try {
       engine::AudioFileIO fileIO;
       engine::AudioResampler resampler;
@@ -69,21 +79,61 @@ RenderResult BuiltInRenderer::render(const domain::Session& session,
   const auto spectrumMetrics = analyzer.analyzeBuffer(mastered);
 
   util::WavWriter writer;
+  std::map<std::string, std::string> sourceMetadata;
+  if (const auto sourcePath = metadataSourcePath(session); sourcePath.has_value()) {
+    try {
+      engine::AudioFileIO fileIO;
+      sourceMetadata = fileIO.readMetadata(sourcePath.value());
+    } catch (const std::exception& error) {
+      result.logs.push_back("Metadata copy skipped: " + std::string(error.what()));
+    }
+  }
+  std::vector<std::string> metadataPolicyNotes;
+  const auto exportMetadata =
+      util::applyMetadataPolicy(sourceMetadata, settings.metadataPolicy, settings.metadataTemplate, &metadataPolicyNotes);
+  for (const auto& note : metadataPolicyNotes) {
+    result.logs.push_back(note);
+  }
   const std::filesystem::path outputPath = settings.outputPath.empty() ? "export_master.wav" : settings.outputPath;
-  writer.write(outputPath, mastered, settings.outputBitDepth);
+  writer.write(outputPath,
+               mastered,
+               settings.outputBitDepth,
+               settings.outputFormat,
+               settings.lossyBitrateKbps,
+               settings.lossyQuality,
+               settings.mp3UseVbr,
+               settings.mp3VbrQuality,
+               exportMetadata);
 
   const std::filesystem::path reportPath = outputPath.string() + ".report.json";
   nlohmann::json report = {
       {"renderer", "BuiltIn"},
       {"outputAudioPath", outputPath.string()},
       {"integratedLufs", masteringReport.integratedLufs},
+      {"shortTermLufs", masteringReport.shortTermLufs},
+      {"loudnessRange", masteringReport.loudnessRange},
+      {"samplePeakDbfs", masteringReport.samplePeakDbfs},
       {"truePeakDbtp", masteringReport.truePeakDbtp},
+      {"crestDb", masteringReport.crestDb},
+      {"monoCorrelation", masteringReport.monoCorrelation},
       {"spectrumLow", spectrumMetrics.lowEnergy},
       {"spectrumMid", spectrumMetrics.midEnergy},
       {"spectrumHigh", spectrumMetrics.highEnergy},
       {"stereoCorrelation", spectrumMetrics.stereoCorrelation},
+      {"masterPreset", plan.presetName},
+      {"masterPlanSource", usedSessionMasterPlan ? "session" : "heuristic"},
+      {"mixPlanSource", session.mixPlan.has_value() ? "session" : "heuristic"},
+      {"exportSpeedMode", settings.exportSpeedMode},
+      {"outputFormat", settings.outputFormat},
+      {"lossyBitrateKbps", settings.lossyBitrateKbps},
+      {"lossyQuality", settings.lossyQuality},
+      {"mp3Mode", settings.mp3UseVbr ? "vbr" : "cbr"},
+      {"mp3VbrQuality", settings.mp3VbrQuality},
+      {"metadataPolicy", settings.metadataPolicy},
       {"targetLufs", plan.targetLufs},
       {"targetTruePeakDbtp", plan.truePeakDbtp},
+      {"limiterCeilingDb", plan.limiterCeilingDb},
+      {"activeModules", masteringReport.activeModules},
       {"decisionLog", plan.decisionLog},
       {"renderLogs", renderState.logs},
   };

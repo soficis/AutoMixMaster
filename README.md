@@ -1,88 +1,130 @@
 <div align="center">
 
 ```
- _____________________________________________________________________________
+ ______________________________________________________________________________
  [ SYSTEM: AUTOMIXMASTER ] [ VERSION: 0.2.0 ] [ STATUS: OPERATIONAL ]
- _____________________________________________________________________________
+ ______________________________________________________________________________
 
-                 _        __  __ _      __  __           _            
-      /\        | |      |  \/  (_)    |  \/  |         | |           
-     /  \  _   _| |_ ___ | \  / |_  _ _| \  / | __ _ ___| |_ ___ _ __ 
-    / /\ \| | | | __/ _ \| |\/| | \ \/ / |\/| |/ _` / __| __/ _ \ '__|
-   / ____ \ |_| | || (_) | |  | | |>  <| |  | | (_| \__ \ ||  __/ |   
-  /_/    \_\__,_|\__\___/|_|  |_|_/_/\_\_|  |_|\__,_|____\__\___|_|   
+                  _        __  __ _      __  __           _
+       /\        | |      |  \/  (_)    |  \/  |         | |
+      /  \  _   _| |_ ___ | \  / |_  _ _| \  / | __ _ ___| |_ ___ _ __
+     / /\ \| | | | __/ _ \| |\/| | \ \/ / |\/| |/ _` / __| __/ _ \ '__|
+    / ____ \ |_| | || (_) | |  | | |>  <| |  | | (_| \__ \ ||  __/ |
+   /_/    \_\__,_|\__\___/|_|  |_|_/_/\_\_|  |_|\__,_|___/\__\___|_|
 
- -----------------------------------------------------------------------------
+ ------------------------------------------------------------------------------
 ```
 
-<img src="assets/AutoMixMaster.jpg" alt="Application Interface" width="600" style="max-width:100%; border: 1px solid #333;">
+<img src="assets/AutoMixMaster.jpg" alt="AutoMixMaster application interface" width="860">
 
 ```
----------Automatic mixing and mastering for music stems---------
+ -------- FIXED-RULE AUDIO WORKFLOW FOR MIXING AND MASTERING MUSIC STEMS --------
 ```
+
+**Designed for amateur music producers and hobbyists**
 
 </div>
 
----
-
-### [01] Introduction
-
-AutoMixMaster is an automated utility designed for amateur music producers and hobbyists to manage repetitive audio tasks. It provides a fixed algorithmic workflow for balancing levels and gain staging music stems.
-
-This application is built for personal experimentation, allowing users to process raw multi-track stems or AI-generated seeds (such as those from Udio or Suno) through set mathematical rules rather than manual mixing adjustments.
-
----
-
-### [02] Functional Workflows
-
-**AI Seed Processing**
-Processes separated audio stems from AI generation platforms. The utility applies standard level balancing to help hobbyists hear their generations with consistent gain staging.
-
-**Songwriter Prototyping**
-A simple method for moving from raw multi-track recordings to a basic reference balance. It automates technical level adjustments so creators can listen back to their ideas without manual fader manipulation.
-
-**Bulk Folder Processing**
-Processes directories of audio files to a set loudness target. Useful for organizing personal catalogs or ensuring a collection of tracks shares a similar base volume level.
+<p align="center">
+<a href="#overview">Overview</a> •
+<a href="#workflows">Workflows</a> •
+<a href="#feature-set">Feature Set</a> •
+<a href="#build--install">Build + Install</a> •
+<a href="#licensing">Licensing</a>
+</p>
 
 ---
 
-### [03] Feature Set
+## Overview
 
-* **Auto Mix**: Applies fixed algorithmic rules for level balancing and basic spatial positioning.
-* **Auto Master**: Performs automated gain staging and applies peak limiting to the final output.
-* **Batch Mode**: Sequentially processes multiple tracks or music folders.
-* **Analysis Tools**: Visual monitoring for LUFS (loudness) and peak measurements.
+AutoMixMaster is an automation utility for repetitive stem-level audio prep.
+It uses a fixed, deterministic workflow for level balancing, gain staging, and output preparation.
 
----
-
-### [04] Installation Protocols
-
-#### Environment: Windows (Visual Studio 2026)
-
-1. **Configuration**: `cmake -S . -B build -G "Visual Studio 18 2026" -A x64`
-2. **Compilation**: `cmake --build build --config Release --parallel`
-
-#### Environment: Ubuntu Linux (24.04+)
-
-1. **Dependencies**: `sudo apt-get install -y libasound2-dev libfreetype6-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.0-dev libglu1-mesa-dev mesa-common-dev`
-2. **Compilation**: `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel`
+The project is aimed at personal experimentation and iteration speed, especially for creators working with raw multitrack material or AI-generated stems.
 
 ---
 
-### [05] System Architecture and Licensing
+## Workflows
 
-AutoMixMaster is distributed under the **GNU General Public License v3 (GPLv3)**.
+| Workflow | What it does | Typical use |
+| :--- | :--- | :--- |
+| AI seed processing | Applies consistent level balancing to separated stems | Quick listening passes on Udio/Suno-style stems |
+| Songwriter prototyping | Moves raw multitrack recordings toward a reference balance | Faster idea review without manual fader passes |
+| Bulk folder processing | Processes entire directories to a configured loudness target | Keeping catalog loudness consistent |
+
+---
+
+## Feature Set
+
+| Module | Description |
+| :--- | :--- |
+| Auto Mix | Applies fixed algorithmic rules for level balancing and basic spatial placement |
+| Auto Master | Applies automated gain staging and peak limiting to final output |
+| Batch Mode | Processes multiple tracks/folders sequentially with shared settings |
+| Analysis Tools | Exposes LUFS and peak measurements for visual monitoring |
+
+---
+
+## Build + Install
+
+### Windows (Visual Studio 2026)
+
+1. Configure
+
+```bash
+cmake -S . -B build -G "Visual Studio 18 2026" -A x64
+```
+
+2. Build
+
+```bash
+cmake --build build --config Release --parallel
+```
+
+### Ubuntu Linux (24.04+)
+
+1. Install dependencies
+
+```bash
+sudo apt-get install -y \
+  libasound2-dev libfreetype6-dev libx11-dev libxcomposite-dev \
+  libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev \
+  libxrender-dev libwebkit2gtk-4.0-dev libglu1-mesa-dev mesa-common-dev
+```
+
+2. Configure + build
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+```
+
+3. Run tests (optional but recommended)
+
+```bash
+ctest --test-dir build --output-on-failure
+```
+
+---
+
+## Licensing
+
+AutoMixMaster is distributed under **GNU General Public License v3 (GPLv3)**.
 
 | Component | License | Role |
 | :--- | :--- | :--- |
-| **JUCE 8.0.8** | AGPLv3/Commercial | Framework |
-| **libebur128** | MIT | Metering |
-| **nlohmann/json** | MIT | Metadata |
-| **Catch2 3.7.1** | BSL-1.0 | Testing |
-| **PhaseLimiter** | GPL/Custom | Limiting |
+| JUCE 8.0.8 | AGPLv3 / Commercial | Framework |
+| libebur128 | MIT | Metering |
+| nlohmann/json | MIT | Metadata |
+| Catch2 3.7.1 | BSL-1.0 | Testing |
+| PhaseLimiter | GPL / Custom | Limiting |
+
+<div align="center">
 
 ```
- _____________________________________________________________________________
-                    [ THIS APPLICATION IS A WORK IN PROGRESS ]
- _____________________________________________________________________________
+ ______________________________________________________________________________
+                     [ THIS APPLICATION IS A WORK IN PROGRESS ]
+ ______________________________________________________________________________
 ```
+
+</div>

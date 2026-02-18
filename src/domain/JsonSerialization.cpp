@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "domain/ProjectProfile.h"
+
 namespace automix::domain {
 
 void to_json(Json& j, const Stem& value) {
@@ -293,7 +295,7 @@ void from_json(const Json& j, Session& value) {
   value.buses = j.value("buses", std::vector<Bus>{});
   value.projectProfileId = j.value("projectProfileId", "default");
   value.safetyPolicyId = j.value("safetyPolicyId", "balanced");
-  value.preferredStemCount = std::clamp(j.value("preferredStemCount", 4), 2, 6);
+  value.preferredStemCount = std::clamp(j.value("preferredStemCount", 4), kMinPreferredStemCount, kMaxPreferredStemCount);
 
   const auto timelineJson = j.value("timeline", Json::object());
   value.timeline.loopEnabled = timelineJson.value("loopEnabled", false);

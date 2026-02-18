@@ -693,7 +693,7 @@ std::optional<automix::domain::ProjectProfile> projectProfileFromJson(const nloh
   profile.mixModelPackId = json.value("mixModelPackId", "none");
   profile.masterModelPackId = json.value("masterModelPackId", "none");
   profile.safetyPolicyId = json.value("safetyPolicyId", "balanced");
-  profile.preferredStemCount = std::clamp(json.value("preferredStemCount", 4), 2, 6);
+  profile.preferredStemCount = std::clamp(json.value("preferredStemCount", 4), kMinPreferredStemCount, kMaxPreferredStemCount);
   profile.metadataPolicy = json.value("metadataPolicy", "copy_common");
   if (profile.metadataPolicy != "copy_all" &&
       profile.metadataPolicy != "copy_common" &&

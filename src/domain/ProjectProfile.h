@@ -8,6 +8,12 @@
 
 namespace automix::domain {
 
+// Stem count constraints for audio separation.
+// Maximum of 6 stems is based on common separation models (vocals, drums, bass, guitar, keys, other)
+// and practical UI/performance limits for real-time mixing workflows.
+constexpr int kMinPreferredStemCount = 2;
+constexpr int kMaxPreferredStemCount = 6;
+
 struct ProjectProfile {
   std::string id;
   std::string name;

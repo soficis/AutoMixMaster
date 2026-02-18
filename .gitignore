@@ -1,1 +1,79 @@
-﻿# === Build & Output === build*/ out/ bin/ _deps/ *.exe *.dll *.lib *.pdb *.ilk *.obj *.o *.exp artefacts/ *artefacts/ ntml docs/  # === CMake === CMakeCache.txt CMakeFiles/ cmake_install.cmake CTestTestfile.cmake DartConfiguration.tcl CMakeUserPresets.json  # === IDE & Editors === .vs/ .vscode/ .idea/ *.vcxproj.user *.slnx.user *.suo *.db *.opendb .cache/ .clangd/  # === Python === __pycache__/ *.pyc *.pyo *.pyd .pytest_cache/ .venv/ venv/  # === Logs & Temporary === *.log *.tmp tmp/ tmpclaude* build_config_output*.txt changed_files.txt current_diff.txt local_commits.txt full_status.txt nul  # === Analysis & Data === *.sarif *.analysis assets/**/analysis_data/ .DS_Store Thumbs.db Desktop.ini  # === Testing === Testing/ *.xml tests/regression/output/  # === Personal & Security === .env personal/ *.key *.pem .ssh/ config.ini
+﻿# === Build & Output ===
+build*/
+out/
+bin/
+_deps/
+*.exe
+*.dll
+*.lib
+*.pdb
+*.ilk
+*.obj
+*.o
+*.exp
+artefacts/
+*artefacts/
+ntml
+docs/
+
+# === CMake ===
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+DartConfiguration.tcl
+CMakeUserPresets.json
+
+# === IDE & Editors ===
+.vs/
+.vscode/
+.idea/
+*.vcxproj.user
+*.slnx.user
+*.suo
+*.db
+*.opendb
+.cache/
+.clangd/
+
+# === Python ===
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.venv/
+venv/
+
+# === Logs & Temporary ===
+*.log
+*.tmp
+tmp/
+tmpclaude*
+build_config_output*.txt
+changed_files.txt
+current_diff.txt
+local_commits.txt
+full_status.txt
+nul
+
+# === Analysis & Data ===
+*.sarif
+*.analysis
+assets/**/analysis_data/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# === Testing ===
+Testing/
+*.xml
+tests/regression/output/
+
+# === Personal & Security ===
+.env
+personal/
+*.key
+*.pem
+.ssh/
+config.ini

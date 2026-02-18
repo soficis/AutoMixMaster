@@ -1,1 +1,88 @@
-﻿<div align="center">  ```  _____________________________________________________________________________  [ SYSTEM: AUTOMIXMASTER ] [ VERSION: 0.2.0 ] [ STATUS: OPERATIONAL ]  _____________________________________________________________________________                   _        __  __ _      __  __           _                   /\        | |      |  \/  (_)    |  \/  |         | |                 /  \  _   _| |_ ___ | \  / |_  _ _| \  / | __ _ ___| |_ ___ _ __      / /\ \| | | | __/ _ \| |\/| | \ \/ / |\/| |/ _` / __| __/ _ \ '__|    / ____ \ |_| | || (_) | |  | | |>  <| |  | | (_| \__ \ ||  __/ |      /_/    \_\__,_|\__\___/|_|  |_|_/_/\_\_|  |_|\__,_|____\__\___|_|      ----------------------------------------------------------------------------- ```  <img src="assets/AutoMixMaster.jpg" alt="Application Interface" width="600" style="max-width:100%; border: 1px solid #333;">  ``` ---------Automatic mixing and mastering for music stems--------- ```  </div>  ---  ### [01] Introduction  AutoMixMaster is an automated utility designed for amateur music producers and hobbyists to manage repetitive audio tasks. It provides a fixed algorithmic workflow for balancing levels and gain staging music stems.  This application is built for personal experimentation, allowing users to process raw multi-track stems or AI-generated seeds (such as those from Udio or Suno) through set mathematical rules rather than manual mixing adjustments.  ---  ### [02] Functional Workflows  **AI Seed Processing** Processes separated audio stems from AI generation platforms. The utility applies standard level balancing to help hobbyists hear their generations with consistent gain staging.  **Songwriter Prototyping** A simple method for moving from raw multi-track recordings to a basic reference balance. It automates technical level adjustments so creators can listen back to their ideas without manual fader manipulation.  **Bulk Folder Processing** Processes directories of audio files to a set loudness target. Useful for organizing personal catalogs or ensuring a collection of tracks shares a similar base volume level.  ---  ### [03] Feature Set  * **Auto Mix**: Applies fixed algorithmic rules for level balancing and basic spatial positioning. * **Auto Master**: Performs automated gain staging and applies peak limiting to the final output. * **Batch Mode**: Sequentially processes multiple tracks or music folders. * **Analysis Tools**: Visual monitoring for LUFS (loudness) and peak measurements.  ---  ### [04] Installation Protocols  #### Environment: Windows (Visual Studio 2026)  1. **Configuration**: `cmake -S . -B build -G "Visual Studio 18 2026" -A x64` 2. **Compilation**: `cmake --build build --config Release --parallel`  #### Environment: Ubuntu Linux (24.04+)  1. **Dependencies**: `sudo apt-get install -y libasound2-dev libfreetype6-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.0-dev libglu1-mesa-dev mesa-common-dev` 2. **Compilation**: `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel`  ---  ### [05] System Architecture and Licensing  AutoMixMaster is distributed under the **GNU General Public License v3 (GPLv3)**.  | Component | License | Role | | :--- | :--- | :--- | | **JUCE 8.0.8** | AGPLv3/Commercial | Framework | | **libebur128** | MIT | Metering | | **nlohmann/json** | MIT | Metadata | | **Catch2 3.7.1** | BSL-1.0 | Testing | | **PhaseLimiter** | GPL/Custom | Limiting |  ```  _____________________________________________________________________________                     [ THIS APPLICATION IS A WORK IN PROGRESS ]  _____________________________________________________________________________ ```
+<div align="center">
+
+```
+ _____________________________________________________________________________
+ [ SYSTEM: AUTOMIXMASTER ] [ VERSION: 0.2.0 ] [ STATUS: OPERATIONAL ]
+ _____________________________________________________________________________
+
+                 _        __  __ _      __  __           _            
+      /\        | |      |  \/  (_)    |  \/  |         | |           
+     /  \  _   _| |_ ___ | \  / |_  _ _| \  / | __ _ ___| |_ ___ _ __ 
+    / /\ \| | | | __/ _ \| |\/| | \ \/ / |\/| |/ _` / __| __/ _ \ '__|
+   / ____ \ |_| | || (_) | |  | | |>  <| |  | | (_| \__ \ ||  __/ |   
+  /_/    \_\__,_|\__\___/|_|  |_|_/_/\_\_|  |_|\__,_|____\__\___|_|   
+
+ -----------------------------------------------------------------------------
+```
+
+<img src="assets/AutoMixMaster.jpg" alt="Application Interface" width="600" style="max-width:100%; border: 1px solid #333;">
+
+```
+---------Automatic mixing and mastering for music stems---------
+```
+
+</div>
+
+---
+
+### [01] Introduction
+
+AutoMixMaster is an automated utility designed for amateur music producers and hobbyists to manage repetitive audio tasks. It provides a fixed algorithmic workflow for balancing levels and gain staging music stems.
+
+This application is built for personal experimentation, allowing users to process raw multi-track stems or AI-generated seeds (such as those from Udio or Suno) through set mathematical rules rather than manual mixing adjustments.
+
+---
+
+### [02] Functional Workflows
+
+**AI Seed Processing**
+Processes separated audio stems from AI generation platforms. The utility applies standard level balancing to help hobbyists hear their generations with consistent gain staging.
+
+**Songwriter Prototyping**
+A simple method for moving from raw multi-track recordings to a basic reference balance. It automates technical level adjustments so creators can listen back to their ideas without manual fader manipulation.
+
+**Bulk Folder Processing**
+Processes directories of audio files to a set loudness target. Useful for organizing personal catalogs or ensuring a collection of tracks shares a similar base volume level.
+
+---
+
+### [03] Feature Set
+
+* **Auto Mix**: Applies fixed algorithmic rules for level balancing and basic spatial positioning.
+* **Auto Master**: Performs automated gain staging and applies peak limiting to the final output.
+* **Batch Mode**: Sequentially processes multiple tracks or music folders.
+* **Analysis Tools**: Visual monitoring for LUFS (loudness) and peak measurements.
+
+---
+
+### [04] Installation Protocols
+
+#### Environment: Windows (Visual Studio 2026)
+
+1. **Configuration**: `cmake -S . -B build -G "Visual Studio 18 2026" -A x64`
+2. **Compilation**: `cmake --build build --config Release --parallel`
+
+#### Environment: Ubuntu Linux (24.04+)
+
+1. **Dependencies**: `sudo apt-get install -y libasound2-dev libfreetype6-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libwebkit2gtk-4.0-dev libglu1-mesa-dev mesa-common-dev`
+2. **Compilation**: `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel`
+
+---
+
+### [05] System Architecture and Licensing
+
+AutoMixMaster is distributed under the **GNU General Public License v3 (GPLv3)**.
+
+| Component | License | Role |
+| :--- | :--- | :--- |
+| **JUCE 8.0.8** | AGPLv3/Commercial | Framework |
+| **libebur128** | MIT | Metering |
+| **nlohmann/json** | MIT | Metadata |
+| **Catch2 3.7.1** | BSL-1.0 | Testing |
+| **PhaseLimiter** | GPL/Custom | Limiting |
+
+```
+ _____________________________________________________________________________
+                    [ THIS APPLICATION IS A WORK IN PROGRESS ]
+ _____________________________________________________________________________
+```

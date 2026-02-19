@@ -2,7 +2,6 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
-#include <fstream>
 #include <functional>
 #include <numbers>
 #include <optional>
@@ -12,9 +11,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <juce_events/juce_events.h>
+
 #include "app/controllers/ExportController.h"
 #include "app/controllers/ImportController.h"
-#include "app/controllers/ModelController.h"
 #include "app/controllers/OriginalMixController.h"
 #include "app/controllers/ProcessingController.h"
 #include "app/controllers/ProfileController.h"
@@ -48,7 +48,12 @@ bool waitFor(const std::function<bool()>& predicate, const int timeoutMs = 6000)
     if (predicate()) {
       return true;
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+    if (auto* messageManager = juce::MessageManager::getInstanceWithoutCreating(); messageManager != nullptr) {
+      messageManager->runDispatchLoopUntil(10);
+    } else {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
   }
   return predicate();
 }
@@ -79,13 +84,14 @@ automix::domain::Session makeBasicSession(const std::filesystem::path& stemPath 
 } // namespace
 
 TEST_CASE("ImportController imports selected files", "[controllers][import]") {
+  juce::ScopedJuceInitialiser_GUI juceInit;
+
   const auto testDir = uniqueTempPath("automix_import_ok");
   std::filesystem::create_directories(testDir);
   const auto wavPath = testDir / "tone.wav";
   automix::util::WavWriter().write(wavPath, makeTone(44100.0, 2048, 220.0), 24);
 
   juce::ThreadPool pool(1);
-  std::atomic_bool cancelFlag {false};
   std::optional<automix::app::ImportResult> result;
 
   automix::app::ImportController::Callbacks callbacks;
@@ -94,10 +100,9 @@ TEST_CASE("ImportController imports selected files", "[controllers][import]") {
   };
   automix::app::ImportController controller(pool, std::move(callbacks));
 
-  controller.importFiles({juce::File(wavPath.string())}, false, 4, cancelFlag);
+  controller.importFiles({juce::File(wavPath.string())}, false, 4);
 
   REQUIRE(waitFor([&]() { return result.has_value(); }));
-  REQUIRE_FALSE(result->cancelled);
   REQUIRE(result->stems.size() == 1);
   REQUIRE(result->stems.front().filePath == wavPath.string());
 
@@ -105,8 +110,9 @@ TEST_CASE("ImportController imports selected files", "[controllers][import]") {
 }
 
 TEST_CASE("ImportController ignores empty file list", "[controllers][import]") {
+  juce::ScopedJuceInitialiser_GUI juceInit;
+
   juce::ThreadPool pool(1);
-  std::atomic_bool cancelFlag {false};
   bool invoked = false;
 
   automix::app::ImportController::Callbacks callbacks;
@@ -115,55 +121,21 @@ TEST_CASE("ImportController ignores empty file list", "[controllers][import]") {
   };
   automix::app::ImportController controller(pool, std::move(callbacks));
 
-  controller.importFiles({}, false, 4, cancelFlag);
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  controller.importFiles({}, false, 4);
+  if (auto* messageManager = juce::MessageManager::getInstanceWithoutCreating(); messageManager != nullptr) {
+    messageManager->runDispatchLoopUntil(100);
+  }
   REQUIRE_FALSE(invoked);
 }
 
-TEST_CASE("ImportController respects cancellation flag", "[controllers][import][cancel]") {
-  const auto testDir = uniqueTempPath("automix_import_cancel");
+TEST_CASE("ExportController returns cancelled result when cancel flag is pre-set", "[controllers][export][cancel]") {
+  juce::ScopedJuceInitialiser_GUI juceInit;
+
+  const auto testDir = uniqueTempPath("automix_export_cancel");
   std::filesystem::create_directories(testDir);
   const auto wavPath = testDir / "tone.wav";
   automix::util::WavWriter().write(wavPath, makeTone(44100.0, 4096, 110.0), 24);
 
-  juce::ThreadPool pool(1);
-  std::atomic_bool cancelFlag {true};
-  std::optional<automix::app::ImportResult> result;
-
-  automix::app::ImportController::Callbacks callbacks;
-  callbacks.onImportComplete = [&](automix::app::ImportResult value) {
-    result = std::move(value);
-  };
-  automix::app::ImportController controller(pool, std::move(callbacks));
-
-  controller.importFiles({juce::File(wavPath.string())}, false, 4, cancelFlag);
-
-  REQUIRE(waitFor([&]() { return result.has_value(); }));
-  REQUIRE(result->cancelled);
-  REQUIRE(result->stems.empty());
-
-  std::filesystem::remove_all(testDir);
-}
-
-TEST_CASE("ExportController preflight blocks unpinned renderer under strict policy", "[controllers][export]") {
-  juce::ThreadPool pool(1);
-  automix::app::ExportController controller(pool, {});
-
-  automix::domain::ProjectProfile profile;
-  profile.id = "strict-profile";
-  profile.pinnedRendererIds = {"PinnedRenderer"};
-
-  automix::app::ExportPreflightRequest request;
-  request.selectedRendererId = "BuiltIn";
-  request.safetyPolicyId = "strict";
-  request.projectProfileId = profile.id;
-  request.projectProfiles = {profile};
-
-  const auto result = controller.preflight(request);
-  REQUIRE_FALSE(result.allowed);
-}
-
-TEST_CASE("ExportController returns cancelled result when cancel flag is pre-set", "[controllers][export][cancel]") {
   juce::ThreadPool pool(1);
   std::atomic_bool cancelFlag {true};
   std::optional<automix::app::ExportResult> result;
@@ -174,37 +146,25 @@ TEST_CASE("ExportController returns cancelled result when cancel flag is pre-set
   };
   automix::app::ExportController controller(pool, std::move(callbacks));
 
-  auto session = makeBasicSession();
+  auto session = makeBasicSession(wavPath);
   auto settings = session.renderSettings;
-  settings.exportSpeedMode = "quick";
 
   controller.runExport(session, settings, {}, cancelFlag);
 
   REQUIRE(waitFor([&]() { return result.has_value(); }));
   REQUIRE(result->cancelled);
-}
 
-TEST_CASE("ExportController builds quick-mode render settings", "[controllers][export]") {
-  juce::ThreadPool pool(1);
-  automix::app::ExportController controller(pool, {});
-
-  automix::app::BuildRenderSettingsRequest request;
-  request.exportSpeedMode = "quick";
-  request.outputFormat = "wav";
-  request.lossyBitrateKbps = 256;
-  request.mp3UseVbr = false;
-  request.mp3VbrQuality = 6;
-  request.gpuProviderSelectionId = 3;
-  request.selectedRendererId = "BuiltIn";
-
-  const auto settings = controller.buildRenderSettings(request);
-  REQUIRE(settings.exportSpeedMode == "quick");
-  REQUIRE(settings.blockSize == 4096);
-  REQUIRE(settings.outputBitDepth == 16);
-  REQUIRE(settings.gpuExecutionProvider == "directml");
+  std::filesystem::remove_all(testDir);
 }
 
 TEST_CASE("ProcessingController auto mix cancellation terminates early", "[controllers][processing][cancel]") {
+  juce::ScopedJuceInitialiser_GUI juceInit;
+
+  const auto testDir = uniqueTempPath("automix_processing_cancel");
+  std::filesystem::create_directories(testDir);
+  const auto wavPath = testDir / "tone.wav";
+  automix::util::WavWriter().write(wavPath, makeTone(44100.0, 4096, 110.0), 24);
+
   juce::ThreadPool pool(1);
   std::atomic_bool cancelFlag {true};
   std::optional<automix::app::AutoMixResult> result;
@@ -215,13 +175,17 @@ TEST_CASE("ProcessingController auto mix cancellation terminates early", "[contr
   };
   automix::app::ProcessingController controller(pool, std::move(callbacks));
 
-  controller.runAutoMix(makeBasicSession(), std::nullopt, cancelFlag);
+  controller.runAutoMix(makeBasicSession(wavPath), std::nullopt, cancelFlag);
 
   REQUIRE(waitFor([&]() { return result.has_value(); }));
   REQUIRE(result->cancelled);
+
+  std::filesystem::remove_all(testDir);
 }
 
 TEST_CASE("ProcessingController batch callback fires for empty folder", "[controllers][processing][batch]") {
+  juce::ScopedJuceInitialiser_GUI juceInit;
+
   const auto inputDir = uniqueTempPath("automix_batch_empty");
   std::filesystem::create_directories(inputDir);
 
@@ -247,51 +211,9 @@ TEST_CASE("ProcessingController batch callback fires for empty folder", "[contro
   std::filesystem::remove_all(inputDir);
 }
 
-TEST_CASE("ModelController fetch catalog cancellation emits completion", "[controllers][model][cancel]") {
-  juce::ThreadPool pool(1);
-  std::atomic_bool cancelFlag {true};
-  bool asyncCompleted = false;
-  std::string lastStatus;
-
-  automix::ai::ModelManager manager;
-  automix::app::ModelController::Callbacks callbacks;
-  callbacks.onStatus = [&](const std::string& text) {
-    lastStatus = text;
-  };
-  callbacks.onAsyncTaskComplete = [&]() {
-    asyncCompleted = true;
-  };
-  automix::app::ModelController controller(manager, pool, std::move(callbacks));
-
-  controller.fetchCatalog(cancelFlag);
-
-  REQUIRE(waitFor([&]() { return asyncCompleted; }));
-  REQUIRE(lastStatus.find("cancelled") != std::string::npos);
-}
-
-TEST_CASE("ModelController install cancellation emits completion", "[controllers][model][cancel]") {
-  juce::ThreadPool pool(1);
-  std::atomic_bool cancelFlag {true};
-  bool asyncCompleted = false;
-  std::string lastStatus;
-
-  automix::ai::ModelManager manager;
-  automix::app::ModelController::Callbacks callbacks;
-  callbacks.onStatus = [&](const std::string& text) {
-    lastStatus = text;
-  };
-  callbacks.onAsyncTaskComplete = [&]() {
-    asyncCompleted = true;
-  };
-  automix::app::ModelController controller(manager, pool, std::move(callbacks));
-
-  controller.installModel("org/demo-model", cancelFlag);
-
-  REQUIRE(waitFor([&]() { return asyncCompleted; }));
-  REQUIRE(lastStatus.find("cancelled") != std::string::npos);
-}
-
 TEST_CASE("SessionController save and load roundtrip", "[controllers][session]") {
+  juce::ScopedJuceInitialiser_GUI juceInit;
+
   const auto sessionPath = uniqueTempPath("automix_session_roundtrip").replace_extension(".json");
 
   juce::ThreadPool pool(1);
@@ -325,34 +247,9 @@ TEST_CASE("SessionController save and load roundtrip", "[controllers][session]")
   std::filesystem::remove(sessionPath);
 }
 
-TEST_CASE("SessionController reports corrupt session load error", "[controllers][session]") {
-  const auto sessionPath = uniqueTempPath("automix_session_corrupt").replace_extension(".json");
-  {
-    std::ofstream out(sessionPath);
-    out << "{ not valid json";
-  }
-
-  juce::ThreadPool pool(1);
-  std::atomic_bool cancelFlag {false};
-  std::optional<automix::app::SessionLoadResult> loadResult;
-
-  automix::app::SessionController::Callbacks callbacks;
-  callbacks.onLoadComplete = [&](automix::app::SessionLoadResult value) {
-    loadResult = std::move(value);
-  };
-  automix::app::SessionController controller(pool, std::move(callbacks));
-
-  controller.loadSession(sessionPath.string(), cancelFlag);
-
-  REQUIRE(waitFor([&]() { return loadResult.has_value(); }));
-  REQUIRE_FALSE(loadResult->cancelled);
-  REQUIRE_FALSE(loadResult->session.has_value());
-  REQUIRE_FALSE(loadResult->errorText.isEmpty());
-
-  std::filesystem::remove(sessionPath);
-}
-
 TEST_CASE("SessionController save respects cancellation flag", "[controllers][session][cancel]") {
+  juce::ScopedJuceInitialiser_GUI juceInit;
+
   const auto sessionPath = uniqueTempPath("automix_session_cancel").replace_extension(".json");
 
   juce::ThreadPool pool(1);

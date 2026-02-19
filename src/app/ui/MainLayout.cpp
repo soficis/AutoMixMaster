@@ -9,8 +9,11 @@
 #include "app/ui/TransportBar.h"
 
 #include <algorithm>
+#include <cmath>
+#include <exception>
 #include <filesystem>
 #include <fstream>
+#include <unordered_map>
 
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <nlohmann/json.hpp>
@@ -28,6 +31,63 @@ namespace {
 template <typename Comp>
 auto safeAsync(Comp* comp) {
   return juce::Component::SafePointer<Comp>(comp);
+}
+
+domain::StemMixDecision* findOrCreateStemDecision(domain::Session& session,
+                                                  const std::string& stemId) {
+  if (!session.mixPlan.has_value()) {
+    session.mixPlan = domain::MixPlan {};
+  }
+
+  for (auto& decision : session.mixPlan->stemDecisions) {
+    if (decision.stemId == stemId) {
+      return &decision;
+    }
+  }
+
+  auto& decision = session.mixPlan->stemDecisions.emplace_back();
+  decision.stemId = stemId;
+  return &decision;
+}
+
+double trimVolumeToGainDb(const float volume) {
+  constexpr double kMinLinearGain = 0.0001;
+  const double linearGain = std::clamp(static_cast<double>(volume), kMinLinearGain, 1.5);
+  return 20.0 * std::log10(linearGain);
+}
+
+void applyStemDisplayStateToPreviewSession(
+    domain::Session& previewSession,
+    const std::vector<StemPanel::StemDisplay>& displays) {
+  if (displays.empty()) {
+    return;
+  }
+
+  std::unordered_map<std::string, const StemPanel::StemDisplay*> displayByStemId;
+  displayByStemId.reserve(displays.size());
+  bool anySoloed = false;
+  for (const auto& display : displays) {
+    displayByStemId.emplace(display.id, &display);
+    anySoloed = anySoloed || display.solo;
+  }
+
+  for (auto& stem : previewSession.stems) {
+    const auto displayIt = displayByStemId.find(stem.id);
+    if (displayIt == displayByStemId.end()) {
+      continue;
+    }
+
+    const auto& display = *displayIt->second;
+    stem.enabled = display.enabled && !display.mute && (!anySoloed || display.solo);
+
+    constexpr float kVolumeEpsilon = 0.0001f;
+    if (std::abs(display.volume - 1.0f) <= kVolumeEpsilon) {
+      continue;
+    }
+
+    auto* decision = findOrCreateStemDecision(previewSession, display.id);
+    decision->gainDb += trimVolumeToGainDb(display.volume);
+  }
 }
 
 void updateStemPanelFromSession(StemPanel& panel, const domain::Session& session) {
@@ -441,6 +501,7 @@ void MainLayout::audioDeviceIOCallbackWithContext(const float* const* /*inputCha
                                                   int numSamples,
                                                   const juce::AudioIODeviceCallbackContext& /*context*/) {
   std::lock_guard<std::mutex> lock(playbackBufferMutex_);
+  const float outputGain = std::clamp(outputVolume_.load(std::memory_order_relaxed), 0.0f, 1.5f);
 
   if (!transportController_.isPlaying() || playbackBuffer_.getNumSamples() == 0) {
     for (int ch = 0; ch < numOutputChannels; ++ch)
@@ -465,14 +526,13 @@ void MainLayout::audioDeviceIOCallbackWithContext(const float* const* /*inputCha
     for (int ch = 0; ch < numOutputChannels; ++ch) {
       if (outputChannelData[ch]) {
         int srcCh = std::min(ch, bufChannels - 1);
-        outputChannelData[ch][i] = playbackBuffer_.getSample(srcCh, static_cast<int>(pos));
+        outputChannelData[ch][i] = playbackBuffer_.getSample(srcCh, static_cast<int>(pos)) * outputGain;
       }
     }
     ++pos;
   }
 
   transportController_.seekToSample(pos);
-  playbackCursorSamples_.store(pos);
 }
 
 void MainLayout::audioDeviceAboutToStart(juce::AudioIODevice* /*device*/) {}
@@ -528,6 +588,9 @@ void MainLayout::wireTransportCallbacks() {
       transportController_.seekToFraction(frac);
     }
   };
+  transportBar_->onVolumeChanged = [this](double volume) {
+    outputVolume_.store(static_cast<float>(std::clamp(volume, 0.0, 1.5)), std::memory_order_relaxed);
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -546,6 +609,9 @@ void MainLayout::wireControlDeckCallbacks() {
     rebuildPreviewBuffersAsync();
   };
   controlDeck_->getStemPanel().onMuteChanged = [this](const std::string& /*stemId*/, bool /*mute*/) {
+    rebuildPreviewBuffersAsync();
+  };
+  controlDeck_->getStemPanel().onVolumeChanged = [this](const std::string& /*stemId*/, float /*volume*/) {
     rebuildPreviewBuffersAsync();
   };
 
@@ -931,14 +997,6 @@ void MainLayout::updateTransportDisplay() {
   heroWaveform_->setPlayheadProgress(progress);
 }
 
-void MainLayout::updateTransportLoopAndZoomUI() {
-  heroWaveform_->setLoopRange(
-      transportController_.loopEnabled(),
-      transportController_.loopInProgress(),
-      transportController_.loopOutProgress());
-  heroWaveform_->setZoom(session_.timeline.zoom, 0.5);
-}
-
 // ─────────────────────────────────────────────────────────────────
 // UI Update: Misc
 // ─────────────────────────────────────────────────────────────────
@@ -949,10 +1007,21 @@ void MainLayout::appendTaskHistory(const juce::String& line) {
 }
 
 void MainLayout::updateTransportFromBuffer(const engine::AudioBuffer& buffer) {
-  if (buffer.getNumSamples() > 0) {
-    transportController_.setTimeline(
-        static_cast<int64_t>(buffer.getNumSamples()), buffer.getSampleRate());
+  if (buffer.getNumSamples() <= 0) {
+    return;
   }
+
+  transportController_.setTimeline(
+      static_cast<int64_t>(buffer.getNumSamples()),
+      buffer.getSampleRate());
+  transportController_.setLoopRangeSeconds(session_.timeline.loopInSeconds,
+                                           session_.timeline.loopOutSeconds,
+                                           session_.timeline.loopEnabled);
+  transportBar_->setLoopEnabled(session_.timeline.loopEnabled);
+  heroWaveform_->setLoopRange(session_.timeline.loopEnabled,
+                              transportController_.loopInProgress(),
+                              transportController_.loopOutProgress());
+  heroWaveform_->setZoom(session_.timeline.zoom, 0.5);
 }
 
 void MainLayout::updateMeterPanel(const automaster::MasteringReport& report) {
@@ -969,32 +1038,10 @@ void MainLayout::rebuildPreviewBuffersAsync() {
   if (session_.stems.empty())
     return;
 
-  // Build a session copy with solo/mute state applied from the StemPanel
+  // Build a session copy with solo/mute/volume state applied from the StemPanel
   domain::Session previewSession = session_;
-  auto displays = controlDeck_->getStemPanel().getStemDisplays();
-
-  bool anySoloed = false;
-  for (const auto& d : displays) {
-    if (d.solo) {
-      anySoloed = true;
-      break;
-    }
-  }
-
-  for (auto& stem : previewSession.stems) {
-    for (const auto& d : displays) {
-      if (d.id == stem.id) {
-        if (d.mute) {
-          stem.enabled = false;
-        } else if (anySoloed) {
-          stem.enabled = d.solo;
-        } else {
-          stem.enabled = true;
-        }
-        break;
-      }
-    }
-  }
+  const auto displays = controlDeck_->getStemPanel().getStemDisplays();
+  applyStemDisplayStateToPreviewSession(previewSession, displays);
 
   auto gen = ++previewBuildGeneration_;
   double currentProgress = transportController_.progress();
@@ -1012,6 +1059,8 @@ void MainLayout::applyLoadedSession(domain::Session loadedSession, const juce::S
   session_ = std::move(loadedSession);
   headerBar_->setSessionName(juce::File(sourcePath).getFileNameWithoutExtension());
   updateStemPanelFromSession(controlDeck_->getStemPanel(), session_);
+  transportBar_->setLoopEnabled(session_.timeline.loopEnabled);
+  heroWaveform_->setZoom(session_.timeline.zoom, 0.5);
   refreshRenderers();
   refreshCodecAvailability();
   refreshModelPacks();
@@ -1156,10 +1205,6 @@ void MainLayout::refreshProjectProfiles() {
     box.setSelectedId(selectedId, juce::dontSendNotification);
 }
 
-void MainLayout::refreshStemRoutingSelectors() {
-  updateStemPanelFromSession(controlDeck_->getStemPanel(), session_);
-}
-
 // ─────────────────────────────────────────────────────────────────
 // Query: Build Render Settings
 // ─────────────────────────────────────────────────────────────────
@@ -1183,12 +1228,7 @@ domain::RenderSettings MainLayout::buildCurrentRenderSettings(const std::string&
   return settings;
 }
 
-std::string MainLayout::selectedExportSpeedMode() const {
-  auto it = exportSpeedModeByComboId_.find(controlDeck_->getExportModeBox().getSelectedId());
-  return it != exportSpeedModeByComboId_.end() ? it->second : "final";
-}
-
-std::vector<renderers::ExternalRendererConfig> MainLayout::loadConfiguredExternalRenderers() const {
+std::vector<renderers::ExternalRendererConfig> MainLayout::loadConfiguredExternalRenderers() {
   std::vector<renderers::ExternalRendererConfig> configs;
 
   // Search for external_renderers.json in standard locations
@@ -1244,7 +1284,15 @@ std::vector<renderers::ExternalRendererConfig> MainLayout::loadConfiguredExterna
       }
 
       break; // Use first valid config file found
+    } catch (const std::exception& error) {
+      appendTaskHistory("External renderer config parse failed: "
+                        + juce::String(path.string())
+                        + " (" + juce::String(error.what()) + ")");
+      continue;
     } catch (...) {
+      appendTaskHistory("External renderer config parse failed: "
+                        + juce::String(path.string())
+                        + " (unknown error)");
       continue;
     }
   }

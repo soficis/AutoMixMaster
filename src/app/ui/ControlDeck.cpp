@@ -119,7 +119,6 @@ void ControlDeck::resized() {
   // Three-column layout using FlexBox
   int stemWidth = std::max(200, area.getWidth() * 35 / 100);
   int meterWidth = std::max(100, area.getWidth() * 15 / 100);
-  int centerWidth = area.getWidth() - stemWidth - meterWidth - static_cast<int>(spacing::gapMedium * 2);
 
   auto stemArea = area.removeFromLeft(stemWidth);
   area.removeFromLeft(spacing::gapMedium);

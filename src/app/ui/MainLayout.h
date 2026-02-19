@@ -12,15 +12,11 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "ai/ModelManager.h"
-#include "ai/HuggingFaceModelHub.h"
-#include "analysis/StemAnalyzer.h"
 #include "app/style/Theme.h"
 #include "automaster/HeuristicAutoMasterStrategy.h"
-#include "automix/HeuristicAutoMixStrategy.h"
 #include "domain/MasterPlan.h"
 #include "domain/ProjectProfile.h"
 #include "domain/Session.h"
-#include "engine/AudioPreviewEngine.h"
 #include "engine/SessionRepository.h"
 #include "engine/TransportController.h"
 #include "renderers/RendererRegistry.h"
@@ -29,9 +25,7 @@
 #include "app/controllers/ImportController.h"
 #include "app/controllers/ExportController.h"
 #include "app/controllers/ProcessingController.h"
-#include "app/controllers/SessionController.h"
 #include "app/controllers/PreviewController.h"
-#include "app/controllers/OriginalMixController.h"
 #include "app/controllers/ProfileController.h"
 
 namespace automix::app {
@@ -87,7 +81,6 @@ private:
 
   // UI update methods
   void updateTransportDisplay();
-  void updateTransportLoopAndZoomUI();
   void rebuildPreviewBuffersAsync();
   void updateTransportFromBuffer(const engine::AudioBuffer& buffer);
   void appendTaskHistory(const juce::String& line);
@@ -95,15 +88,13 @@ private:
   void refreshCodecAvailability();
   void refreshModelPacks();
   void refreshProjectProfiles();
-  void refreshStemRoutingSelectors();
   void populateMasterPresetSelectors();
   void updateMeterPanel(const automaster::MasteringReport& report);
   void applyLoadedSession(domain::Session loadedSession, const juce::String& sourcePath);
 
   // Query helpers
   domain::RenderSettings buildCurrentRenderSettings(const std::string& outputPath) const;
-  std::string selectedExportSpeedMode() const;
-  std::vector<renderers::ExternalRendererConfig> loadConfiguredExternalRenderers() const;
+  std::vector<renderers::ExternalRendererConfig> loadConfiguredExternalRenderers();
 
   // ── UI Components ───────────────────────────────────────────────
   juce::TooltipWindow tooltipWindow_{this, 400};
@@ -115,11 +106,7 @@ private:
 
   // ── Backend Objects ─────────────────────────────────────────────
   domain::Session session_;
-  analysis::StemAnalyzer analyzer_;
-  automix::HeuristicAutoMixStrategy autoMixStrategy_;
-  automaster::HeuristicAutoMasterStrategy autoMasterStrategy_;
   engine::SessionRepository sessionRepository_;
-  engine::AudioPreviewEngine previewEngine_;
   engine::TransportController transportController_;
   ai::ModelManager modelManager_;
   juce::AudioDeviceManager audioDeviceManager_;
@@ -128,8 +115,8 @@ private:
   juce::ThreadPool backgroundPool_{3};
   std::atomic_bool cancelRender_{false};
   std::atomic_bool taskRunning_{false};
+  std::atomic<float> outputVolume_{1.0f};
   std::atomic_uint64_t previewBuildGeneration_{0};
-  std::atomic<int64_t> playbackCursorSamples_{0};
 
   // Audio buffer management
   std::mutex playbackBufferMutex_;
@@ -146,9 +133,6 @@ private:
   std::map<int, std::string> projectProfileIdByComboId_;
   std::map<int, domain::MasterPreset> masterPresetByComboId_;
   std::map<int, domain::MasterPreset> platformPresetByComboId_;
-  std::map<int, std::string> roleModelIdByComboId_;
-  std::map<int, std::string> mixModelIdByComboId_;
-  std::map<int, std::string> masterModelIdByComboId_;
 
   // Task history
   std::vector<juce::String> taskHistoryLines_;

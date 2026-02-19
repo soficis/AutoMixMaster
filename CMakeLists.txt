@@ -286,6 +286,7 @@ if(BUILD_TESTING)
 
   add_executable(automix_tests
     tests/unit/TestMain.cpp
+    tests/unit/ControllerTests.cpp
     tests/unit/SessionSerializationTests.cpp
     tests/unit/AudioIoTests.cpp
     tests/unit/AnalysisTests.cpp
@@ -311,11 +312,21 @@ if(BUILD_TESTING)
     tests/unit/StemSeparatorTests.cpp
     tests/regression/RegressionHarness.cpp
     tests/regression/RegressionHarnessTests.cpp
+    src/app/controllers/ImportController.cpp
+    src/app/controllers/ExportController.cpp
+    src/app/controllers/ProcessingController.cpp
+    src/app/controllers/SessionController.cpp
+    src/app/controllers/PreviewController.cpp
+    src/app/controllers/ProfileController.cpp
+    src/app/controllers/OriginalMixController.cpp
   )
 
   target_include_directories(automix_tests PRIVATE src tests/regression)
   target_link_libraries(automix_tests PRIVATE automix_core Catch2::Catch2WithMain)
-  target_compile_definitions(automix_tests PRIVATE AUTOMIX_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+  target_compile_definitions(automix_tests PRIVATE
+    AUTOMIX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    JUCE_MODAL_LOOPS_PERMITTED=1
+  )
 
   if(ENABLE_CLANG_TIDY AND CLANG_TIDY_EXE)
     set_target_properties(automix_tests PROPERTIES CXX_CLANG_TIDY "${CLANG_TIDY_EXE}")

@@ -1,10 +1,7 @@
 #pragma once
 
 #include <atomic>
-#include <cstdint>
-#include <map>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <vector>
 
@@ -16,17 +13,17 @@
 #include "automaster/HeuristicAutoMasterStrategy.h"
 #include "domain/MasterPlan.h"
 #include "domain/ProjectProfile.h"
-#include "domain/Session.h"
-#include "engine/SessionRepository.h"
 #include "engine/TransportController.h"
 #include "renderers/RendererRegistry.h"
 
-#include "app/controllers/ModelController.h"
-#include "app/controllers/ImportController.h"
 #include "app/controllers/ExportController.h"
+#include "app/controllers/ImportController.h"
+#include "app/controllers/ModelController.h"
 #include "app/controllers/ProcessingController.h"
-#include "app/controllers/PreviewController.h"
 #include "app/controllers/ProfileController.h"
+#include "app/controllers/SessionController.h"
+#include "app/ui/SelectionState.h"
+#include "app/ui/SessionManager.h"
 
 namespace automix::app {
 
@@ -35,9 +32,12 @@ class HeroWaveform;
 class TransportBar;
 class ControlDeck;
 class TaskCenterPanel;
+class TaskOrchestrator;
+class AudioPreviewManager;
+class ModelBrowserPanel;
 
-/// Top-level layout component for the new UI.
-/// Owns all backend objects, controllers, and UI components.
+/// Top-level layout component for the UI.
+/// Owns backend objects, controllers, coordinators, and UI components.
 class MainLayout final : public juce::Component,
                          private juce::Timer,
                          private juce::ChangeListener,
@@ -64,7 +64,6 @@ private:
   void wireHeaderCallbacks();
   void wireTransportCallbacks();
   void wireControlDeckCallbacks();
-  void wireTaskCenterCallbacks();
   void wireHeroWaveformCallbacks();
 
   // Action handlers
@@ -73,17 +72,15 @@ private:
   void onAutoMaster();
   void onBatch();
   void onExport();
-  void onCancel();
   void onSaveSession();
   void onLoadSession();
-  void onModelsMenu();
+  void onModelsDialog();
   void onSettings();
 
   // UI update methods
   void updateTransportDisplay();
-  void rebuildPreviewBuffersAsync();
+  void rebuildPreview();
   void updateTransportFromBuffer(const engine::AudioBuffer& buffer);
-  void appendTaskHistory(const juce::String& line);
   void refreshRenderers();
   void refreshCodecAvailability();
   void refreshModelPacks();
@@ -105,37 +102,21 @@ private:
   std::unique_ptr<TaskCenterPanel> taskCenter_;
 
   // ── Backend Objects ─────────────────────────────────────────────
-  domain::Session session_;
-  engine::SessionRepository sessionRepository_;
   engine::TransportController transportController_;
   ai::ModelManager modelManager_;
   juce::AudioDeviceManager audioDeviceManager_;
-
-  // Threading
   juce::ThreadPool backgroundPool_{3};
-  std::atomic_bool cancelRender_{false};
-  std::atomic_bool taskRunning_{false};
   std::atomic<float> outputVolume_{1.0f};
-  std::atomic_uint64_t previewBuildGeneration_{0};
 
-  // Audio buffer management
-  std::mutex playbackBufferMutex_;
-  engine::AudioBuffer playbackBuffer_;
+  // ── Coordinators (created in constructor body) ──────────────────
+  std::unique_ptr<TaskOrchestrator> taskOrchestrator_;
+  std::unique_ptr<AudioPreviewManager> previewManager_;
+  SessionManager sessionManager_;
 
-  // Analysis and rendering state
+  // State
   std::vector<analysis::StemAnalysisEntry> analysisEntries_;
   std::vector<renderers::RendererInfo> rendererInfos_;
-
-  // ID maps for combo box selections
-  std::map<int, std::string> rendererIdByComboId_;
-  std::map<int, std::string> codecFormatByComboId_;
-  std::map<int, std::string> exportSpeedModeByComboId_;
-  std::map<int, std::string> projectProfileIdByComboId_;
-  std::map<int, domain::MasterPreset> masterPresetByComboId_;
-  std::map<int, domain::MasterPreset> platformPresetByComboId_;
-
-  // Task history
-  std::vector<juce::String> taskHistoryLines_;
+  SelectionState selectionState_;
   std::vector<domain::ProjectProfile> projectProfiles_;
 
   // File choosers
@@ -150,7 +131,7 @@ private:
   std::unique_ptr<ImportController> importController_;
   std::unique_ptr<ExportController> exportController_;
   std::unique_ptr<ProcessingController> processingController_;
-  std::unique_ptr<PreviewController> previewController_;
+  std::unique_ptr<SessionController> sessionController_;
 
   // Layout constants
   static constexpr int kHeaderHeight = 48;

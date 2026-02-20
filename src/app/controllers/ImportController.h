@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <filesystem>
 #include <functional>
 #include <optional>
@@ -14,6 +15,7 @@
 namespace automix::app {
 
 struct ImportResult {
+  bool cancelled = false;
   std::vector<domain::Stem> stems;
   std::vector<std::string> logLines;
 };
@@ -28,7 +30,10 @@ class ImportController {
 
   ImportController(juce::ThreadPool& threadPool, Callbacks callbacks);
 
-  void importFiles(std::vector<juce::File> files, bool useSeparation, int preferredStemCount);
+  void importFiles(std::vector<juce::File> files,
+                   bool useSeparation,
+                   int preferredStemCount,
+                   std::atomic_bool& cancelFlag);
 
  private:
   juce::ThreadPool& threadPool_;

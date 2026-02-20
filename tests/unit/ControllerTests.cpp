@@ -13,8 +13,10 @@
 
 #include <juce_events/juce_events.h>
 
+#include "ai/ModelManager.h"
 #include "app/controllers/ExportController.h"
 #include "app/controllers/ImportController.h"
+#include "app/controllers/ModelController.h"
 #include "app/controllers/OriginalMixController.h"
 #include "app/controllers/ProcessingController.h"
 #include "app/controllers/ProfileController.h"
@@ -81,6 +83,40 @@ automix::domain::Session makeBasicSession(const std::filesystem::path& stemPath 
   return session;
 }
 
+struct FakeModelHubState {
+  int discoverCalls = 0;
+  int installCalls = 0;
+  int modelInfoCalls = 0;
+};
+
+automix::app::ModelController::ModelHubOps makeFakeModelHubOps(FakeModelHubState& state) {
+  automix::app::ModelController::ModelHubOps ops;
+  ops.discoverRecommended = [&state](const automix::ai::HubModelQueryOptions&) {
+    ++state.discoverCalls;
+    automix::ai::HubModelInfo model;
+    model.repoId = "fake/catalog-model";
+    model.revision = "rev-catalog";
+    return std::vector<automix::ai::HubModelInfo> {model};
+  };
+  ops.installModel = [&state](const std::string& repoId, const automix::ai::HubInstallOptions&) {
+    ++state.installCalls;
+    automix::ai::HubInstallResult result;
+    result.success = true;
+    result.repoId = repoId;
+    result.revision = "rev-install";
+    result.message = "installed";
+    return result;
+  };
+  ops.modelInfo = [&state](const std::string& repoId) -> std::optional<automix::ai::HubModelInfo> {
+    ++state.modelInfoCalls;
+    automix::ai::HubModelInfo model;
+    model.repoId = repoId;
+    model.revision = "remote-rev";
+    return model;
+  };
+  return ops;
+}
+
 } // namespace
 
 TEST_CASE("ImportController imports selected files", "[controllers][import]") {
@@ -100,7 +136,8 @@ TEST_CASE("ImportController imports selected files", "[controllers][import]") {
   };
   automix::app::ImportController controller(pool, std::move(callbacks));
 
-  controller.importFiles({juce::File(wavPath.string())}, false, 4);
+  std::atomic_bool cancelFlag {false};
+  controller.importFiles({juce::File(wavPath.string())}, false, 4, cancelFlag);
 
   REQUIRE(waitFor([&]() { return result.has_value(); }));
   REQUIRE(result->stems.size() == 1);
@@ -121,11 +158,120 @@ TEST_CASE("ImportController ignores empty file list", "[controllers][import]") {
   };
   automix::app::ImportController controller(pool, std::move(callbacks));
 
-  controller.importFiles({}, false, 4);
+  std::atomic_bool cancelFlag {false};
+  controller.importFiles({}, false, 4, cancelFlag);
   if (auto* messageManager = juce::MessageManager::getInstanceWithoutCreating(); messageManager != nullptr) {
     messageManager->runDispatchLoopUntil(100);
   }
   REQUIRE_FALSE(invoked);
+}
+
+TEST_CASE("ImportController cancellation terminates early", "[controllers][import][cancel]") {
+  juce::ScopedJuceInitialiser_GUI juceInit;
+
+  const auto testDir = uniqueTempPath("automix_import_cancel");
+  std::filesystem::create_directories(testDir);
+  const auto wavPath = testDir / "tone.wav";
+  automix::util::WavWriter().write(wavPath, makeTone(44100.0, 2048, 220.0), 24);
+
+  juce::ThreadPool pool(1);
+  std::optional<automix::app::ImportResult> result;
+
+  automix::app::ImportController::Callbacks callbacks;
+  callbacks.onImportComplete = [&](automix::app::ImportResult value) {
+    result = std::move(value);
+  };
+  automix::app::ImportController controller(pool, std::move(callbacks));
+
+  std::atomic_bool cancelFlag {true};
+  controller.importFiles({juce::File(wavPath.string())}, false, 4, cancelFlag);
+
+  REQUIRE(waitFor([&]() { return result.has_value(); }));
+  REQUIRE(result->cancelled);
+  REQUIRE(result->stems.empty());
+
+  std::filesystem::remove_all(testDir);
+}
+
+TEST_CASE("ModelController fetch catalog respects pre-set cancel", "[controllers][model][cancel]") {
+  juce::ScopedJuceInitialiser_GUI juceInit;
+
+  juce::ThreadPool pool(1);
+  automix::ai::ModelManager modelManager;
+  FakeModelHubState fakeState;
+  std::optional<bool> cancelled;
+
+  automix::app::ModelController::Callbacks callbacks;
+  callbacks.onCatalogReady = [&](const bool value) {
+    cancelled = value;
+  };
+
+  automix::app::ModelController controller(
+      modelManager,
+      pool,
+      std::move(callbacks),
+      makeFakeModelHubOps(fakeState));
+
+  std::atomic_bool cancelFlag {true};
+  controller.fetchCatalog(cancelFlag);
+
+  REQUIRE(waitFor([&]() { return cancelled.has_value(); }));
+  REQUIRE(cancelled.value());
+  REQUIRE(fakeState.discoverCalls == 0);
+}
+
+TEST_CASE("ModelController install respects pre-set cancel", "[controllers][model][cancel]") {
+  juce::ScopedJuceInitialiser_GUI juceInit;
+
+  juce::ThreadPool pool(1);
+  automix::ai::ModelManager modelManager;
+  FakeModelHubState fakeState;
+  std::optional<bool> cancelled;
+
+  automix::app::ModelController::Callbacks callbacks;
+  callbacks.onInstallComplete = [&](const bool value) {
+    cancelled = value;
+  };
+
+  automix::app::ModelController controller(
+      modelManager,
+      pool,
+      std::move(callbacks),
+      makeFakeModelHubOps(fakeState));
+
+  std::atomic_bool cancelFlag {true};
+  controller.installModel("fake/install-model", cancelFlag);
+
+  REQUIRE(waitFor([&]() { return cancelled.has_value(); }));
+  REQUIRE(cancelled.value());
+  REQUIRE(fakeState.installCalls == 0);
+}
+
+TEST_CASE("ModelController check updates respects pre-set cancel", "[controllers][model][cancel]") {
+  juce::ScopedJuceInitialiser_GUI juceInit;
+
+  juce::ThreadPool pool(1);
+  automix::ai::ModelManager modelManager;
+  FakeModelHubState fakeState;
+  std::optional<bool> cancelled;
+
+  automix::app::ModelController::Callbacks callbacks;
+  callbacks.onUpdateCheckComplete = [&](const bool value) {
+    cancelled = value;
+  };
+
+  automix::app::ModelController controller(
+      modelManager,
+      pool,
+      std::move(callbacks),
+      makeFakeModelHubOps(fakeState));
+
+  std::atomic_bool cancelFlag {true};
+  controller.checkUpdates(cancelFlag);
+
+  REQUIRE(waitFor([&]() { return cancelled.has_value(); }));
+  REQUIRE(cancelled.value());
+  REQUIRE(fakeState.modelInfoCalls == 0);
 }
 
 TEST_CASE("ExportController returns cancelled result when cancel flag is pre-set", "[controllers][export][cancel]") {

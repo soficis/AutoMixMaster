@@ -26,15 +26,7 @@ namespace automix::app {
 namespace {
 
 using ::automix::util::toLower;
-
-juce::String toJuceText(const std::vector<std::string>& lines) {
-  juce::String output;
-  for (const auto& line : lines) {
-    output += juce::String(line);
-    output += "\n";
-  }
-  return output;
-}
+using ::automix::util::toJuceText;
 
 std::unique_ptr<ai::IModelInference> createInferenceBackend(const ai::ModelPack* pack,
                                                             const std::string& providerPreference,

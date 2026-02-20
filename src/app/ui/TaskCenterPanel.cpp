@@ -10,6 +10,12 @@ TaskCenterPanel::TaskCenterPanel() : progressBar_(progressValue_) {
   taskLabel_.setColour(juce::Label::textColourId, colour(colours::text));
   taskLabel_.setJustificationType(juce::Justification::centredLeft);
 
+  stateBadge_.setText("IDLE", juce::dontSendNotification);
+  stateBadge_.setFont(typography::caption());
+  stateBadge_.setJustificationType(juce::Justification::centred);
+  stateBadge_.setColour(juce::Label::backgroundColourId, stateColour(TaskState::Idle));
+  stateBadge_.setColour(juce::Label::textColourId, juce::Colours::white);
+
   historyEditor_.setMultiLine(true);
   historyEditor_.setReadOnly(true);
   historyEditor_.setScrollbarsShown(true);
@@ -23,6 +29,7 @@ TaskCenterPanel::TaskCenterPanel() : progressBar_(progressValue_) {
   };
 
   addAndMakeVisible(taskLabel_);
+  addAndMakeVisible(stateBadge_);
   addAndMakeVisible(progressBar_);
   addAndMakeVisible(cancelButton_);
   addAndMakeVisible(historyEditor_);
@@ -39,11 +46,12 @@ void TaskCenterPanel::paint(juce::Graphics& g) {
 void TaskCenterPanel::resized() {
   auto area = getLocalBounds().reduced(static_cast<int>(metrics::paddingMedium));
 
-  // Top row: task label + progress + cancel
+  // Top row: state badge + task label + progress + cancel
   auto topRow = area.removeFromTop(24);
   cancelButton_.setBounds(topRow.removeFromRight(64).reduced(1));
   auto progressArea = topRow.removeFromRight(std::min(200, topRow.getWidth() / 3));
   progressBar_.setBounds(progressArea.reduced(2));
+  stateBadge_.setBounds(topRow.removeFromLeft(80).reduced(1));
   taskLabel_.setBounds(topRow);
 
   // Remaining: history editor
@@ -67,6 +75,13 @@ void TaskCenterPanel::setCanCancel(bool canCancel) {
   cancelButton_.setEnabled(canCancel);
 }
 
+void TaskCenterPanel::setTaskState(TaskState state) {
+  currentState_ = state;
+  stateBadge_.setText(juce::String(stateLabel(state)), juce::dontSendNotification);
+  stateBadge_.setColour(juce::Label::backgroundColourId, stateColour(state));
+  stateBadge_.repaint();
+}
+
 void TaskCenterPanel::appendHistory(const juce::String& line) {
   auto timestamp = juce::Time::getCurrentTime().toString(true, true);
   auto entry = "[" + timestamp + "] " + line;
@@ -82,6 +97,28 @@ void TaskCenterPanel::appendHistory(const juce::String& line) {
 
 void TaskCenterPanel::clearHistory() {
   historyEditor_.setText("", false);
+}
+
+juce::Colour TaskCenterPanel::stateColour(TaskState state) {
+  switch (state) {
+    case TaskState::Idle:      return colour(colours::textMuted);
+    case TaskState::Running:   return colour(colours::primary);
+    case TaskState::Cancelled: return colour(colours::warning);
+    case TaskState::Completed: return colour(colours::success);
+    case TaskState::Failed:    return colour(colours::error);
+  }
+  return colour(colours::textMuted);
+}
+
+const char* TaskCenterPanel::stateLabel(TaskState state) {
+  switch (state) {
+    case TaskState::Idle:      return "IDLE";
+    case TaskState::Running:   return "RUNNING";
+    case TaskState::Cancelled: return "CANCELLED";
+    case TaskState::Completed: return "COMPLETED";
+    case TaskState::Failed:    return "FAILED";
+  }
+  return "UNKNOWN";
 }
 
 } // namespace automix::app

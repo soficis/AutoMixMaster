@@ -122,6 +122,7 @@ add_library(automix_core
   src/ai/RtNeuralInference.cpp
   src/ai/StemSeparator.cpp
   src/ai/StemRoleClassifierAI.cpp
+  src/util/StringUtils.cpp
   src/util/LameDownloader.cpp
   src/util/MetadataPolicy.cpp
   src/util/WavWriter.cpp
@@ -239,6 +240,12 @@ target_sources(AutoMixMasterApp PRIVATE
   src/app/ui/TaskCenterPanel.cpp
   src/app/ui/StemPanel.cpp
   src/app/ui/ControlDeck.cpp
+  src/app/ui/SelectionState.cpp
+  src/app/ui/TaskLifecycle.cpp
+  src/app/ui/TaskOrchestrator.cpp
+  src/app/ui/AudioPreviewManager.cpp
+  src/app/ui/SessionManager.cpp
+  src/app/ui/ModelBrowserPanel.cpp
 )
 
 target_include_directories(AutoMixMasterApp PRIVATE src)
@@ -312,6 +319,7 @@ if(BUILD_TESTING)
     tests/unit/StemSeparatorTests.cpp
     tests/regression/RegressionHarness.cpp
     tests/regression/RegressionHarnessTests.cpp
+    src/app/controllers/ModelController.cpp
     src/app/controllers/ImportController.cpp
     src/app/controllers/ExportController.cpp
     src/app/controllers/ProcessingController.cpp

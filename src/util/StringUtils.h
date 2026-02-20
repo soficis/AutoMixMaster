@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <cctype>
 #include <string>
+#include <vector>
+
+#include <juce_core/juce_core.h>
 
 namespace automix::util {
 
@@ -51,5 +54,7 @@ inline std::string extensionForFormat(const std::string& format) {
   }
   return ".wav";
 }
+
+juce::String toJuceText(const std::vector<std::string>& lines);
 
 } // namespace automix::util

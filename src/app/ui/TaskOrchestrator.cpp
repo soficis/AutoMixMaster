@@ -1,5 +1,7 @@
 #include "app/ui/TaskOrchestrator.h"
 
+#include <algorithm>
+
 namespace automix::app {
 
 TaskOrchestrator::TaskOrchestrator(TaskCenterPanel& taskCenter)
@@ -16,7 +18,7 @@ bool TaskOrchestrator::beginTask(const ActiveTask task,
 
   taskCenter_.setCanCancel(true);
   taskCenter_.setCurrentTask(title, details);
-  taskCenter_.setProgress(-1.0);
+  taskCenter_.setProgress(0.0);
   taskCenter_.setTaskState(TaskState::Running);
   appendHistory(historyLine);
   return true;
@@ -32,6 +34,7 @@ void TaskOrchestrator::finishTaskCancelled(const ActiveTask task, const juce::St
   taskLifecycle_.finishTask(task);
   taskCenter_.setCanCancel(false);
   taskCenter_.setCurrentTask(label, "");
+  taskCenter_.setProgress(1.0);
   taskCenter_.setTaskState(TaskState::Cancelled);
 }
 
@@ -39,6 +42,7 @@ void TaskOrchestrator::finishTaskFailed(const ActiveTask task, const juce::Strin
   taskLifecycle_.finishTask(task);
   taskCenter_.setCanCancel(false);
   taskCenter_.setCurrentTask("Failed", "");
+  taskCenter_.setProgress(1.0);
   taskCenter_.setTaskState(TaskState::Failed);
   appendHistory("Error: " + errorMsg);
 }
@@ -77,7 +81,7 @@ void TaskOrchestrator::setStatus(const juce::String& name, const juce::String& d
 }
 
 void TaskOrchestrator::setProgress(double progress) {
-  taskCenter_.setProgress(progress);
+  taskCenter_.setProgress(std::clamp(progress, 0.0, 1.0));
 }
 
 bool TaskOrchestrator::isTaskRunning() const {

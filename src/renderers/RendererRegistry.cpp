@@ -143,8 +143,8 @@ RendererInfo makePhaseLimiterInfo() {
   info.linkMode = RendererLinkMode::External;
   info.bundledByDefault = false;
   info.available = binaryInfo.has_value();
-  info.discovery = binaryInfo.has_value() ? "Auto-discovered in assets or PHASELIMITER_BIN."
-                                          : "Not found in assets. Set PHASELIMITER_BIN or install under assets.";
+  info.discovery = binaryInfo.has_value() ? "Auto-discovered in assets, PHASELIMITER_BIN, or downloaded cache."
+                                          : "Not found in assets. Bundle assets/phaselimiter or set PHASELIMITER_BIN. Auto-download uses official release URLs by default.";
   info.trustPolicyStatus = "unsigned";
 
   if (binaryInfo.has_value()) {

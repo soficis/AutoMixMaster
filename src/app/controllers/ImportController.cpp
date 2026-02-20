@@ -1,11 +1,25 @@
 #include "app/controllers/ImportController.h"
 
+#include <algorithm>
 #include <filesystem>
 
 #include "ai/StemSeparator.h"
 #include "util/CallbackDispatch.h"
 
 namespace automix::app {
+namespace {
+
+double clampProgress(const double progress) {
+  return std::clamp(progress, 0.0, 1.0);
+}
+
+void emitProgress(const ImportController::Callbacks& callbacks, const double progress) {
+  if (callbacks.onProgress) {
+    callbacks.onProgress(clampProgress(progress));
+  }
+}
+
+} // namespace
 
 ImportController::ImportController(juce::ThreadPool& threadPool, Callbacks callbacks)
     : threadPool_(threadPool), callbacks_(std::move(callbacks)) {}
@@ -28,6 +42,7 @@ void ImportController::importFiles(std::vector<juce::File> files,
       if (capturedCallbacks.onStatus) {
         capturedCallbacks.onStatus("Import cancelled");
       }
+      emitProgress(capturedCallbacks, 1.0);
       if (capturedCallbacks.onTaskHistory) {
         capturedCallbacks.onTaskHistory("Import cancelled");
       }
@@ -44,6 +59,7 @@ void ImportController::importFiles(std::vector<juce::File> files,
   if (callbacks_.onTaskHistory) {
     callbacks_.onTaskHistory("Import started");
   }
+  emitProgress(callbacks_, 0.03);
 
   struct ImportJob final : juce::ThreadPoolJob {
     std::vector<juce::File> files;
@@ -86,6 +102,7 @@ void ImportController::importFiles(std::vector<juce::File> files,
 
       if (!result.cancelled && files.size() == 1 && useSeparation) {
         try {
+          emitProgress(callbacks, 0.12);
           if (isCancellationRequested()) {
             requestCancellation();
             result.cancelled = true;
@@ -99,6 +116,7 @@ void ImportController::importFiles(std::vector<juce::File> files,
             ai::StemSeparator::SeparationOptions separationOptions;
             separationOptions.targetStemCount = preferredStemCount;
             const auto separationResult = separator.separate(mixPath, outputDir, separationOptions);
+            emitProgress(callbacks, 0.78);
             if (separationResult.success) {
               importedStems = separationResult.stems;
               importLines.push_back("Separated import from: " + mixPath.string());
@@ -133,6 +151,7 @@ void ImportController::importFiles(std::vector<juce::File> files,
       }
 
       if (!result.cancelled && importedStems.empty()) {
+        const auto totalFiles = static_cast<double>(std::max<size_t>(1, files.size()));
         for (size_t i = 0; i < files.size(); ++i) {
           if (isCancellationRequested()) {
             requestCancellation();
@@ -149,6 +168,7 @@ void ImportController::importFiles(std::vector<juce::File> files,
           stem.origin = useSeparation ? domain::StemOrigin::Separated : domain::StemOrigin::Recorded;
           stem.enabled = true;
           importedStems.push_back(stem);
+          emitProgress(callbacks, 0.1 + (0.82 * (static_cast<double>(i + 1) / totalFiles)));
 
           importLines.push_back(stem.name + " -> " + stem.filePath);
         }
@@ -170,6 +190,7 @@ void ImportController::importFiles(std::vector<juce::File> files,
             capturedCallbacks.onTaskHistory("Import cancelled");
           }
         }
+        emitProgress(capturedCallbacks, 1.0);
         if (capturedCallbacks.onImportComplete) {
           capturedCallbacks.onImportComplete(std::move(result));
         }

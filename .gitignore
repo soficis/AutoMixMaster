@@ -1,5 +1,10 @@
 ﻿# === Build & Output ===
 build*/
+build_linux_release/
+build_flatpak/
+build_macos_*/
+build_windows_*/
+dist/
 out/
 bin/
 _deps/
@@ -15,6 +20,7 @@ artefacts/
 *artefacts/
 ntml
 docs/
+.flatpak-builder/
 
 # === CMake ===
 CMakeCache.txt
@@ -23,6 +29,14 @@ cmake_install.cmake
 CTestTestfile.cmake
 DartConfiguration.tcl
 CMakeUserPresets.json
+build_*/
+
+# === Linux Packaging Artifacts ===
+*.AppImage
+*.deb
+*.flatpak
+*.flatpakref
+SHA256SUMS-*.txt
 
 # === IDE & Editors ===
 .vs/
@@ -55,12 +69,17 @@ changed_files.txt
 current_diff.txt
 local_commits.txt
 full_status.txt
+git_log_output.txt
+git_log_utf8.txt
 nul
+*~
 
 # === Analysis & Data ===
 *.sarif
 *.analysis
 assets/**/analysis_data/
+assets/phaselimiter/out.wav
+assets/phaselimiter/test_data/
 .DS_Store
 Thumbs.db
 Desktop.ini
@@ -79,3 +98,7 @@ personal/
 config.ini
 .github/codex_agents.md
 CLAUDE.md
+
+# === Tooling Caches ===
+.flatpak-builder/
+ccache/

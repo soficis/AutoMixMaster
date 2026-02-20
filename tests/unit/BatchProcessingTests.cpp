@@ -122,3 +122,49 @@ TEST_CASE("Batch runner applies requested lossy output extension", "[batch]") {
   std::filesystem::remove_all(inputDir);
   std::filesystem::remove_all(outputDir);
 }
+
+TEST_CASE("Batch grouping supports recursive folder scan when enabled", "[batch]") {
+  const std::filesystem::path inputDir = std::filesystem::temp_directory_path() / "automix_batch_recursive_input";
+  const std::filesystem::path nestedDir = inputDir / "nested" / "album_a";
+  const std::filesystem::path outputDir = std::filesystem::temp_directory_path() / "automix_batch_recursive_output";
+  std::filesystem::remove_all(inputDir);
+  std::filesystem::remove_all(outputDir);
+  std::filesystem::create_directories(nestedDir);
+  std::filesystem::create_directories(outputDir);
+
+  automix::util::WavWriter writer;
+  writer.write(nestedDir / "songx_vocals.wav", makeTone(44100.0, 4096, 300.0), 24);
+  writer.write(nestedDir / "songx_bass.wav", makeTone(44100.0, 4096, 100.0), 24);
+
+  automix::engine::BatchQueueRunner runner;
+  const auto nonRecursiveItems = runner.buildItemsFromFolder(inputDir, outputDir, false);
+  REQUIRE(nonRecursiveItems.empty());
+
+  const auto recursiveItems = runner.buildItemsFromFolder(inputDir, outputDir, true);
+  REQUIRE(recursiveItems.size() == 1);
+
+  std::filesystem::remove_all(inputDir);
+  std::filesystem::remove_all(outputDir);
+}
+
+TEST_CASE("Batch grouping detects parenthesized role suffixes", "[batch]") {
+  const std::filesystem::path inputDir = std::filesystem::temp_directory_path() / "automix_batch_parenthesized_input";
+  const std::filesystem::path outputDir = std::filesystem::temp_directory_path() / "automix_batch_parenthesized_output";
+  std::filesystem::remove_all(inputDir);
+  std::filesystem::remove_all(outputDir);
+  std::filesystem::create_directories(inputDir);
+  std::filesystem::create_directories(outputDir);
+
+  automix::util::WavWriter writer;
+  writer.write(inputDir / "adrift_(bass).wav", makeTone(44100.0, 4096, 120.0), 24);
+  writer.write(inputDir / "adrift_(drums).wav", makeTone(44100.0, 4096, 240.0), 24);
+  writer.write(inputDir / "adrift_(vocals).wav", makeTone(44100.0, 4096, 360.0), 24);
+
+  automix::engine::BatchQueueRunner runner;
+  const auto items = runner.buildItemsFromFolder(inputDir, outputDir);
+  REQUIRE(items.size() == 1);
+  REQUIRE(items.front().session.stems.size() == 3);
+
+  std::filesystem::remove_all(inputDir);
+  std::filesystem::remove_all(outputDir);
+}

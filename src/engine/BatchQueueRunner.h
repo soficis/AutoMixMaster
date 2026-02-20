@@ -14,7 +14,8 @@ class BatchQueueRunner {
   using ProgressCallback = std::function<void(size_t itemIndex, double fraction, const std::string& stage)>;
 
   std::vector<domain::BatchItem> buildItemsFromFolder(const std::filesystem::path& inputFolder,
-                                                      const std::filesystem::path& outputFolder) const;
+                                                      const std::filesystem::path& outputFolder,
+                                                      bool recursiveScan = false) const;
 
   domain::BatchResult process(domain::BatchJob& job,
                               const ProgressCallback& progressCallback,

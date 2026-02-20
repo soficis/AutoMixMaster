@@ -1,5 +1,8 @@
 #include "app/ui/TaskCenterPanel.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace automix::app {
 
 using namespace theme;
@@ -16,10 +19,17 @@ TaskCenterPanel::TaskCenterPanel() : progressBar_(progressValue_) {
   stateBadge_.setColour(juce::Label::backgroundColourId, stateColour(TaskState::Idle));
   stateBadge_.setColour(juce::Label::textColourId, juce::Colours::white);
 
+  progressLabel_.setText("0%", juce::dontSendNotification);
+  progressLabel_.setFont(typography::caption());
+  progressLabel_.setColour(juce::Label::textColourId, colour(colours::textMuted));
+  progressLabel_.setJustificationType(juce::Justification::centredRight);
+
   historyEditor_.setMultiLine(true);
   historyEditor_.setReadOnly(true);
   historyEditor_.setScrollbarsShown(true);
-  historyEditor_.setFont(typography::caption());
+  historyEditor_.setFont(juce::Font(juce::FontOptions{}
+      .withName(juce::Font::getDefaultMonospacedFontName())
+      .withPointHeight(12.0f)));
   historyEditor_.setText("Task history will appear here.");
 
   cancelButton_.setEnabled(false);
@@ -31,6 +41,7 @@ TaskCenterPanel::TaskCenterPanel() : progressBar_(progressValue_) {
   addAndMakeVisible(taskLabel_);
   addAndMakeVisible(stateBadge_);
   addAndMakeVisible(progressBar_);
+  addAndMakeVisible(progressLabel_);
   addAndMakeVisible(cancelButton_);
   addAndMakeVisible(historyEditor_);
 }
@@ -49,7 +60,8 @@ void TaskCenterPanel::resized() {
   // Top row: state badge + task label + progress + cancel
   auto topRow = area.removeFromTop(24);
   cancelButton_.setBounds(topRow.removeFromRight(64).reduced(1));
-  auto progressArea = topRow.removeFromRight(std::min(200, topRow.getWidth() / 3));
+  progressLabel_.setBounds(topRow.removeFromRight(48).reduced(1));
+  auto progressArea = topRow.removeFromRight(std::min(220, topRow.getWidth() / 2));
   progressBar_.setBounds(progressArea.reduced(2));
   stateBadge_.setBounds(topRow.removeFromLeft(80).reduced(1));
   taskLabel_.setBounds(topRow);
@@ -68,7 +80,14 @@ void TaskCenterPanel::setCurrentTask(const juce::String& name, const juce::Strin
 
 void TaskCenterPanel::setProgress(double progress) {
   progressValue_ = progress;
+  if (progressValue_ < 0.0) {
+    progressLabel_.setText("...", juce::dontSendNotification);
+  } else {
+    const auto percent = static_cast<int>(std::round(std::clamp(progressValue_, 0.0, 1.0) * 100.0));
+    progressLabel_.setText(juce::String(percent) + "%", juce::dontSendNotification);
+  }
   progressBar_.repaint();
+  progressLabel_.repaint();
 }
 
 void TaskCenterPanel::setCanCancel(bool canCancel) {
@@ -83,8 +102,12 @@ void TaskCenterPanel::setTaskState(TaskState state) {
 }
 
 void TaskCenterPanel::appendHistory(const juce::String& line) {
-  auto timestamp = juce::Time::getCurrentTime().toString(true, true);
-  auto entry = "[" + timestamp + "] " + line;
+  const auto now = juce::Time::getCurrentTime();
+  const auto timestamp = juce::String::formatted("%02d:%02d:%02d",
+                                                  now.getHours(),
+                                                  now.getMinutes(),
+                                                  now.getSeconds());
+  const auto entry = "[" + timestamp + "] " + line;
 
   auto currentText = historyEditor_.getText();
   if (currentText == "Task history will appear here.") {

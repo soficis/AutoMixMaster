@@ -29,6 +29,18 @@ void setPhaseLimiterEnv(const std::string& value) {
 #endif
 }
 
+void setEnvValue(const char* key, const std::string& value) {
+#if defined(_WIN32)
+  _putenv_s(key, value.c_str());
+#else
+  if (value.empty()) {
+    unsetenv(key);
+  } else {
+    setenv(key, value.c_str(), 1);
+  }
+#endif
+}
+
 std::string lowerPath(std::filesystem::path path) {
   std::string text = std::filesystem::weakly_canonical(path).lexically_normal().string();
   for (char& c : text) {
@@ -88,5 +100,39 @@ TEST_CASE("PhaseLimiter discovery supports PHASELIMITER_BIN override", "[phaseli
   REQUIRE(result->executablePath == std::filesystem::absolute(binary));
 
   setPhaseLimiterEnv(previousEnv);
+  std::filesystem::remove_all(root);
+}
+
+TEST_CASE("PhaseLimiter discovery supports AUTOMIX_ASSET_ROOT override", "[phaselimiter][discovery]") {
+  const std::filesystem::path root = std::filesystem::temp_directory_path() / "automix_phaselimiter_discovery_asset_root";
+  const std::filesystem::path binDir = root / "assets" / "phaselimiter" / "bin";
+  const std::filesystem::path binary = binDir / binaryNameForPlatform();
+
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(binDir);
+  std::ofstream(binary).put('\n');
+
+  std::string previousEnv;
+#if defined(_WIN32)
+  char* oldValue = nullptr;
+  size_t oldLength = 0;
+  if (_dupenv_s(&oldValue, &oldLength, "AUTOMIX_ASSET_ROOT") == 0 && oldValue != nullptr) {
+    previousEnv.assign(oldValue, oldLength > 0 ? oldLength - 1 : 0);
+    free(oldValue);
+  }
+#else
+  if (const char* existing = std::getenv("AUTOMIX_ASSET_ROOT"); existing != nullptr) {
+    previousEnv = existing;
+  }
+#endif
+
+  setEnvValue("AUTOMIX_ASSET_ROOT", root.string());
+
+  automix::renderers::PhaseLimiterDiscovery discovery;
+  const auto result = discovery.find();
+  REQUIRE(result.has_value());
+  REQUIRE(lowerPath(result->executablePath) == lowerPath(binary));
+
+  setEnvValue("AUTOMIX_ASSET_ROOT", previousEnv);
   std::filesystem::remove_all(root);
 }

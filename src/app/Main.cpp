@@ -15,8 +15,15 @@ public:
     setUsingNativeTitleBar(true);
     setContentOwned(new MainLayout(), true);
     setResizable(true, true);
-    centreWithSize(1280, 720);
-    setResizeLimits(900, 600, 4096, 4096);
+
+    // Size to 85% of the primary display's usable area, with reasonable minimum.
+    const auto& displays = juce::Desktop::getInstance().getDisplays();
+    const auto* primary = displays.getPrimaryDisplay();
+    const auto userArea = primary ? primary->userArea : juce::Rectangle<int>(0, 0, 1920, 1080);
+    const int initW = juce::jmax(1280, userArea.getWidth()  * 85 / 100);
+    const int initH = juce::jmax(800,  userArea.getHeight() * 85 / 100);
+    centreWithSize(initW, initH);
+    setResizeLimits(960, 640, 8192, 4320);
     setVisible(true);
   }
 

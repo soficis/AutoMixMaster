@@ -1,5 +1,6 @@
 #include "app/controllers/ModelController.h"
 
+#include <algorithm>
 #include <fstream>
 #include <stdexcept>
 
@@ -25,6 +26,16 @@ nlohmann::json loadJsonIfPresent(const std::filesystem::path& path) {
     return parsed;
   } catch (...) {
     return nlohmann::json::array();
+  }
+}
+
+double clampProgress(const double progress) {
+  return std::clamp(progress, 0.0, 1.0);
+}
+
+void emitProgress(const ModelController::Callbacks& callbacks, const double progress) {
+  if (callbacks.onProgress) {
+    callbacks.onProgress(clampProgress(progress));
   }
 }
 
@@ -67,6 +78,7 @@ void reportModelTaskCancelled(const ModelController::Callbacks& callbacks, const
   if (callbacks.onStatus) {
     callbacks.onStatus("Models: " + taskName + " cancelled");
   }
+  emitProgress(callbacks, 1.0);
   if (callbacks.onTaskHistory) {
     callbacks.onTaskHistory("Models " + taskName + " cancelled");
   }
@@ -100,6 +112,7 @@ void ModelController::fetchCatalog(std::atomic_bool& cancelFlag) {
   if (callbacks_.onTaskHistory) {
     callbacks_.onTaskHistory("Models catalog fetch started");
   }
+  emitProgress(callbacks_, 0.05);
 
   struct CatalogJob final : juce::ThreadPoolJob {
     Callbacks callbacks;
@@ -137,12 +150,14 @@ void ModelController::fetchCatalog(std::atomic_bool& cancelFlag) {
       }
 
       if (!cancelled) {
+        emitProgress(callbacks, 0.2);
         ai::HubModelQueryOptions options;
         options.maxResultsPerQuery = 6;
         models = hubOps.discoverRecommended(options);
         if (models.size() > 20) {
           models.resize(20);
         }
+        emitProgress(callbacks, 0.85);
         if (isCancellationRequested()) {
           requestCancellation();
           cancelled = true;
@@ -153,6 +168,7 @@ void ModelController::fetchCatalog(std::atomic_bool& cancelFlag) {
       auto capturedCallbacks = callbacks;
       auto capturedModelsOut = modelsOut;
       util::dispatchCallback([capturedCallbacks, capturedModelsOut, cancelled, models = std::move(models)]() mutable {
+        emitProgress(capturedCallbacks, 1.0);
         if (cancelled) {
           reportModelTaskCancelled(capturedCallbacks, "catalog fetch");
           if (capturedCallbacks.onCatalogReady) {
@@ -200,6 +216,7 @@ void ModelController::fetchCatalog(std::atomic_bool& cancelFlag) {
 
 void ModelController::installModel(const std::string& repoId, std::atomic_bool& cancelFlag) {
   if (repoId.empty()) {
+    emitProgress(callbacks_, 1.0);
     if (callbacks_.onInstallComplete) {
       callbacks_.onInstallComplete(false);
     }
@@ -227,6 +244,7 @@ void ModelController::installModel(const std::string& repoId, std::atomic_bool& 
   if (callbacks_.onTaskHistory) {
     callbacks_.onTaskHistory("Model install started: " + repoId);
   }
+  emitProgress(callbacks_, 0.05);
 
   struct InstallJob final : juce::ThreadPoolJob {
     std::string repoId;
@@ -267,9 +285,11 @@ void ModelController::installModel(const std::string& repoId, std::atomic_bool& 
       }
 
       if (!cancelled) {
+        emitProgress(callbacks, 0.2);
         ai::HubInstallOptions installOptions;
         installOptions.destinationRoot = hubRoot;
         install = hubOps.installModel(repoId, installOptions);
+        emitProgress(callbacks, 0.9);
         if (isCancellationRequested()) {
           requestCancellation();
           cancelled = true;
@@ -279,6 +299,7 @@ void ModelController::installModel(const std::string& repoId, std::atomic_bool& 
       auto capturedCallbacks = callbacks;
       auto capturedRepoId = repoId;
       util::dispatchCallback([capturedCallbacks, capturedRepoId, cancelled, install]() {
+        emitProgress(capturedCallbacks, 1.0);
         if (cancelled) {
           reportModelTaskCancelled(capturedCallbacks, "install");
           if (capturedCallbacks.onTaskHistory) {
@@ -387,6 +408,7 @@ void ModelController::checkUpdates(std::atomic_bool& cancelFlag) {
     if (callbacks_.onStatus) {
       callbacks_.onStatus("Models: no installed hub models");
     }
+    emitProgress(callbacks_, 1.0);
     if (callbacks_.onUpdateCheckComplete) {
       callbacks_.onUpdateCheckComplete(false);
     }
@@ -399,6 +421,7 @@ void ModelController::checkUpdates(std::atomic_bool& cancelFlag) {
   if (callbacks_.onTaskHistory) {
     callbacks_.onTaskHistory("Model update check started");
   }
+  emitProgress(callbacks_, 0.05);
 
   std::vector<std::string> repoIds;
   repoIds.reserve(registry.size());
@@ -445,8 +468,10 @@ void ModelController::checkUpdates(std::atomic_bool& cancelFlag) {
       std::string report = "Model Update Check\n";
       report += "Registry: " + registryPath.string() + "\n\n";
       int updatesAvailable = 0;
+      const auto totalRepoCount = std::max<size_t>(1, repoIds.size());
 
-      for (const auto& repoId : repoIds) {
+      for (size_t repoIndex = 0; repoIndex < repoIds.size(); ++repoIndex) {
+        const auto& repoId = repoIds[repoIndex];
         if (isCancellationRequested()) {
           requestCancellation();
           cancelled = true;
@@ -467,6 +492,7 @@ void ModelController::checkUpdates(std::atomic_bool& cancelFlag) {
         const auto remote = hubOps.modelInfo(repoId);
         if (!remote.has_value()) {
           report += "- " + repoId + ": unable to fetch remote metadata\n";
+          emitProgress(callbacks, 0.15 + (0.75 * (static_cast<double>(repoIndex + 1) / static_cast<double>(totalRepoCount))));
           continue;
         }
 
@@ -484,6 +510,7 @@ void ModelController::checkUpdates(std::atomic_bool& cancelFlag) {
                   " local=" + localRevision +
                   " remote=" + remote->revision +
                   " status=" + std::string(changed ? "update-available" : "up-to-date") + "\n";
+        emitProgress(callbacks, 0.15 + (0.75 * (static_cast<double>(repoIndex + 1) / static_cast<double>(totalRepoCount))));
       }
 
       auto capturedCallbacks = callbacks;
@@ -491,6 +518,7 @@ void ModelController::checkUpdates(std::atomic_bool& cancelFlag) {
       auto capturedUpdates = updatesAvailable;
 
       util::dispatchCallback([capturedCallbacks, capturedReport, capturedUpdates, cancelled]() {
+        emitProgress(capturedCallbacks, 1.0);
         if (cancelled) {
           reportModelTaskCancelled(capturedCallbacks, "update check");
           if (capturedCallbacks.onReport) {

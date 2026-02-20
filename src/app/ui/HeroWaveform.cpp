@@ -74,6 +74,49 @@ void HeroWaveform::mouseDrag(const juce::MouseEvent& event) {
     onSeek(progress);
 }
 
+// ── FileDragAndDropTarget ─────────────────────────────────────────
+
+static bool isAudioExtension(const juce::String& path) {
+  auto ext = juce::File(path).getFileExtension().toLowerCase();
+  return ext == ".wav" || ext == ".aiff" || ext == ".aif" ||
+         ext == ".flac"|| ext == ".mp3"  || ext == ".ogg";
+}
+
+bool HeroWaveform::isInterestedInFileDrag(const juce::StringArray& files) {
+  for (const auto& path : files) {
+    if (isAudioExtension(path))
+      return true;
+  }
+  return false;
+}
+
+void HeroWaveform::fileDragEnter(const juce::StringArray& /*files*/, int /*x*/, int /*y*/) {
+  isDragOver_ = true;
+  repaint();
+}
+
+void HeroWaveform::fileDragExit(const juce::StringArray& /*files*/) {
+  isDragOver_ = false;
+  repaint();
+}
+
+void HeroWaveform::filesDropped(const juce::StringArray& files, int /*x*/, int /*y*/) {
+  isDragOver_ = false;
+  repaint();
+
+  if (!onFilesDropped)
+    return;
+
+  std::vector<juce::File> accepted;
+  for (const auto& path : files) {
+    if (isAudioExtension(path))
+      accepted.emplace_back(path);
+  }
+
+  if (!accepted.empty())
+    onFilesDropped(std::move(accepted));
+}
+
 void HeroWaveform::resized() {
   cachedWidth_ = 0;
 }
@@ -164,73 +207,82 @@ void HeroWaveform::paint(juce::Graphics& g) {
     // No waveform data — show placeholder
     g.setColour(colour(colours::textMuted));
     g.setFont(typography::body());
-    g.drawText("Drop audio files here or import stems", bounds, juce::Justification::centred);
-    return;
-  }
+    g.drawText("Drop audio files here or use Import", bounds, juce::Justification::centred);
+  } else {
+    // Draw waveform fill
+    juce::Path waveformPath;
+    waveformPath.startNewSubPath(0.0f, midY);
 
-  // Draw waveform fill
-  juce::Path waveformPath;
-  waveformPath.startNewSubPath(0.0f, midY);
-
-  for (int px = 0; px < w; ++px) {
-    float peak = waveformPeaks_[static_cast<size_t>(px)];
-    float amplitude = peak * midY * 0.9f;
-    waveformPath.lineTo(static_cast<float>(px), midY - amplitude);
-  }
-  for (int px = w - 1; px >= 0; --px) {
-    float peak = waveformPeaks_[static_cast<size_t>(px)];
-    float amplitude = peak * midY * 0.9f;
-    waveformPath.lineTo(static_cast<float>(px), midY + amplitude);
-  }
-  waveformPath.closeSubPath();
-
-  juce::ColourGradient gradient(colour(colours::waveformFill), 0.0f, 0.0f,
-                                colour(colours::waveformFill).withAlpha(0.4f), 0.0f, h, false);
-  g.setGradientFill(gradient);
-  g.fillPath(waveformPath);
-
-  g.setColour(colour(colours::waveformOutline));
-  // Draw top outline
-  juce::Path outlinePath;
-  outlinePath.startNewSubPath(0.0f, midY);
-  for (int px = 0; px < w; ++px) {
-    float peak = waveformPeaks_[static_cast<size_t>(px)];
-    float amplitude = peak * midY * 0.9f;
-    outlinePath.lineTo(static_cast<float>(px), midY - amplitude);
-  }
-  g.strokePath(outlinePath, juce::PathStrokeType(1.0f));
-
-  // Loop region overlay
-  if (loopEnabled_ && loopEnd_ > loopStart_) {
-    double visibleWidth = 1.0 / zoomFactor_;
-    double viewStart = std::clamp(zoomCenter_ - visibleWidth * 0.5, 0.0, 1.0 - visibleWidth);
-
-    float loopStartX = static_cast<float>((loopStart_ - viewStart) / visibleWidth * w);
-    float loopEndX = static_cast<float>((loopEnd_ - viewStart) / visibleWidth * w);
-
-    g.setColour(colour(colours::selectionFill));
-    g.fillRect(loopStartX, 0.0f, loopEndX - loopStartX, h);
-
-    g.setColour(colour(colours::primary).withAlpha(0.8f));
-    g.fillRect(loopStartX, 0.0f, 2.0f, h);
-    g.fillRect(loopEndX - 2.0f, 0.0f, 2.0f, h);
-  }
-
-  // Playhead
-  if (playheadProgress_ >= 0.0) {
-    double visibleWidth = 1.0 / zoomFactor_;
-    double viewStart = std::clamp(zoomCenter_ - visibleWidth * 0.5, 0.0, 1.0 - visibleWidth);
-    float playheadX = static_cast<float>((playheadProgress_ - viewStart) / visibleWidth * w);
-
-    if (playheadX >= 0.0f && playheadX <= static_cast<float>(w)) {
-      g.setColour(colour(colours::playhead));
-      g.fillRect(playheadX - 1.0f, 0.0f, 2.0f, h);
+    for (int px = 0; px < w; ++px) {
+      float peak = waveformPeaks_[static_cast<size_t>(px)];
+      float amplitude = peak * midY * 0.9f;
+      waveformPath.lineTo(static_cast<float>(px), midY - amplitude);
     }
+    for (int px = w - 1; px >= 0; --px) {
+      float peak = waveformPeaks_[static_cast<size_t>(px)];
+      float amplitude = peak * midY * 0.9f;
+      waveformPath.lineTo(static_cast<float>(px), midY + amplitude);
+    }
+    waveformPath.closeSubPath();
+
+    juce::ColourGradient gradient(colour(colours::waveformFill), 0.0f, 0.0f,
+                                  colour(colours::waveformFill).withAlpha(0.4f), 0.0f, h, false);
+    g.setGradientFill(gradient);
+    g.fillPath(waveformPath);
+
+    g.setColour(colour(colours::waveformOutline));
+    juce::Path outlinePath;
+    outlinePath.startNewSubPath(0.0f, midY);
+    for (int px = 0; px < w; ++px) {
+      float peak = waveformPeaks_[static_cast<size_t>(px)];
+      float amplitude = peak * midY * 0.9f;
+      outlinePath.lineTo(static_cast<float>(px), midY - amplitude);
+    }
+    g.strokePath(outlinePath, juce::PathStrokeType(1.0f));
+
+    // Loop region overlay
+    if (loopEnabled_ && loopEnd_ > loopStart_) {
+      double visibleWidth = 1.0 / zoomFactor_;
+      double viewStart = std::clamp(zoomCenter_ - visibleWidth * 0.5, 0.0, 1.0 - visibleWidth);
+
+      float loopStartX = static_cast<float>((loopStart_ - viewStart) / visibleWidth * w);
+      float loopEndX = static_cast<float>((loopEnd_ - viewStart) / visibleWidth * w);
+
+      g.setColour(colour(colours::selectionFill));
+      g.fillRect(loopStartX, 0.0f, loopEndX - loopStartX, h);
+
+      g.setColour(colour(colours::primary).withAlpha(0.8f));
+      g.fillRect(loopStartX, 0.0f, 2.0f, h);
+      g.fillRect(loopEndX - 2.0f, 0.0f, 2.0f, h);
+    }
+
+    // Playhead
+    if (playheadProgress_ >= 0.0) {
+      double visibleWidth = 1.0 / zoomFactor_;
+      double viewStart = std::clamp(zoomCenter_ - visibleWidth * 0.5, 0.0, 1.0 - visibleWidth);
+      float playheadX = static_cast<float>((playheadProgress_ - viewStart) / visibleWidth * w);
+
+      if (playheadX >= 0.0f && playheadX <= static_cast<float>(w)) {
+        g.setColour(colour(colours::playhead));
+        g.fillRect(playheadX - 1.0f, 0.0f, 2.0f, h);
+      }
+    }
+
+    // Center line
+    g.setColour(colour(colours::surfaceBorder).withAlpha(0.3f));
+    g.fillRect(0.0f, midY - 0.5f, static_cast<float>(w), 1.0f);
   }
 
-  // Center line
-  g.setColour(colour(colours::surfaceBorder).withAlpha(0.3f));
-  g.fillRect(0.0f, midY - 0.5f, static_cast<float>(w), 1.0f);
+  // Drag-over overlay — drawn last so it appears on top of waveform or placeholder
+  if (isDragOver_) {
+    g.setColour(colour(colours::primary).withAlpha(0.12f));
+    g.fillAll();
+    g.setColour(colour(colours::primary));
+    g.drawRect(bounds.reduced(3.0f), 2.0f);
+    g.setFont(typography::subhead());
+    g.setColour(colour(colours::primary));
+    g.drawText("Release to import audio files", bounds, juce::Justification::centred);
+  }
 }
 
 } // namespace automix::app

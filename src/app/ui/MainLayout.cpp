@@ -1,11 +1,14 @@
 #include "app/ui/MainLayout.h"
 
+#include "app/ui/AudioPreviewManager.h"
 #include "app/ui/ControlDeck.h"
 #include "app/ui/GlowMeters.h"
 #include "app/ui/HeaderBar.h"
 #include "app/ui/HeroWaveform.h"
+#include "app/ui/ModelBrowserPanel.h"
 #include "app/ui/StemPanel.h"
 #include "app/ui/TaskCenterPanel.h"
+#include "app/ui/TaskOrchestrator.h"
 #include "app/ui/TransportBar.h"
 
 #include <algorithm>
@@ -13,7 +16,6 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
-#include <unordered_map>
 
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <nlohmann/json.hpp>
@@ -31,63 +33,6 @@ namespace {
 template <typename Comp>
 auto safeAsync(Comp* comp) {
   return juce::Component::SafePointer<Comp>(comp);
-}
-
-domain::StemMixDecision* findOrCreateStemDecision(domain::Session& session,
-                                                  const std::string& stemId) {
-  if (!session.mixPlan.has_value()) {
-    session.mixPlan = domain::MixPlan {};
-  }
-
-  for (auto& decision : session.mixPlan->stemDecisions) {
-    if (decision.stemId == stemId) {
-      return &decision;
-    }
-  }
-
-  auto& decision = session.mixPlan->stemDecisions.emplace_back();
-  decision.stemId = stemId;
-  return &decision;
-}
-
-double trimVolumeToGainDb(const float volume) {
-  constexpr double kMinLinearGain = 0.0001;
-  const double linearGain = std::clamp(static_cast<double>(volume), kMinLinearGain, 1.5);
-  return 20.0 * std::log10(linearGain);
-}
-
-void applyStemDisplayStateToPreviewSession(
-    domain::Session& previewSession,
-    const std::vector<StemPanel::StemDisplay>& displays) {
-  if (displays.empty()) {
-    return;
-  }
-
-  std::unordered_map<std::string, const StemPanel::StemDisplay*> displayByStemId;
-  displayByStemId.reserve(displays.size());
-  bool anySoloed = false;
-  for (const auto& display : displays) {
-    displayByStemId.emplace(display.id, &display);
-    anySoloed = anySoloed || display.solo;
-  }
-
-  for (auto& stem : previewSession.stems) {
-    const auto displayIt = displayByStemId.find(stem.id);
-    if (displayIt == displayByStemId.end()) {
-      continue;
-    }
-
-    const auto& display = *displayIt->second;
-    stem.enabled = display.enabled && !display.mute && (!anySoloed || display.solo);
-
-    constexpr float kVolumeEpsilon = 0.0001f;
-    if (std::abs(display.volume - 1.0f) <= kVolumeEpsilon) {
-      continue;
-    }
-
-    auto* decision = findOrCreateStemDecision(previewSession, display.id);
-    decision->gainDb += trimVolumeToGainDb(display.volume);
-  }
 }
 
 void updateStemPanelFromSession(StemPanel& panel, const domain::Session& session) {
@@ -127,21 +72,39 @@ MainLayout::MainLayout() {
   addAndMakeVisible(*controlDeck_);
   addAndMakeVisible(*taskCenter_);
 
-  // 2. Populate combo boxes
+  // 2. Create coordinators
+  taskOrchestrator_ = std::make_unique<TaskOrchestrator>(*taskCenter_);
+  previewManager_ = std::make_unique<AudioPreviewManager>(backgroundPool_, this);
+
+  previewManager_->onPreviewReady = [this](const engine::AudioBuffer& buffer, double previousProgress) {
+    heroWaveform_->setBuffer(buffer);
+    updateTransportFromBuffer(buffer);
+    if (previousProgress > 0.0 && previousProgress < 1.0)
+      transportController_.seekToFraction(previousProgress);
+  };
+  previewManager_->onPreviewError = [this](const juce::String& errorText) {
+    taskOrchestrator_->appendHistory("Preview build failed: " + errorText);
+  };
+  previewManager_->onHistoryLine = [this](const juce::String& line) {
+    taskOrchestrator_->appendHistory(line);
+  };
+
+  // 3. Populate combo boxes
   refreshRenderers();
   refreshCodecAvailability();
   refreshModelPacks();
   populateMasterPresetSelectors();
   refreshProjectProfiles();
 
-  // 3. Wire all UI callbacks
+  // 4. Wire all UI callbacks
   wireHeaderCallbacks();
   wireTransportCallbacks();
   wireControlDeckCallbacks();
-  wireTaskCenterCallbacks();
   wireHeroWaveformCallbacks();
 
-  // 4. Create controllers
+  taskCenter_->onCancel = [this] { taskOrchestrator_->cancelActiveTask(); };
+
+  // 5. Create controllers
   auto safe = safeAsync(this);
 
   // --- ModelController ---
@@ -150,19 +113,19 @@ MainLayout::MainLayout() {
     cb.onStatus = [safe](const std::string& msg) {
       juce::MessageManager::callAsync([safe, msg]() {
         if (safe)
-          safe->taskCenter_->setCurrentTask(juce::String(msg), "");
+          safe->taskOrchestrator_->setStatus(juce::String(msg), "");
       });
     };
     cb.onTaskHistory = [safe](const std::string& msg) {
       juce::MessageManager::callAsync([safe, msg]() {
         if (safe)
-          safe->appendTaskHistory(juce::String(msg));
+          safe->taskOrchestrator_->appendHistory(juce::String(msg));
       });
     };
     cb.onReport = [safe](const std::string& text) {
       juce::MessageManager::callAsync([safe, text]() {
         if (safe)
-          safe->appendTaskHistory("Report: " + juce::String(text).substring(0, 200));
+          safe->taskOrchestrator_->appendHistory("Report: " + juce::String(text).substring(0, 200));
       });
     };
     cb.onModelPacksChanged = [safe]() {
@@ -171,13 +134,41 @@ MainLayout::MainLayout() {
           safe->refreshModelPacks();
       });
     };
-    cb.onCatalogReady = [safe]() {
-      juce::MessageManager::callAsync([safe]() {
-        if (safe)
-          safe->appendTaskHistory("Model catalog ready");
+    cb.onCatalogReady = [safe](const bool cancelled) {
+      juce::MessageManager::callAsync([safe, cancelled]() {
+        if (!safe)
+          return;
+        if (cancelled)
+          safe->taskOrchestrator_->finishTaskCancelled(ActiveTask::Model, "Model catalog cancelled");
+        else
+          safe->taskOrchestrator_->finishTaskCompleted(ActiveTask::Model, "Model catalog ready");
       });
     };
-    modelController_ = std::make_unique<ModelController>(modelManager_, backgroundPool_, std::move(cb));
+    cb.onInstallComplete = [safe](const bool cancelled) {
+      juce::MessageManager::callAsync([safe, cancelled]() {
+        if (!safe)
+          return;
+        if (cancelled)
+          safe->taskOrchestrator_->finishTaskCancelled(ActiveTask::Model, "Model install cancelled");
+        else
+          safe->taskOrchestrator_->finishTaskCompleted(ActiveTask::Model, "Model installed");
+      });
+    };
+    cb.onUpdateCheckComplete = [safe](const bool cancelled) {
+      juce::MessageManager::callAsync([safe, cancelled]() {
+        if (!safe)
+          return;
+        if (cancelled)
+          safe->taskOrchestrator_->finishTaskCancelled(ActiveTask::Model, "Model update check cancelled");
+        else
+          safe->taskOrchestrator_->finishTaskCompleted(ActiveTask::Model, "Model updates checked");
+      });
+    };
+    modelController_ = std::make_unique<ModelController>(
+        modelManager_,
+        backgroundPool_,
+        std::move(cb),
+        ModelController::createDefaultHubOps());
   }
 
   // --- ImportController ---
@@ -186,29 +177,32 @@ MainLayout::MainLayout() {
     cb.onStatus = [safe](const std::string& msg) {
       juce::MessageManager::callAsync([safe, msg]() {
         if (safe)
-          safe->taskCenter_->setCurrentTask(juce::String(msg), "");
+          safe->taskOrchestrator_->setStatus(juce::String(msg), "");
       });
     };
     cb.onTaskHistory = [safe](const std::string& msg) {
       juce::MessageManager::callAsync([safe, msg]() {
         if (safe)
-          safe->appendTaskHistory(juce::String(msg));
+          safe->taskOrchestrator_->appendHistory(juce::String(msg));
       });
     };
     cb.onImportComplete = [safe](ImportResult result) {
       juce::MessageManager::callAsync([safe, result = std::move(result)]() {
         if (!safe)
           return;
-        for (const auto& line : result.logLines)
-          safe->appendTaskHistory(juce::String(line));
 
-        safe->session_.stems = result.stems;
-        updateStemPanelFromSession(safe->controlDeck_->getStemPanel(), safe->session_);
-        safe->taskRunning_.store(false);
-        safe->taskCenter_->setCanCancel(false);
-        safe->taskCenter_->setCurrentTask("Import complete", "");
-        safe->taskCenter_->setProgress(1.0);
-        safe->rebuildPreviewBuffersAsync();
+        for (const auto& line : result.logLines)
+          safe->taskOrchestrator_->appendHistory(juce::String(line));
+
+        if (result.cancelled) {
+          safe->taskOrchestrator_->finishTaskCancelled(ActiveTask::Import, "Import cancelled");
+          return;
+        }
+
+        safe->sessionManager_.session().stems = result.stems;
+        updateStemPanelFromSession(safe->controlDeck_->getStemPanel(), safe->sessionManager_.session());
+        safe->taskOrchestrator_->finishTaskCompleted(ActiveTask::Import, "Import complete");
+        safe->rebuildPreview();
       });
     };
     importController_ = std::make_unique<ImportController>(backgroundPool_, std::move(cb));
@@ -220,35 +214,33 @@ MainLayout::MainLayout() {
     cb.onStatus = [safe](const std::string& msg) {
       juce::MessageManager::callAsync([safe, msg]() {
         if (safe)
-          safe->taskCenter_->setCurrentTask(juce::String(msg), "");
+          safe->taskOrchestrator_->setStatus(juce::String(msg), "");
       });
     };
     cb.onTaskHistory = [safe](const std::string& msg) {
       juce::MessageManager::callAsync([safe, msg]() {
         if (safe)
-          safe->appendTaskHistory(juce::String(msg));
+          safe->taskOrchestrator_->appendHistory(juce::String(msg));
       });
     };
     cb.onExportComplete = [safe](ExportResult result) {
       juce::MessageManager::callAsync([safe, result = std::move(result)]() {
         if (!safe)
           return;
+
         for (const auto& line : result.logs)
-          safe->appendTaskHistory(juce::String(line));
+          safe->taskOrchestrator_->appendHistory(juce::String(line));
 
         safe->analysisEntries_ = result.analysisEntries;
 
         if (result.success) {
-          safe->taskCenter_->setCurrentTask("Export complete", result.outputAudioPath);
-          safe->appendTaskHistory("Export succeeded: " + juce::String(result.outputAudioPath));
+          safe->taskOrchestrator_->appendHistory("Export succeeded: " + juce::String(result.outputAudioPath));
+          safe->taskOrchestrator_->finishTaskCompleted(ActiveTask::Export, "Export complete");
         } else if (result.cancelled) {
-          safe->taskCenter_->setCurrentTask("Export cancelled", "");
+          safe->taskOrchestrator_->finishTaskCancelled(ActiveTask::Export, "Export cancelled");
         } else {
-          safe->taskCenter_->setCurrentTask("Export failed", result.crashMessage.toStdString());
+          safe->taskOrchestrator_->finishTaskFailed(ActiveTask::Export, result.crashMessage.toStdString());
         }
-        safe->taskRunning_.store(false);
-        safe->taskCenter_->setCanCancel(false);
-        safe->taskCenter_->setProgress(1.0);
       });
     };
     exportController_ = std::make_unique<ExportController>(backgroundPool_, std::move(cb));
@@ -260,135 +252,137 @@ MainLayout::MainLayout() {
     cb.onStatus = [safe](const std::string& msg) {
       juce::MessageManager::callAsync([safe, msg]() {
         if (safe)
-          safe->taskCenter_->setCurrentTask(juce::String(msg), "");
+          safe->taskOrchestrator_->setStatus(juce::String(msg), "");
       });
     };
     cb.onTaskHistory = [safe](const std::string& msg) {
       juce::MessageManager::callAsync([safe, msg]() {
         if (safe)
-          safe->appendTaskHistory(juce::String(msg));
+          safe->taskOrchestrator_->appendHistory(juce::String(msg));
       });
     };
     cb.onAutoMixComplete = [safe](AutoMixResult result) {
       juce::MessageManager::callAsync([safe, result = std::move(result)]() {
         if (!safe)
           return;
-        safe->taskRunning_.store(false);
-        safe->taskCenter_->setCanCancel(false);
 
         if (result.cancelled) {
-          safe->taskCenter_->setCurrentTask("Auto Mix cancelled", "");
+          safe->taskOrchestrator_->finishTaskCancelled(ActiveTask::AutoMix, "Auto Mix cancelled");
           return;
         }
         if (result.errorText.isNotEmpty()) {
-          safe->taskCenter_->setCurrentTask("Auto Mix failed", "");
-          safe->appendTaskHistory("Error: " + result.errorText);
+          safe->taskOrchestrator_->finishTaskFailed(ActiveTask::AutoMix, result.errorText.toStdString());
           return;
         }
 
         safe->analysisEntries_ = result.analysisEntries;
         if (result.mixPlan.has_value())
-          safe->session_.mixPlan = result.mixPlan;
-        safe->appendTaskHistory(result.reportText);
-        safe->taskCenter_->setCurrentTask("Auto Mix complete", "");
-        safe->taskCenter_->setProgress(1.0);
-        safe->rebuildPreviewBuffersAsync();
+          safe->sessionManager_.session().mixPlan = result.mixPlan;
+        safe->taskOrchestrator_->appendHistory(result.reportText);
+        safe->taskOrchestrator_->finishTaskCompleted(ActiveTask::AutoMix, "Auto Mix complete");
+        safe->rebuildPreview();
       });
     };
     cb.onAutoMasterComplete = [safe](AutoMasterResult result) {
       juce::MessageManager::callAsync([safe, result = std::move(result)]() {
         if (!safe)
           return;
-        safe->taskRunning_.store(false);
-        safe->taskCenter_->setCanCancel(false);
 
         if (result.cancelled) {
-          safe->taskCenter_->setCurrentTask("Auto Master cancelled", "");
+          safe->taskOrchestrator_->finishTaskCancelled(ActiveTask::AutoMaster, "Auto Master cancelled");
           return;
         }
         if (result.errorText.isNotEmpty()) {
-          safe->taskCenter_->setCurrentTask("Auto Master failed", "");
-          safe->appendTaskHistory("Error: " + result.errorText);
+          safe->taskOrchestrator_->finishTaskFailed(ActiveTask::AutoMaster, result.errorText.toStdString());
           return;
         }
 
-        safe->session_.masterPlan = result.masterPlan;
-        safe->appendTaskHistory(result.reportAppend);
-        safe->taskCenter_->setCurrentTask("Auto Master complete", "");
-        safe->taskCenter_->setProgress(1.0);
-
-        // Update meters from mastering report
+        safe->sessionManager_.session().masterPlan = result.masterPlan;
+        safe->taskOrchestrator_->appendHistory(result.reportAppend);
         safe->updateMeterPanel(result.previewReport);
 
-        // Update preview buffers
-        {
-          std::lock_guard<std::mutex> lock(safe->playbackBufferMutex_);
-          safe->playbackBuffer_ = result.previewMaster;
-        }
+        safe->previewManager_->setBuffer(result.previewMaster);
         safe->heroWaveform_->setBuffer(result.previewMaster);
         safe->updateTransportFromBuffer(result.previewMaster);
+
+        safe->taskOrchestrator_->finishTaskCompleted(ActiveTask::AutoMaster, "Auto Master complete");
       });
     };
     cb.onBatchComplete = [safe](BatchResult result) {
       juce::MessageManager::callAsync([safe, result = std::move(result)]() {
         if (!safe)
           return;
-        safe->taskRunning_.store(false);
-        safe->taskCenter_->setCanCancel(false);
-        if (result.errorText.isNotEmpty()) {
-          safe->appendTaskHistory("Batch error: " + result.errorText);
-        }
-        safe->appendTaskHistory(result.summary);
-        safe->taskCenter_->setCurrentTask("Batch complete", "");
-        safe->taskCenter_->setProgress(1.0);
+
+        if (result.errorText.isNotEmpty())
+          safe->taskOrchestrator_->appendHistory("Batch error: " + result.errorText);
+        safe->taskOrchestrator_->appendHistory(result.summary);
+        safe->taskOrchestrator_->finishTaskCompleted(ActiveTask::Batch, "Batch complete");
       });
     };
     processingController_ = std::make_unique<ProcessingController>(backgroundPool_, std::move(cb));
   }
 
-  // --- PreviewController ---
+  // --- SessionController ---
   {
-    PreviewController::Callbacks cb;
-    cb.onPreviewReady = [safe](PreviewBuildResult result) {
-      juce::MessageManager::callAsync([safe, result = std::move(result)]() {
+    SessionController::Callbacks cb;
+    cb.onStatus = [safe](const std::string& msg) {
+      juce::MessageManager::callAsync([safe, msg]() {
+        if (safe)
+          safe->taskOrchestrator_->setStatus(juce::String(msg), "");
+      });
+    };
+    cb.onTaskHistory = [safe](const std::string& msg) {
+      juce::MessageManager::callAsync([safe, msg]() {
+        if (safe)
+          safe->taskOrchestrator_->appendHistory(juce::String(msg));
+      });
+    };
+    cb.onSaveComplete = [safe](SessionSaveResult result) {
+      juce::MessageManager::callAsync([safe, result = std::move(result)]() mutable {
         if (!safe)
           return;
 
-        // Discard stale results
-        if (result.generation < safe->previewBuildGeneration_.load())
+        if (result.cancelled) {
+          safe->taskOrchestrator_->finishTaskCancelled(ActiveTask::Session, "Session save cancelled");
           return;
-
+        }
         if (!result.success) {
-          if (result.errorText.isNotEmpty())
-            safe->appendTaskHistory("Preview build failed: " + result.errorText);
+          safe->taskOrchestrator_->finishTaskFailed(ActiveTask::Session, result.errorText.toStdString());
           return;
         }
 
-        // Update playback buffer
-        {
-          std::lock_guard<std::mutex> lock(safe->playbackBufferMutex_);
-          safe->playbackBuffer_ = result.preview;
-        }
-
-        // Update waveform and transport
-        safe->heroWaveform_->setBuffer(result.preview);
-        safe->updateTransportFromBuffer(result.preview);
-
-        // Restore playback position if possible
-        if (result.previousProgress > 0.0 && result.previousProgress < 1.0)
-          safe->transportController_.seekToFraction(result.previousProgress);
-
-        safe->appendTaskHistory("Preview updated");
+        safe->taskOrchestrator_->appendHistory("Session saved to " + juce::String(result.path));
+        safe->headerBar_->setSessionName(juce::File(result.path).getFileNameWithoutExtension());
+        safe->taskOrchestrator_->finishTaskCompleted(ActiveTask::Session, "Session saved");
       });
     };
-    previewController_ = std::make_unique<PreviewController>(backgroundPool_, std::move(cb));
+    cb.onLoadComplete = [safe](SessionLoadResult result) {
+      juce::MessageManager::callAsync([safe, result = std::move(result)]() mutable {
+        if (!safe)
+          return;
+
+        if (result.cancelled) {
+          safe->taskOrchestrator_->finishTaskCancelled(ActiveTask::Session, "Session load cancelled");
+          return;
+        }
+        if (result.errorText.isNotEmpty() || !result.session.has_value()) {
+          auto msg = result.errorText.isNotEmpty() ? result.errorText.toStdString() : "Unknown error";
+          safe->taskOrchestrator_->finishTaskFailed(ActiveTask::Session, msg);
+          return;
+        }
+
+        safe->applyLoadedSession(std::move(result.session.value()), juce::String(result.path));
+        safe->taskOrchestrator_->finishTaskCompleted(ActiveTask::Session, "Session loaded");
+      });
+    };
+    sessionController_ = std::make_unique<SessionController>(backgroundPool_, std::move(cb));
   }
 
-  // 5. Audio device
+  // 6. Audio device
   audioDeviceManager_.initialise(0, 2, nullptr, true);
   audioDeviceManager_.addAudioCallback(this);
 
-  // 6. Transport
+  // 7. Transport
   transportController_.addChangeListener(this);
   startTimerHz(20);
   updateTransportDisplay();
@@ -399,7 +393,7 @@ MainLayout::MainLayout() {
 // ─────────────────────────────────────────────────────────────────
 
 MainLayout::~MainLayout() {
-  cancelRender_.store(true);
+  taskOrchestrator_->cancelAll();
   stopTimer();
   audioDeviceManager_.removeAudioCallback(this);
   transportController_.removeChangeListener(this);
@@ -457,7 +451,7 @@ bool MainLayout::keyPressed(const juce::KeyPress& key) {
     return true;
   }
   if (key == juce::KeyPress('k', ctrl, 0)) {
-    onModelsMenu();
+    onModelsDialog();
     return true;
   }
   if (key == juce::KeyPress::spaceKey) {
@@ -500,10 +494,11 @@ void MainLayout::audioDeviceIOCallbackWithContext(const float* const* /*inputCha
                                                   float* const* outputChannelData, int numOutputChannels,
                                                   int numSamples,
                                                   const juce::AudioIODeviceCallbackContext& /*context*/) {
-  std::lock_guard<std::mutex> lock(playbackBufferMutex_);
+  std::lock_guard<std::mutex> lock(previewManager_->bufferMutex());
+  const auto& buf = previewManager_->buffer();
   const float outputGain = std::clamp(outputVolume_.load(std::memory_order_relaxed), 0.0f, 1.5f);
 
-  if (!transportController_.isPlaying() || playbackBuffer_.getNumSamples() == 0) {
+  if (!transportController_.isPlaying() || buf.getNumSamples() == 0) {
     for (int ch = 0; ch < numOutputChannels; ++ch)
       if (outputChannelData[ch])
         std::fill_n(outputChannelData[ch], numSamples, 0.0f);
@@ -511,8 +506,8 @@ void MainLayout::audioDeviceIOCallbackWithContext(const float* const* /*inputCha
   }
 
   auto pos = transportController_.positionSamples();
-  int totalSamples = playbackBuffer_.getNumSamples();
-  int bufChannels = playbackBuffer_.getNumChannels();
+  int totalSamples = buf.getNumSamples();
+  int bufChannels = buf.getNumChannels();
 
   for (int i = 0; i < numSamples; ++i) {
     if (pos >= totalSamples) {
@@ -526,7 +521,7 @@ void MainLayout::audioDeviceIOCallbackWithContext(const float* const* /*inputCha
     for (int ch = 0; ch < numOutputChannels; ++ch) {
       if (outputChannelData[ch]) {
         int srcCh = std::min(ch, bufChannels - 1);
-        outputChannelData[ch][i] = playbackBuffer_.getSample(srcCh, static_cast<int>(pos)) * outputGain;
+        outputChannelData[ch][i] = buf.getSample(srcCh, static_cast<int>(pos)) * outputGain;
       }
     }
     ++pos;
@@ -545,7 +540,7 @@ void MainLayout::audioDeviceStopped() {}
 void MainLayout::wireHeaderCallbacks() {
   headerBar_->onSaveSession = [this] { onSaveSession(); };
   headerBar_->onLoadSession = [this] { onLoadSession(); };
-  headerBar_->onModels = [this] { onModelsMenu(); };
+  headerBar_->onModels = [this] { onModelsDialog(); };
   headerBar_->onSettings = [this] { onSettings(); };
 }
 
@@ -573,7 +568,7 @@ void MainLayout::wireTransportCallbacks() {
     transportController_.seekToFraction(1.0);
   };
   transportBar_->onLoopToggle = [this] {
-    auto& tl = session_.timeline;
+    auto& tl = sessionManager_.session().timeline;
     tl.loopEnabled = !tl.loopEnabled;
     transportController_.setLoopRangeSeconds(tl.loopInSeconds, tl.loopOutSeconds, tl.loopEnabled);
     heroWaveform_->setLoopRange(tl.loopEnabled,
@@ -604,61 +599,51 @@ void MainLayout::wireControlDeckCallbacks() {
   controlDeck_->onBatch = [this] { onBatch(); };
   controlDeck_->onExport = [this] { onExport(); };
 
-  // Stem panel callbacks
   controlDeck_->getStemPanel().onSoloChanged = [this](const std::string& /*stemId*/, bool /*solo*/) {
-    rebuildPreviewBuffersAsync();
+    rebuildPreview();
   };
   controlDeck_->getStemPanel().onMuteChanged = [this](const std::string& /*stemId*/, bool /*mute*/) {
-    rebuildPreviewBuffersAsync();
+    rebuildPreview();
   };
   controlDeck_->getStemPanel().onVolumeChanged = [this](const std::string& /*stemId*/, float /*volume*/) {
-    rebuildPreviewBuffersAsync();
+    rebuildPreview();
   };
 
-  // Settings combo boxes: update session on change
   controlDeck_->getRendererBox().onChange = [this] {
-    auto it = rendererIdByComboId_.find(controlDeck_->getRendererBox().getSelectedId());
-    if (it != rendererIdByComboId_.end())
-      session_.renderSettings.rendererName = it->second;
+    const auto rendererId = selectionState_.rendererIdForCombo(controlDeck_->getRendererBox().getSelectedId());
+    if (rendererId.has_value())
+      sessionManager_.session().renderSettings.rendererName = rendererId.value();
   };
   controlDeck_->getProfileBox().onChange = [this] {
-    auto it = projectProfileIdByComboId_.find(controlDeck_->getProfileBox().getSelectedId());
-    if (it != projectProfileIdByComboId_.end()) {
-      session_.projectProfileId = it->second;
-      auto profile = domain::findProjectProfile(projectProfiles_, it->second);
+    const auto profileId = selectionState_.projectProfileIdForCombo(controlDeck_->getProfileBox().getSelectedId());
+    if (profileId.has_value()) {
+      sessionManager_.session().projectProfileId = profileId.value();
+      auto profile = domain::findProjectProfile(projectProfiles_, profileId.value());
       if (profile.has_value()) {
         ProfileController pc;
-        pc.applyProfile(session_, profile.value());
-        appendTaskHistory("Applied profile: " + juce::String(profile->name));
+        pc.applyProfile(sessionManager_.session(), profile.value());
+        taskOrchestrator_->appendHistory("Applied profile: " + juce::String(profile->name));
       }
     }
   };
   controlDeck_->getMasterPresetBox().onChange = [this] {
-    auto it = masterPresetByComboId_.find(controlDeck_->getMasterPresetBox().getSelectedId());
-    if (it != masterPresetByComboId_.end() && session_.masterPlan.has_value())
-      session_.masterPlan->preset = it->second;
+    const auto preset = selectionState_.masterPresetForCombo(controlDeck_->getMasterPresetBox().getSelectedId());
+    if (preset.has_value() && sessionManager_.session().masterPlan.has_value())
+      sessionManager_.session().masterPlan->preset = preset.value();
   };
   controlDeck_->getExportFormatBox().onChange = [this] {
-    auto it = codecFormatByComboId_.find(controlDeck_->getExportFormatBox().getSelectedId());
-    if (it != codecFormatByComboId_.end())
-      session_.renderSettings.outputFormat = it->second;
+    const auto format = selectionState_.codecFormatForCombo(controlDeck_->getExportFormatBox().getSelectedId());
+    if (format.has_value())
+      sessionManager_.session().renderSettings.outputFormat = format.value();
   };
   controlDeck_->getExportModeBox().onChange = [this] {
-    auto it = exportSpeedModeByComboId_.find(controlDeck_->getExportModeBox().getSelectedId());
-    if (it != exportSpeedModeByComboId_.end())
-      session_.renderSettings.exportSpeedMode = it->second;
+    const auto mode = selectionState_.exportSpeedModeForCombo(controlDeck_->getExportModeBox().getSelectedId());
+    if (mode.has_value())
+      sessionManager_.session().renderSettings.exportSpeedMode = mode.value();
   };
   controlDeck_->getResidualBlendSlider().onValueChange = [this] {
-    session_.residualBlend = controlDeck_->getResidualBlendSlider().getValue();
+    sessionManager_.session().residualBlend = controlDeck_->getResidualBlendSlider().getValue();
   };
-}
-
-// ─────────────────────────────────────────────────────────────────
-// Wiring: TaskCenter
-// ─────────────────────────────────────────────────────────────────
-
-void MainLayout::wireTaskCenterCallbacks() {
-  taskCenter_->onCancel = [this] { onCancel(); };
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -676,8 +661,8 @@ void MainLayout::wireHeroWaveformCallbacks() {
 // ─────────────────────────────────────────────────────────────────
 
 void MainLayout::onImport() {
-  if (taskRunning_.load()) {
-    taskCenter_->setCurrentTask("Busy", "A task is already running");
+  if (taskOrchestrator_->isTaskRunning()) {
+    taskOrchestrator_->setStatus("Busy", "A task is already running");
     return;
   }
 
@@ -700,17 +685,16 @@ void MainLayout::onImport() {
     for (int i = 0; i < files.size(); ++i)
       selectedFiles.push_back(files.getReference(i));
 
-    cancelRender_.store(false);
-    taskRunning_.store(true);
-    taskCenter_->setCanCancel(true);
-    taskCenter_->setCurrentTask("Importing stems", "");
-    taskCenter_->setProgress(-1.0);
-    appendTaskHistory("Import started");
+    if (!taskOrchestrator_->beginTask(ActiveTask::Import, "Importing stems", "", "Import started")) {
+      importChooser_.reset();
+      return;
+    }
 
     importController_->importFiles(
         std::move(selectedFiles),
         controlDeck_->getSeparatedStemsToggle().getToggleState(),
-        session_.preferredStemCount);
+        sessionManager_.session().preferredStemCount,
+        taskOrchestrator_->cancelFlag(ActiveTask::Import));
 
     importChooser_.reset();
   });
@@ -721,21 +705,13 @@ void MainLayout::onImport() {
 // ─────────────────────────────────────────────────────────────────
 
 void MainLayout::onAutoMix() {
-  if (taskRunning_.load()) {
-    taskCenter_->setCurrentTask("Busy", "A task is already running");
-    return;
-  }
-  if (session_.stems.empty()) {
-    taskCenter_->setCurrentTask("No stems", "Import stems first");
+  if (sessionManager_.session().stems.empty()) {
+    taskOrchestrator_->setStatus("No stems", "Import stems first");
     return;
   }
 
-  cancelRender_.store(false);
-  taskRunning_.store(true);
-  taskCenter_->setCanCancel(true);
-  taskCenter_->setCurrentTask("Auto Mix", "Running...");
-  taskCenter_->setProgress(-1.0);
-  appendTaskHistory("Auto Mix started");
+  if (!taskOrchestrator_->beginTask(ActiveTask::AutoMix, "Auto Mix", "Running...", "Auto Mix started"))
+    return;
 
   std::optional<ai::ModelPack> mixPack;
   auto activeId = modelManager_.activePackId("mix");
@@ -748,7 +724,9 @@ void MainLayout::onAutoMix() {
     }
   }
 
-  processingController_->runAutoMix(session_, mixPack, cancelRender_);
+  processingController_->runAutoMix(
+      sessionManager_.session(), mixPack,
+      taskOrchestrator_->cancelFlag(ActiveTask::AutoMix));
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -756,31 +734,22 @@ void MainLayout::onAutoMix() {
 // ─────────────────────────────────────────────────────────────────
 
 void MainLayout::onAutoMaster() {
-  if (taskRunning_.load()) {
-    taskCenter_->setCurrentTask("Busy", "A task is already running");
-    return;
-  }
-  if (session_.stems.empty()) {
-    taskCenter_->setCurrentTask("No stems", "Import stems first");
+  if (sessionManager_.session().stems.empty()) {
+    taskOrchestrator_->setStatus("No stems", "Import stems first");
     return;
   }
 
-  cancelRender_.store(false);
-  taskRunning_.store(true);
-  taskCenter_->setCanCancel(true);
-  taskCenter_->setCurrentTask("Auto Master", "Running...");
-  taskCenter_->setProgress(-1.0);
-  appendTaskHistory("Auto Master started");
+  if (!taskOrchestrator_->beginTask(ActiveTask::AutoMaster, "Auto Master", "Running...", "Auto Master started"))
+    return;
 
-  // Determine preset
   auto preset = domain::MasterPreset::DefaultStreaming;
-  auto platformIt = platformPresetByComboId_.find(controlDeck_->getPlatformPresetBox().getSelectedId());
-  if (platformIt != platformPresetByComboId_.end())
-    preset = platformIt->second;
+  const auto platformPreset = selectionState_.platformPresetForCombo(controlDeck_->getPlatformPresetBox().getSelectedId());
+  if (platformPreset.has_value())
+    preset = platformPreset.value();
   if (preset == domain::MasterPreset::Custom) {
-    auto masterIt = masterPresetByComboId_.find(controlDeck_->getMasterPresetBox().getSelectedId());
-    if (masterIt != masterPresetByComboId_.end())
-      preset = masterIt->second;
+    const auto masterPreset = selectionState_.masterPresetForCombo(controlDeck_->getMasterPresetBox().getSelectedId());
+    if (masterPreset.has_value())
+      preset = masterPreset.value();
   }
 
   auto settings = buildCurrentRenderSettings("");
@@ -796,7 +765,12 @@ void MainLayout::onAutoMaster() {
     }
   }
 
-  processingController_->runAutoMaster(session_, settings, preset, masterPack, cancelRender_);
+  processingController_->runAutoMaster(
+      sessionManager_.session(),
+      settings,
+      preset,
+      masterPack,
+      taskOrchestrator_->cancelFlag(ActiveTask::AutoMaster));
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -804,8 +778,8 @@ void MainLayout::onAutoMaster() {
 // ─────────────────────────────────────────────────────────────────
 
 void MainLayout::onBatch() {
-  if (taskRunning_.load()) {
-    taskCenter_->setCurrentTask("Busy", "A task is already running");
+  if (taskOrchestrator_->isTaskRunning()) {
+    taskOrchestrator_->setStatus("Busy", "A task is already running");
     return;
   }
 
@@ -822,16 +796,19 @@ void MainLayout::onBatch() {
       return;
     }
 
-    cancelRender_.store(false);
-    taskRunning_.store(true);
-    taskCenter_->setCanCancel(true);
-    taskCenter_->setCurrentTask("Batch processing", "");
-    taskCenter_->setProgress(-1.0);
-    appendTaskHistory("Batch started: " + selected.getFullPathName());
+    if (!taskOrchestrator_->beginTask(ActiveTask::Batch,
+                                      "Batch processing",
+                                      "",
+                                      "Batch started: " + selected.getFullPathName())) {
+      batchImportChooser_.reset();
+      return;
+    }
 
     auto settings = buildCurrentRenderSettings("");
     processingController_->runBatch(
-        selected.getFullPathName().toStdString(), settings, cancelRender_);
+        selected.getFullPathName().toStdString(),
+        settings,
+        taskOrchestrator_->cancelFlag(ActiveTask::Batch));
 
     batchImportChooser_.reset();
   });
@@ -842,12 +819,12 @@ void MainLayout::onBatch() {
 // ─────────────────────────────────────────────────────────────────
 
 void MainLayout::onExport() {
-  if (taskRunning_.load()) {
-    taskCenter_->setCurrentTask("Busy", "A task is already running");
+  if (taskOrchestrator_->isTaskRunning()) {
+    taskOrchestrator_->setStatus("Busy", "A task is already running");
     return;
   }
-  if (session_.stems.empty()) {
-    taskCenter_->setCurrentTask("No stems", "Import stems first");
+  if (sessionManager_.session().stems.empty()) {
+    taskOrchestrator_->setStatus("No stems", "Import stems first");
     return;
   }
 
@@ -869,26 +846,18 @@ void MainLayout::onExport() {
 
     auto settings = buildCurrentRenderSettings(selected.getFullPathName().toStdString());
 
-    cancelRender_.store(false);
-    taskRunning_.store(true);
-    taskCenter_->setCanCancel(true);
-    taskCenter_->setCurrentTask("Exporting", "");
-    taskCenter_->setProgress(-1.0);
-    appendTaskHistory("Export started: " + selected.getFullPathName());
+    if (!taskOrchestrator_->beginTask(ActiveTask::Export, "Exporting", "", "Export started: " + selected.getFullPathName())) {
+      exportChooser_.reset();
+      return;
+    }
 
-    exportController_->runExport(session_, settings, analysisEntries_, cancelRender_);
+    exportController_->runExport(
+        sessionManager_.session(),
+        settings,
+        analysisEntries_,
+        taskOrchestrator_->cancelFlag(ActiveTask::Export));
     exportChooser_.reset();
   });
-}
-
-// ─────────────────────────────────────────────────────────────────
-// Action: Cancel
-// ─────────────────────────────────────────────────────────────────
-
-void MainLayout::onCancel() {
-  cancelRender_.store(true);
-  taskCenter_->setCurrentTask("Cancelling", "");
-  appendTaskHistory("Cancel requested");
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -896,6 +865,11 @@ void MainLayout::onCancel() {
 // ─────────────────────────────────────────────────────────────────
 
 void MainLayout::onSaveSession() {
+  if (taskOrchestrator_->isTaskRunning()) {
+    taskOrchestrator_->setStatus("Busy", "A task is already running");
+    return;
+  }
+
   saveSessionChooser_ = std::make_unique<juce::FileChooser>(
       "Save session", juce::File(), "*.json");
 
@@ -909,14 +883,14 @@ void MainLayout::onSaveSession() {
       return;
     }
 
-    auto path = selected.getFullPathName().toStdString();
-    try {
-      sessionRepository_.save(path, session_);
-      appendTaskHistory("Session saved to " + juce::String(path));
-      headerBar_->setSessionName(selected.getFileNameWithoutExtension());
-    } catch (const std::exception& e) {
-      appendTaskHistory("Failed to save session: " + juce::String(e.what()));
+    if (!taskOrchestrator_->beginTask(ActiveTask::Session, "Saving session", "", "Session save started")) {
+      saveSessionChooser_.reset();
+      return;
     }
+
+    auto path = selected.getFullPathName().toStdString();
+    sessionController_->saveSession(path, sessionManager_.session(),
+                                    taskOrchestrator_->cancelFlag(ActiveTask::Session));
     saveSessionChooser_.reset();
   });
 }
@@ -926,6 +900,11 @@ void MainLayout::onSaveSession() {
 // ─────────────────────────────────────────────────────────────────
 
 void MainLayout::onLoadSession() {
+  if (taskOrchestrator_->isTaskRunning()) {
+    taskOrchestrator_->setStatus("Busy", "A task is already running");
+    return;
+  }
+
   loadSessionChooser_ = std::make_unique<juce::FileChooser>(
       "Load session", juce::File(), "*.json");
 
@@ -939,29 +918,55 @@ void MainLayout::onLoadSession() {
       return;
     }
 
-    auto path = selected.getFullPathName().toStdString();
-    try {
-      auto loaded = sessionRepository_.load(path);
-      applyLoadedSession(std::move(loaded), selected.getFullPathName());
-    } catch (const std::exception& e) {
-      appendTaskHistory("Failed to load session: " + juce::String(e.what()));
+    if (!taskOrchestrator_->beginTask(ActiveTask::Session, "Loading session", "", "Session load started")) {
+      loadSessionChooser_.reset();
+      return;
     }
+
+    auto path = selected.getFullPathName().toStdString();
+    sessionController_->loadSession(path, taskOrchestrator_->cancelFlag(ActiveTask::Session));
     loadSessionChooser_.reset();
   });
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Action: Models Menu
+// Action: Models Dialog
 // ─────────────────────────────────────────────────────────────────
 
-void MainLayout::onModelsMenu() {
-  juce::PopupMenu menu;
-  menu.addItem("Fetch Catalog", [this] { modelController_->fetchCatalog(); });
-  menu.addItem("Show Installed", [this] { modelController_->showInstalled(); });
-  menu.addItem("Check Updates", [this] { modelController_->checkUpdates(); });
-  menu.addItem("Verify Integrity", [this] { modelController_->verifyIntegrity(); });
-  menu.showMenuAsync(juce::PopupMenu::Options()
-                         .withTargetScreenArea(headerBar_->getScreenBounds()));
+void MainLayout::onModelsDialog() {
+  auto* panel = new ModelBrowserPanel();
+  panel->setDiscoveredModels(modelController_->discoveredModels());
+  panel->setSize(600, 500);
+
+  panel->onFetchCatalog = [this] {
+    if (!taskOrchestrator_->beginTask(ActiveTask::Model, "Fetching model catalog", "", "Model catalog fetch started"))
+      return;
+    modelController_->fetchCatalog(taskOrchestrator_->cancelFlag(ActiveTask::Model));
+  };
+  panel->onInstallModel = [this](const std::string& repoId) {
+    if (!taskOrchestrator_->beginTask(ActiveTask::Model, "Installing model", juce::String(repoId),
+                                      "Model install started: " + juce::String(repoId)))
+      return;
+    modelController_->installModel(repoId, taskOrchestrator_->cancelFlag(ActiveTask::Model));
+  };
+  panel->onCheckUpdates = [this] {
+    if (!taskOrchestrator_->beginTask(ActiveTask::Model, "Checking model updates", "", "Model update check started"))
+      return;
+    modelController_->checkUpdates(taskOrchestrator_->cancelFlag(ActiveTask::Model));
+  };
+  panel->onVerifyIntegrity = [this] {
+    modelController_->verifyIntegrity();
+  };
+
+  juce::DialogWindow::LaunchOptions options;
+  options.content.setOwned(panel);
+  options.dialogTitle = "Model Browser";
+  options.dialogBackgroundColour = colour(colours::surface);
+  options.escapeKeyTriggersCloseButton = true;
+  options.useNativeTitleBar = true;
+  options.resizable = true;
+  options.launchAsync();
+  taskOrchestrator_->appendHistory("Model browser opened");
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -981,7 +986,7 @@ void MainLayout::onSettings() {
   options.useNativeTitleBar = true;
   options.resizable = false;
   options.launchAsync();
-  appendTaskHistory("Settings dialog opened");
+  taskOrchestrator_->appendHistory("Settings dialog opened");
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -998,30 +1003,40 @@ void MainLayout::updateTransportDisplay() {
 }
 
 // ─────────────────────────────────────────────────────────────────
+// UI Update: Preview
+// ─────────────────────────────────────────────────────────────────
+
+void MainLayout::rebuildPreview() {
+  if (sessionManager_.session().stems.empty())
+    return;
+
+  previewManager_->rebuildPreview(
+      sessionManager_.session(),
+      controlDeck_->getStemPanel().getStemDisplays(),
+      transportController_.progress());
+  taskOrchestrator_->appendHistory("Preview rebuild started");
+}
+
+// ─────────────────────────────────────────────────────────────────
 // UI Update: Misc
 // ─────────────────────────────────────────────────────────────────
 
-void MainLayout::appendTaskHistory(const juce::String& line) {
-  taskHistoryLines_.push_back(line);
-  taskCenter_->appendHistory(line);
-}
-
 void MainLayout::updateTransportFromBuffer(const engine::AudioBuffer& buffer) {
-  if (buffer.getNumSamples() <= 0) {
+  if (buffer.getNumSamples() <= 0)
     return;
-  }
 
+  const auto& session = sessionManager_.session();
   transportController_.setTimeline(
       static_cast<int64_t>(buffer.getNumSamples()),
       buffer.getSampleRate());
-  transportController_.setLoopRangeSeconds(session_.timeline.loopInSeconds,
-                                           session_.timeline.loopOutSeconds,
-                                           session_.timeline.loopEnabled);
-  transportBar_->setLoopEnabled(session_.timeline.loopEnabled);
-  heroWaveform_->setLoopRange(session_.timeline.loopEnabled,
+  transportController_.setLoopRangeSeconds(session.timeline.loopInSeconds,
+                                           session.timeline.loopOutSeconds,
+                                           session.timeline.loopEnabled);
+  transportBar_->setLoopEnabled(session.timeline.loopEnabled);
+  heroWaveform_->setLoopRange(session.timeline.loopEnabled,
                               transportController_.loopInProgress(),
                               transportController_.loopOutProgress());
-  heroWaveform_->setZoom(session_.timeline.zoom, 0.5);
+  heroWaveform_->setZoom(session.timeline.zoom, 0.5);
 }
 
 void MainLayout::updateMeterPanel(const automaster::MasteringReport& report) {
@@ -1034,39 +1049,19 @@ void MainLayout::updateMeterPanel(const automaster::MasteringReport& report) {
                   static_cast<float>(report.truePeakDbtp));
 }
 
-void MainLayout::rebuildPreviewBuffersAsync() {
-  if (session_.stems.empty())
-    return;
-
-  // Build a session copy with solo/mute/volume state applied from the StemPanel
-  domain::Session previewSession = session_;
-  const auto displays = controlDeck_->getStemPanel().getStemDisplays();
-  applyStemDisplayStateToPreviewSession(previewSession, displays);
-
-  auto gen = ++previewBuildGeneration_;
-  double currentProgress = transportController_.progress();
-
-  PreviewBuildRequest request;
-  request.session = std::move(previewSession);
-  request.generation = gen;
-  request.previousProgress = currentProgress;
-
-  previewController_->rebuildPreview(std::move(request));
-  appendTaskHistory("Preview rebuild started");
-}
-
 void MainLayout::applyLoadedSession(domain::Session loadedSession, const juce::String& sourcePath) {
-  session_ = std::move(loadedSession);
+  sessionManager_.replaceSession(std::move(loadedSession));
+  const auto& session = sessionManager_.session();
   headerBar_->setSessionName(juce::File(sourcePath).getFileNameWithoutExtension());
-  updateStemPanelFromSession(controlDeck_->getStemPanel(), session_);
-  transportBar_->setLoopEnabled(session_.timeline.loopEnabled);
-  heroWaveform_->setZoom(session_.timeline.zoom, 0.5);
+  updateStemPanelFromSession(controlDeck_->getStemPanel(), session);
+  transportBar_->setLoopEnabled(session.timeline.loopEnabled);
+  heroWaveform_->setZoom(session.timeline.zoom, 0.5);
   refreshRenderers();
   refreshCodecAvailability();
   refreshModelPacks();
   refreshProjectProfiles();
-  appendTaskHistory("Session loaded: " + sourcePath);
-  rebuildPreviewBuffersAsync();
+  taskOrchestrator_->appendHistory("Session loaded: " + sourcePath);
+  rebuildPreview();
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1076,7 +1071,7 @@ void MainLayout::applyLoadedSession(domain::Session loadedSession, const juce::S
 void MainLayout::refreshRenderers() {
   auto& box = controlDeck_->getRendererBox();
   box.clear(juce::dontSendNotification);
-  rendererIdByComboId_.clear();
+  selectionState_.clearRendererIds();
 
   renderers::RendererRegistry registry;
   rendererInfos_ = registry.list(loadConfiguredExternalRenderers());
@@ -1088,10 +1083,10 @@ void MainLayout::refreshRenderers() {
     if (!info.available)
       label += " (unavailable)";
     box.addItem(label, comboId);
-    rendererIdByComboId_[comboId] = info.id;
+    selectionState_.bindRendererId(comboId, info.id);
     if (preferredId == 0 && info.available)
       preferredId = comboId;
-    if (info.id == session_.renderSettings.rendererName)
+    if (info.id == sessionManager_.session().renderSettings.rendererName)
       preferredId = comboId;
     ++comboId;
   }
@@ -1106,9 +1101,8 @@ void MainLayout::refreshRenderers() {
 void MainLayout::refreshCodecAvailability() {
   auto& box = controlDeck_->getExportFormatBox();
   box.clear(juce::dontSendNotification);
-  codecFormatByComboId_.clear();
+  selectionState_.clearCodecFormats();
 
-  // Standard formats
   struct FormatEntry { std::string id; juce::String label; };
   std::vector<FormatEntry> formats = {
       {"wav", "WAV"}, {"flac", "FLAC"}, {"aiff", "AIFF"}, {"ogg", "OGG"}, {"mp3", "MP3"}};
@@ -1116,19 +1110,18 @@ void MainLayout::refreshCodecAvailability() {
   int comboId = 1;
   for (const auto& fmt : formats) {
     box.addItem(fmt.label, comboId);
-    codecFormatByComboId_[comboId] = fmt.id;
+    selectionState_.bindCodecFormat(comboId, fmt.id);
     ++comboId;
   }
   box.setSelectedId(1, juce::dontSendNotification);
 
-  // Export speed mode
   auto& modeBox = controlDeck_->getExportModeBox();
   modeBox.clear(juce::dontSendNotification);
-  exportSpeedModeByComboId_.clear();
+  selectionState_.clearExportSpeedModes();
   modeBox.addItem("Final", 1);
-  exportSpeedModeByComboId_[1] = "final";
+  selectionState_.bindExportSpeedMode(1, "final");
   modeBox.addItem("Quick Preview", 2);
-  exportSpeedModeByComboId_[2] = "preview";
+  selectionState_.bindExportSpeedMode(2, "preview");
   modeBox.setSelectedId(1, juce::dontSendNotification);
 }
 
@@ -1138,8 +1131,7 @@ void MainLayout::refreshCodecAvailability() {
 
 void MainLayout::refreshModelPacks() {
   modelManager_.setRootPath("ModelPacks");
-  const auto packs = modelManager_.scan();
-  // Model packs are available to controllers; no combo boxes needed at this time
+  modelManager_.scan();
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1151,13 +1143,14 @@ void MainLayout::populateMasterPresetSelectors() {
   auto& platformBox = controlDeck_->getPlatformPresetBox();
   masterBox.clear(juce::dontSendNotification);
   platformBox.clear(juce::dontSendNotification);
-  masterPresetByComboId_.clear();
-  platformPresetByComboId_.clear();
+  selectionState_.clearMasterPresets();
+  selectionState_.clearPlatformPresets();
 
   int mid = 1;
   auto addMaster = [&](const juce::String& label, domain::MasterPreset p) {
     masterBox.addItem(label, mid);
-    masterPresetByComboId_[mid++] = p;
+    selectionState_.bindMasterPreset(mid, p);
+    ++mid;
   };
   addMaster("Default Streaming", domain::MasterPreset::DefaultStreaming);
   addMaster("Broadcast", domain::MasterPreset::Broadcast);
@@ -1167,7 +1160,8 @@ void MainLayout::populateMasterPresetSelectors() {
   int pid = 1;
   auto addPlatform = [&](const juce::String& label, domain::MasterPreset p) {
     platformBox.addItem(label, pid);
-    platformPresetByComboId_[pid++] = p;
+    selectionState_.bindPlatformPreset(pid, p);
+    ++pid;
   };
   addPlatform("Spotify", domain::MasterPreset::Spotify);
   addPlatform("Apple Music", domain::MasterPreset::AppleMusic);
@@ -1188,19 +1182,19 @@ void MainLayout::refreshProjectProfiles() {
   projectProfiles_ = domain::loadProjectProfiles(std::filesystem::current_path());
   auto& box = controlDeck_->getProfileBox();
   box.clear(juce::dontSendNotification);
-  projectProfileIdByComboId_.clear();
+  selectionState_.clearProjectProfileIds();
 
   int selectedId = 0;
   int comboId = 1;
   for (const auto& profile : projectProfiles_) {
     box.addItem(profile.name + " [" + profile.id + "]", comboId);
-    projectProfileIdByComboId_[comboId] = profile.id;
-    if (profile.id == session_.projectProfileId)
+    selectionState_.bindProjectProfileId(comboId, profile.id);
+    if (profile.id == sessionManager_.session().projectProfileId)
       selectedId = comboId;
     ++comboId;
   }
-  if (selectedId == 0 && !projectProfileIdByComboId_.empty())
-    selectedId = projectProfileIdByComboId_.begin()->first;
+  if (selectedId == 0)
+    selectedId = selectionState_.firstProjectProfileComboId();
   if (selectedId > 0)
     box.setSelectedId(selectedId, juce::dontSendNotification);
 }
@@ -1210,20 +1204,20 @@ void MainLayout::refreshProjectProfiles() {
 // ─────────────────────────────────────────────────────────────────
 
 domain::RenderSettings MainLayout::buildCurrentRenderSettings(const std::string& outputPath) const {
-  domain::RenderSettings settings = session_.renderSettings;
+  domain::RenderSettings settings = sessionManager_.session().renderSettings;
   settings.outputPath = outputPath;
 
-  auto fmtIt = codecFormatByComboId_.find(controlDeck_->getExportFormatBox().getSelectedId());
-  if (fmtIt != codecFormatByComboId_.end())
-    settings.outputFormat = fmtIt->second;
+  const auto format = selectionState_.codecFormatForCombo(controlDeck_->getExportFormatBox().getSelectedId());
+  if (format.has_value())
+    settings.outputFormat = format.value();
 
-  auto modeIt = exportSpeedModeByComboId_.find(controlDeck_->getExportModeBox().getSelectedId());
-  if (modeIt != exportSpeedModeByComboId_.end())
-    settings.exportSpeedMode = modeIt->second;
+  const auto mode = selectionState_.exportSpeedModeForCombo(controlDeck_->getExportModeBox().getSelectedId());
+  if (mode.has_value())
+    settings.exportSpeedMode = mode.value();
 
-  auto rendIt = rendererIdByComboId_.find(controlDeck_->getRendererBox().getSelectedId());
-  if (rendIt != rendererIdByComboId_.end())
-    settings.rendererName = rendIt->second;
+  const auto renderer = selectionState_.rendererIdForCombo(controlDeck_->getRendererBox().getSelectedId());
+  if (renderer.has_value())
+    settings.rendererName = renderer.value();
 
   return settings;
 }
@@ -1231,7 +1225,6 @@ domain::RenderSettings MainLayout::buildCurrentRenderSettings(const std::string&
 std::vector<renderers::ExternalRendererConfig> MainLayout::loadConfiguredExternalRenderers() {
   std::vector<renderers::ExternalRendererConfig> configs;
 
-  // Search for external_renderers.json in standard locations
   std::vector<std::filesystem::path> candidates;
   std::error_code ec;
   auto cwd = std::filesystem::current_path(ec);
@@ -1283,16 +1276,16 @@ std::vector<renderers::ExternalRendererConfig> MainLayout::loadConfiguredExterna
         configs.push_back(std::move(config));
       }
 
-      break; // Use first valid config file found
+      break;
     } catch (const std::exception& error) {
-      appendTaskHistory("External renderer config parse failed: "
-                        + juce::String(path.string())
-                        + " (" + juce::String(error.what()) + ")");
+      taskOrchestrator_->appendHistory("External renderer config parse failed: "
+                                       + juce::String(path.string())
+                                       + " (" + juce::String(error.what()) + ")");
       continue;
     } catch (...) {
-      appendTaskHistory("External renderer config parse failed: "
-                        + juce::String(path.string())
-                        + " (unknown error)");
+      taskOrchestrator_->appendHistory("External renderer config parse failed: "
+                                       + juce::String(path.string())
+                                       + " (unknown error)");
       continue;
     }
   }

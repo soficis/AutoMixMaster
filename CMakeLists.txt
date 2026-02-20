@@ -265,6 +265,28 @@ target_compile_definitions(AutoMixMasterApp PRIVATE
   JUCE_USE_CURL=0
 )
 
+if(EXISTS "${CMAKE_SOURCE_DIR}/assets/phaselimiter")
+  add_custom_command(TARGET AutoMixMasterApp POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:AutoMixMasterApp>/assets"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/assets/phaselimiter"
+            "$<TARGET_FILE_DIR:AutoMixMasterApp>/assets/phaselimiter"
+    COMMENT "Copying bundled PhaseLimiter assets next to AutoMixMaster executable"
+    VERBATIM
+  )
+endif()
+
+if(EXISTS "${CMAKE_SOURCE_DIR}/assets/limiters")
+  add_custom_command(TARGET AutoMixMasterApp POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:AutoMixMasterApp>/assets"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/assets/limiters"
+            "$<TARGET_FILE_DIR:AutoMixMasterApp>/assets/limiters"
+    COMMENT "Copying bundled limiter descriptors next to AutoMixMaster executable"
+    VERBATIM
+  )
+endif()
+
 if(BUILD_TOOLS)
   add_executable(automix_dev_tools
     tools/dev_tools.cpp

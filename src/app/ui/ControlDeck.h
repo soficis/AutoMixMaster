@@ -27,6 +27,7 @@ public:
   std::function<void()> onImport;
   std::function<void()> onAutoMix;
   std::function<void()> onAutoMaster;
+  std::function<void()> onAutoMixMaster; // One-click pipeline: Mix → Master → Export
   std::function<void()> onBatch;
   std::function<void()> onExport;
 
@@ -39,6 +40,7 @@ public:
   juce::ComboBox& getExportModeBox() { return exportModeBox_; }
   juce::Slider& getResidualBlendSlider() { return residualBlendSlider_; }
   juce::ToggleButton& getSeparatedStemsToggle() { return separatedStemsToggle_; }
+  juce::ToggleButton& getBatchRecursiveToggle() { return batchRecursiveToggle_; }
 
 private:
   std::unique_ptr<StemPanel> stemPanel_;
@@ -48,6 +50,7 @@ private:
   juce::TextButton importButton_{"Import"};
   juce::TextButton autoMixButton_{"Auto Mix"};
   juce::TextButton autoMasterButton_{"Auto Master"};
+  juce::TextButton autoMixMasterButton_{"Mix + Master"};
   juce::TextButton batchButton_{"Batch"};
   juce::TextButton exportButton_{"Export"};
 
@@ -67,6 +70,7 @@ private:
   juce::Label blendLabel_{"", "Residual Blend"};
   juce::Slider residualBlendSlider_;
   juce::ToggleButton separatedStemsToggle_{"AI Stems"};
+  juce::ToggleButton batchRecursiveToggle_{"Recursive Batch"};
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ControlDeck)
 };

@@ -26,6 +26,7 @@ class ModelController {
   struct Callbacks {
     std::function<void(const std::string&)> onStatus;
     std::function<void(const std::string&)> onTaskHistory;
+    std::function<void(double)> onProgress;
     std::function<void(const std::string&)> onReport;
     std::function<void()> onModelPacksChanged;
     std::function<void(bool)> onCatalogReady;

@@ -9,8 +9,9 @@
 
 namespace automix::app {
 
-/// Full-width stereo waveform display with playhead, zoom, seek, and loop regions.
-class HeroWaveform final : public juce::Component {
+/// Full-width stereo waveform display with playhead, zoom, seek, loop regions, and file drop target.
+class HeroWaveform final : public juce::Component,
+                           public juce::FileDragAndDropTarget {
 public:
   HeroWaveform();
 
@@ -19,13 +20,20 @@ public:
   void mouseDrag(const juce::MouseEvent& event) override;
   void resized() override;
 
+  // FileDragAndDropTarget
+  bool isInterestedInFileDrag(const juce::StringArray& files) override;
+  void fileDragEnter(const juce::StringArray& files, int x, int y) override;
+  void fileDragExit(const juce::StringArray& files) override;
+  void filesDropped(const juce::StringArray& files, int x, int y) override;
+
   void setBuffer(const engine::AudioBuffer& buffer);
   void setPlayheadProgress(double progress);
   void setZoom(double zoomFactor, double centerProgress);
   void setLoopRange(bool enabled, double startProgress, double endProgress);
 
   // Callbacks
-  std::function<void(double)> onSeek; // progress fraction 0..1
+  std::function<void(double)> onSeek;                        // progress fraction 0..1
+  std::function<void(std::vector<juce::File>)> onFilesDropped; // audio files dropped onto waveform
 
 private:
   double progressFromX(int x) const;
@@ -53,6 +61,8 @@ private:
   std::vector<float> rawSamples_;
   int rawSampleCount_ = 0;
   int rawChannelCount_ = 0;
+
+  bool isDragOver_ = false;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HeroWaveform)
 };

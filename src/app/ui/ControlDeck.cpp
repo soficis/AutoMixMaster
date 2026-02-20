@@ -18,6 +18,7 @@ ControlDeck::ControlDeck() {
   addAndMakeVisible(importButton_);
   addAndMakeVisible(autoMixButton_);
   addAndMakeVisible(autoMasterButton_);
+  addAndMakeVisible(autoMixMasterButton_);
   addAndMakeVisible(batchButton_);
   addAndMakeVisible(exportButton_);
 
@@ -25,15 +26,18 @@ ControlDeck::ControlDeck() {
   importButton_.setTooltip("Import Stems (Ctrl+I)");
   autoMixButton_.setTooltip("Auto Mix (Ctrl+M)");
   autoMasterButton_.setTooltip("Auto Master");
+  autoMixMasterButton_.setTooltip("One-click: Auto Mix \xe2\x86\x92 Auto Master \xe2\x86\x92 Export (Ctrl+Shift+M)");
   batchButton_.setTooltip("Batch Process");
   exportButton_.setTooltip("Export (Ctrl+E)");
   separatedStemsToggle_.setTooltip("Use AI stem separation during import");
+  batchRecursiveToggle_.setTooltip("Include subfolders when scanning batch input");
   residualBlendSlider_.setTooltip("Control residual audio blend");
 
   // Keyboard focus on action buttons
   importButton_.setWantsKeyboardFocus(true);
   autoMixButton_.setWantsKeyboardFocus(true);
   autoMasterButton_.setWantsKeyboardFocus(true);
+  autoMixMasterButton_.setWantsKeyboardFocus(true);
   batchButton_.setWantsKeyboardFocus(true);
   exportButton_.setWantsKeyboardFocus(true);
 
@@ -48,6 +52,10 @@ ControlDeck::ControlDeck() {
   autoMasterButton_.onClick = [this] {
     if (onAutoMaster)
       onAutoMaster();
+  };
+  autoMixMasterButton_.onClick = [this] {
+    if (onAutoMixMaster)
+      onAutoMixMaster();
   };
   batchButton_.onClick = [this] {
     if (onBatch)
@@ -101,6 +109,7 @@ ControlDeck::ControlDeck() {
   addAndMakeVisible(blendLabel_);
   addAndMakeVisible(residualBlendSlider_);
   addAndMakeVisible(separatedStemsToggle_);
+  addAndMakeVisible(batchRecursiveToggle_);
 }
 
 ControlDeck::~ControlDeck() = default;
@@ -129,16 +138,22 @@ void ControlDeck::resized() {
   stemPanel_->setBounds(stemArea);
   glowMeters_->setBounds(meterArea);
 
-  // Center panel layout (40px action row for touch-friendly hit targets)
-  auto actionRow = centerArea.removeFromTop(40);
-  importButton_.setBounds(actionRow.removeFromLeft(76).reduced(2));
-  autoMixButton_.setBounds(actionRow.removeFromLeft(84).reduced(2));
-  autoMasterButton_.setBounds(actionRow.removeFromLeft(100).reduced(2));
-  batchButton_.setBounds(actionRow.removeFromLeft(68).reduced(2));
-  exportButton_.setBounds(actionRow.removeFromLeft(76).reduced(2));
+  // Center panel layout (44px action row, proportional widths)
+  // Slots: import(1) | autoMix(1) | autoMaster(1) | Mix+Master(2) | batch(1) | export(1) = 7 slots
+  auto actionRow = centerArea.removeFromTop(44);
+  const int slotW = actionRow.getWidth() / 7;
+  importButton_.setBounds(actionRow.removeFromLeft(slotW).reduced(2));
+  autoMixButton_.setBounds(actionRow.removeFromLeft(slotW).reduced(2));
+  autoMasterButton_.setBounds(actionRow.removeFromLeft(slotW).reduced(2));
+  autoMixMasterButton_.setBounds(actionRow.removeFromLeft(slotW * 2).reduced(2));
+  batchButton_.setBounds(actionRow.removeFromLeft(slotW).reduced(2));
+  exportButton_.setBounds(actionRow.reduced(2));
 
   centerArea.removeFromTop(spacing::gapSmall);
-  separatedStemsToggle_.setBounds(centerArea.removeFromTop(24).withWidth(140));
+  auto toggleRow = centerArea.removeFromTop(24);
+  separatedStemsToggle_.setBounds(toggleRow.removeFromLeft(140));
+  toggleRow.removeFromLeft(spacing::gapSmall);
+  batchRecursiveToggle_.setBounds(toggleRow.removeFromLeft(160));
   centerArea.removeFromTop(spacing::gapSmall);
 
   // Settings rows

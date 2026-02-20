@@ -1,12 +1,15 @@
 #include "app/controllers/ProcessingController.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <sstream>
 #include <thread>
+#include <unordered_map>
 
 #include "ai/AutoMasterStrategyAI.h"
 #include "ai/AutoMixStrategyAI.h"
@@ -27,6 +30,37 @@ namespace {
 
 using ::automix::util::toLower;
 using ::automix::util::toJuceText;
+
+double clampProgress(const double progress) {
+  return std::clamp(progress, 0.0, 1.0);
+}
+
+bool isEnabledFromEnvironment(const char* key) {
+  std::string text;
+#if defined(_WIN32)
+  char* value = nullptr;
+  size_t valueLength = 0;
+  if (_dupenv_s(&value, &valueLength, key) != 0 || value == nullptr) {
+    return false;
+  }
+  text = std::string(value, valueLength > 0 ? valueLength - 1 : 0);
+  free(value);
+#else
+  const char* value = std::getenv(key);
+  if (value == nullptr) {
+    return false;
+  }
+  text = std::string(value);
+#endif
+  const auto normalized = toLower(text);
+  return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on";
+}
+
+void emitProgress(const ProcessingController::Callbacks& callbacks, const double progress) {
+  if (callbacks.onProgress) {
+    callbacks.onProgress(clampProgress(progress));
+  }
+}
 
 std::unique_ptr<ai::IModelInference> createInferenceBackend(const ai::ModelPack* pack,
                                                             const std::string& providerPreference,
@@ -104,11 +138,13 @@ void ProcessingController::runAutoMix(const domain::Session& session,
       bool cancelled = false;
 
       try {
+        emitProgress(callbacks, 0.05);
         if (callbacks.onStatus) {
           callbacks.onStatus("Auto Mix: analyzing...");
         }
         analysis::StemAnalyzer analyzer;
         analysisEntries = analyzer.analyzeSession(session);
+        emitProgress(callbacks, 0.55);
 
         if (cancelFlag != nullptr && cancelFlag->load()) {
           cancelled = true;
@@ -118,6 +154,7 @@ void ProcessingController::runAutoMix(const domain::Session& session,
           if (callbacks.onStatus) {
             callbacks.onStatus("Auto Mix: building plan...");
           }
+          emitProgress(callbacks, 0.65);
           automix::HeuristicAutoMixStrategy heuristicMix;
           const auto heuristicPlan = heuristicMix.buildPlan(session, analysisEntries, 1.0);
           plan = heuristicPlan;
@@ -144,6 +181,7 @@ void ProcessingController::runAutoMix(const domain::Session& session,
           if (plan.has_value()) {
             reportText += juce::String("\n\nMix decisions:\n") + toJuceText(plan->decisionLog);
           }
+          emitProgress(callbacks, 0.95);
         }
       } catch (const std::exception& error) {
         errorText = "Auto Mix failed:\n" + juce::String(error.what());
@@ -160,6 +198,7 @@ void ProcessingController::runAutoMix(const domain::Session& session,
 
       auto capturedCallbacks = callbacks;
       juce::MessageManager::callAsync([capturedCallbacks, result = std::move(result)]() mutable {
+        emitProgress(capturedCallbacks, 1.0);
         if (capturedCallbacks.onAutoMixComplete) {
           capturedCallbacks.onAutoMixComplete(std::move(result));
         }
@@ -208,6 +247,7 @@ void ProcessingController::runAutoMaster(const domain::Session& session,
       bool cancelled = false;
 
       try {
+        emitProgress(callbacks, 0.03);
         engine::OfflineRenderPipeline pipeline;
 
         std::mutex progressMutex;
@@ -256,6 +296,7 @@ void ProcessingController::runAutoMaster(const domain::Session& session,
                 capturedCallbacks.onStatus("Auto Master: " + progress.stage + " " +
                                            std::to_string(static_cast<int>(progress.fraction * 100.0)) + "%");
               }
+              emitProgress(capturedCallbacks, progress.fraction * 0.68);
               if (progress.fraction >= 0.999 || progress.stage != "Summing stem buses") {
                 if (capturedCallbacks.onTaskHistory) {
                   capturedCallbacks.onTaskHistory("Auto Master " + progress.stage + " " +
@@ -269,12 +310,14 @@ void ProcessingController::runAutoMaster(const domain::Session& session,
           cancelled = true;
         } else {
           rawMixBuffer = rawMix.mixBuffer;
+          emitProgress(callbacks, 0.72);
         }
 
         if (!cancelled) {
           automaster::HeuristicAutoMasterStrategy autoMasterStrategy;
           analysis::StemAnalyzer analyzer;
           masterPlan = autoMasterStrategy.buildPlan(preset, rawMixBuffer);
+          emitProgress(callbacks, 0.82);
 
           if (session.originalMixPath.has_value()) {
             try {
@@ -313,12 +356,14 @@ void ProcessingController::runAutoMaster(const domain::Session& session,
               masterPlan.decisionLog.push_back("Inference backend: " + backendDiagnostics);
             }
           }
+          emitProgress(callbacks, 0.9);
 
           if (masterInference != nullptr) {
             previewMaster = aiMaster.applyPlan(rawMixBuffer, masterPlan, autoMasterStrategy, &previewReport);
           } else {
             previewMaster = autoMasterStrategy.applyPlan(rawMixBuffer, masterPlan, &previewReport);
           }
+          emitProgress(callbacks, 0.97);
 
           reportAppend += "\nMaster decisions:\n" + toJuceText(masterPlan.decisionLog);
         }
@@ -339,6 +384,7 @@ void ProcessingController::runAutoMaster(const domain::Session& session,
 
       auto capturedCb = callbacks;
       juce::MessageManager::callAsync([capturedCb, result = std::move(result)]() mutable {
+        emitProgress(capturedCb, 1.0);
         if (capturedCb.onAutoMasterComplete) {
           capturedCb.onAutoMasterComplete(std::move(result));
         }
@@ -372,13 +418,16 @@ void ProcessingController::runBatch(const std::filesystem::path& inputFolder,
 
     JobStatus runJob() override {
       const std::filesystem::path outputFolder = inputFolder / "automix_batch_exports";
+      emitProgress(callbacks, 0.02);
+      const bool recursiveScan = isEnabledFromEnvironment("AUTOMIX_BATCH_RECURSIVE");
 
       std::vector<domain::BatchItem> items;
       juce::String prepError;
       try {
         std::filesystem::create_directories(outputFolder);
         engine::BatchQueueRunner batchQueueRunner;
-        items = batchQueueRunner.buildItemsFromFolder(inputFolder, outputFolder);
+        items = batchQueueRunner.buildItemsFromFolder(inputFolder, outputFolder, recursiveScan);
+        emitProgress(callbacks, 0.08);
       } catch (const std::exception& error) {
         prepError = error.what();
       } catch (...) {
@@ -387,6 +436,7 @@ void ProcessingController::runBatch(const std::filesystem::path& inputFolder,
 
       if (!prepError.isEmpty() || items.empty()) {
         BatchResult result;
+        result.outputFolder = outputFolder.string();
         if (!prepError.isEmpty()) {
           result.errorText = "Batch preparation error:\n" + prepError;
         } else {
@@ -395,6 +445,7 @@ void ProcessingController::runBatch(const std::filesystem::path& inputFolder,
 
         auto capturedCallbacks = callbacks;
         juce::MessageManager::callAsync([capturedCallbacks, result = std::move(result)]() mutable {
+          emitProgress(capturedCallbacks, 1.0);
           if (capturedCallbacks.onBatchComplete) {
             capturedCallbacks.onBatchComplete(std::move(result));
           }
@@ -403,7 +454,7 @@ void ProcessingController::runBatch(const std::filesystem::path& inputFolder,
       }
 
       if (callbacks.onStatus) {
-        callbacks.onStatus("Batch started");
+        callbacks.onStatus(recursiveScan ? "Batch started (recursive scan enabled)" : "Batch started");
       }
 
       domain::BatchJob job;
@@ -417,47 +468,67 @@ void ProcessingController::runBatch(const std::filesystem::path& inputFolder,
 
       engine::BatchQueueRunner runner;
       std::mutex progressMutex;
-      auto lastProgressEmit = std::chrono::steady_clock::time_point {};
-      size_t lastItemIndex = std::numeric_limits<size_t>::max();
-      double lastProgress = -1.0;
-      std::string lastStage;
+      auto lastStatusEmit = std::chrono::steady_clock::time_point{};
+      size_t lastStatusItemIndex = std::numeric_limits<size_t>::max();
+      std::string lastStatusStage;
+      int lastStatusPercent = -1;
+      std::unordered_map<size_t, std::string> stageHistoryByItem;
       auto capturedCallbacks = callbacks;
+      const size_t totalItemCount = job.items.size();
 
       const auto batchResult = runner.process(
           job,
-          [capturedCallbacks, &progressMutex, &lastProgressEmit, &lastItemIndex, &lastProgress, &lastStage](
-              const size_t itemIndex, const double progress, const std::string& stage) {
-            bool emit = false;
+          [capturedCallbacks,
+           &progressMutex,
+           &lastStatusEmit,
+           &lastStatusItemIndex,
+           &lastStatusStage,
+           &lastStatusPercent,
+           &stageHistoryByItem,
+           totalItemCount](const size_t itemIndex, const double progress, const std::string& stage) {
+            const double clampedProgress = std::clamp(progress, 0.0, 1.0);
+            const int percent = static_cast<int>(std::round(clampedProgress * 100.0));
+            const std::string stageLabel = stage.empty() ? std::string("Processing") : stage;
+
+            bool emitStatus = false;
+            bool emitHistory = false;
             {
               std::scoped_lock lock(progressMutex);
               const auto now = std::chrono::steady_clock::now();
-              const bool itemChanged = itemIndex != lastItemIndex;
-              const bool stageChanged = stage != lastStage;
-              const bool finalProgress = progress >= 0.999;
-              const bool timeGateOpen =
-                  lastProgressEmit.time_since_epoch().count() == 0 ||
-                  now - lastProgressEmit >= std::chrono::milliseconds(220);
-              const bool deltaGateOpen = std::abs(progress - lastProgress) >= 0.03;
-              emit = itemChanged || stageChanged || finalProgress || (timeGateOpen && deltaGateOpen);
-              if (emit) {
-                lastProgressEmit = now;
-                lastItemIndex = itemIndex;
-                lastProgress = progress;
-                lastStage = stage;
+              const bool statusIntervalOpen =
+                  lastStatusEmit.time_since_epoch().count() == 0 ||
+                  now - lastStatusEmit >= std::chrono::milliseconds(180);
+              const bool percentChanged = percent != lastStatusPercent;
+              const bool itemOrStageChanged = itemIndex != lastStatusItemIndex || stageLabel != lastStatusStage;
+
+              emitStatus = percentChanged || (itemOrStageChanged && statusIntervalOpen) || percent >= 100;
+              if (emitStatus) {
+                lastStatusEmit = now;
+                lastStatusItemIndex = itemIndex;
+                lastStatusStage = stageLabel;
+                lastStatusPercent = percent;
+              }
+
+              const auto it = stageHistoryByItem.find(itemIndex);
+              emitHistory = (it == stageHistoryByItem.end()) || (it->second != stageLabel);
+              if (emitHistory) {
+                stageHistoryByItem[itemIndex] = stageLabel;
               }
             }
-            if (!emit) {
-              return;
-            }
 
-            const auto statusMsg = "Batch item " + std::to_string(itemIndex + 1) +
-                                   " " + stage + " (" + std::to_string(static_cast<int>(progress * 100.0)) + "%)";
-            if (capturedCallbacks.onStatus) {
+            if (emitStatus && capturedCallbacks.onStatus) {
+              auto statusMsg = "Batch " + std::to_string(percent) + "%  item " + std::to_string(itemIndex + 1) +
+                               "/" + std::to_string(totalItemCount) + " " + stageLabel;
               capturedCallbacks.onStatus(statusMsg);
             }
-            if (capturedCallbacks.onTaskHistory) {
-              capturedCallbacks.onTaskHistory("Batch item " + std::to_string(itemIndex + 1) +
-                                               " " + stage + " " + std::to_string(static_cast<int>(progress * 100.0)) + "%");
+
+            if (emitStatus) {
+              emitProgress(capturedCallbacks, clampedProgress);
+            }
+
+            if (emitHistory && capturedCallbacks.onTaskHistory) {
+              capturedCallbacks.onTaskHistory("Batch item " + std::to_string(itemIndex + 1) + " " + stageLabel +
+                                              " " + std::to_string(percent) + "%");
             }
           },
           cancelFlag);
@@ -479,9 +550,14 @@ void ProcessingController::runBatch(const std::filesystem::path& inputFolder,
 
       BatchResult result;
       result.summary = summary;
+      result.outputFolder = outputFolder.string();
+      result.completed = batchResult.completed;
+      result.failed = batchResult.failed;
+      result.cancelled = batchResult.cancelled;
 
       auto finalCallbacks = callbacks;
       juce::MessageManager::callAsync([finalCallbacks, result = std::move(result)]() mutable {
+        emitProgress(finalCallbacks, 1.0);
         if (finalCallbacks.onBatchComplete) {
           finalCallbacks.onBatchComplete(std::move(result));
         }

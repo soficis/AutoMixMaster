@@ -35,6 +35,7 @@ private:
   juce::Label taskLabel_;
   juce::Label stateBadge_;
   juce::ProgressBar progressBar_;
+  juce::Label progressLabel_;
   juce::TextButton cancelButton_{"Cancel"};
   juce::TextEditor historyEditor_;
 

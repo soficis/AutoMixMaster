@@ -1,7 +1,9 @@
 #pragma once
 
 #include <atomic>
+#include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -70,12 +72,19 @@ private:
   void onImport();
   void onAutoMix();
   void onAutoMaster();
+  void onAutoMixMaster(); // Pipeline: Mix → Master → Export
   void onBatch();
   void onExport();
   void onSaveSession();
   void onLoadSession();
   void onModelsDialog();
   void onSettings();
+
+  // Import helper shared by button and drag/drop
+  void importFiles(std::vector<juce::File> files);
+
+  // Pipeline export helper (called after Auto Master completes in pipeline mode)
+  void triggerPipelineExport();
 
   // UI update methods
   void updateTransportDisplay();
@@ -88,6 +97,8 @@ private:
   void populateMasterPresetSelectors();
   void updateMeterPanel(const automaster::MasteringReport& report);
   void applyLoadedSession(domain::Session loadedSession, const juce::String& sourcePath);
+  void startExportVerification(const std::string& outputAudioPath);
+  void startBatchVerification(const std::string& outputFolder);
 
   // Query helpers
   domain::RenderSettings buildCurrentRenderSettings(const std::string& outputPath) const;
@@ -118,6 +129,11 @@ private:
   std::vector<renderers::RendererInfo> rendererInfos_;
   SelectionState selectionState_;
   std::vector<domain::ProjectProfile> projectProfiles_;
+  std::optional<domain::Session> exportVerificationSession_;
+  std::optional<domain::RenderSettings> exportVerificationSettings_;
+  std::optional<std::filesystem::path> batchVerificationInputFolder_;
+  std::optional<domain::RenderSettings> batchVerificationSettings_;
+  bool batchVerificationRecursiveScan_ = false;
 
   // File choosers
   std::unique_ptr<juce::FileChooser> importChooser_;
@@ -125,6 +141,11 @@ private:
   std::unique_ptr<juce::FileChooser> saveSessionChooser_;
   std::unique_ptr<juce::FileChooser> loadSessionChooser_;
   std::unique_ptr<juce::FileChooser> batchImportChooser_;
+  std::unique_ptr<juce::FileChooser> autoMixMasterExportChooser_;
+
+  // Pipeline state: non-empty while Auto Mix+Master pipeline is running.
+  // Stores the folder path to export into after mastering completes.
+  std::string pendingPipelineExportFolder_;
 
   // Controllers
   std::unique_ptr<ModelController> modelController_;
@@ -136,7 +157,6 @@ private:
   // Layout constants
   static constexpr int kHeaderHeight = 48;
   static constexpr int kTransportHeight = 56;
-  static constexpr int kTaskCenterHeight = 80;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainLayout)
 };

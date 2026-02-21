@@ -16,7 +16,15 @@ modules:
   - name: automixmaster
     buildsystem: simple
     build-commands:
-      - cmake -S . -B build-flatpak -GNinja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DBUILD_TOOLS=OFF
+      - >
+        cmake -S . -B build-flatpak -GNinja
+        -DCMAKE_BUILD_TYPE=Release
+        -DBUILD_TESTING=OFF
+        -DBUILD_TOOLS=OFF
+        -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+        -DFETCHCONTENT_SOURCE_DIR_NLOHMANN_JSON=flatpak-deps/nlohmann_json
+        -DFETCHCONTENT_SOURCE_DIR_JUCE=flatpak-deps/juce
+        -DFETCHCONTENT_SOURCE_DIR_LIBEBUR128=flatpak-deps/libebur128
       - cmake --build build-flatpak --target AutoMixMasterApp --parallel
       - install -Dm755 build-flatpak/AutoMixMasterApp_artefacts/Release/AutoMixMaster /app/bin/AutoMixMaster
       - cp -r assets /app/bin/assets
@@ -30,3 +38,15 @@ modules:
     sources:
       - type: dir
         path: ../..
+      - type: git
+        url: https://github.com/nlohmann/json.git
+        tag: v3.11.3
+        dest: flatpak-deps/nlohmann_json
+      - type: git
+        url: https://github.com/juce-framework/JUCE.git
+        tag: 8.0.8
+        dest: flatpak-deps/juce
+      - type: git
+        url: https://github.com/jiixyj/libebur128.git
+        tag: v1.2.6
+        dest: flatpak-deps/libebur128

@@ -34,6 +34,8 @@ namespace {
 
 using ::automix::util::isRegularFile;
 using ::automix::util::metadataSourcePath;
+using ::automix::util::pathFromUtf8;
+using ::automix::util::pathToUtf8;
 
 constexpr size_t kMaxProcessOutputCaptureBytes = 32768;
 
@@ -143,7 +145,8 @@ RenderResult FfmpegRenderer::render(const domain::Session& session,
       }
     }
 
-    const std::filesystem::path outputPath = settings.outputPath.empty() ? "export_master.wav" : settings.outputPath;
+    const std::filesystem::path outputPath =
+        settings.outputPath.empty() ? std::filesystem::path("export_master.wav") : pathFromUtf8(settings.outputPath);
     const auto outputFormat = util::WavWriter::resolveFormat(outputPath, settings.outputFormat);
     if (outputPath.has_parent_path()) {
       std::filesystem::create_directories(outputPath.parent_path());
@@ -163,16 +166,16 @@ RenderResult FfmpegRenderer::render(const domain::Session& session,
     const std::string filterChain = buildFilterChain(plan);
 
     juce::StringArray command;
-    command.add(binaryInfo->executablePath.generic_string());
+    command.add(pathToUtf8(binaryInfo->executablePath));
     command.add("-y");
     command.add("-hide_banner");
     command.add("-loglevel");
     command.add("error");
     command.add("-i");
-    command.add(tempInputPath.generic_string());
+    command.add(pathToUtf8(tempInputPath));
     command.add("-af");
     command.add(filterChain);
-    command.add(tempFfmpegOutputPath.generic_string());
+    command.add(pathToUtf8(tempFfmpegOutputPath));
 
     juce::ChildProcess process;
     if (!process.start(command)) {
@@ -251,12 +254,12 @@ RenderResult FfmpegRenderer::render(const domain::Session& session,
 
     std::filesystem::path reportPath;
     if (settings.writePerExportReportJson) {
-      reportPath = outputPath.string() + ".report.json";
+      reportPath = pathFromUtf8(pathToUtf8(outputPath) + ".report.json");
       nlohmann::json report = {
           {"renderer", "FFmpeg"},
-          {"ffmpegBinary", binaryInfo->executablePath.string()},
+          {"ffmpegBinary", pathToUtf8(binaryInfo->executablePath)},
           {"ffmpegFilter", filterChain},
-          {"outputAudioPath", outputPath.string()},
+          {"outputAudioPath", pathToUtf8(outputPath)},
           {"integratedLufs", complianceReport.integratedLufs},
           {"shortTermLufs", complianceReport.shortTermLufs},
           {"loudnessRange", complianceReport.loudnessRange},
@@ -300,10 +303,10 @@ RenderResult FfmpegRenderer::render(const domain::Session& session,
     RenderResult result;
     result.success = true;
     result.rendererName = "FFmpeg";
-    result.outputAudioPath = outputPath.string();
-    result.reportPath = reportPath.empty() ? std::string {} : reportPath.string();
+    result.outputAudioPath = pathToUtf8(outputPath);
+    result.reportPath = reportPath.empty() ? std::string {} : pathToUtf8(reportPath);
     result.logs.insert(result.logs.end(), renderState.logs.begin(), renderState.logs.end());
-    result.logs.push_back("FFmpeg executable: " + binaryInfo->executablePath.string());
+    result.logs.push_back("FFmpeg executable: " + pathToUtf8(binaryInfo->executablePath));
     result.logs.push_back("FFmpeg process exit code: " + std::to_string(exitCode));
     if (!processOutput.empty()) {
       result.logs.push_back("FFmpeg output captured (truncated to 32KB).");

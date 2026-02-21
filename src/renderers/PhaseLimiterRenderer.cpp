@@ -22,6 +22,7 @@
 #include "engine/OfflineRenderPipeline.h"
 #include "renderers/BuiltInRenderer.h"
 #include "renderers/PhaseLimiterDiscovery.h"
+#include "util/FileUtils.h"
 #include "util/MetadataPolicy.h"
 #include "util/MetadataSourceResolver.h"
 #include "util/WavWriter.h"
@@ -30,6 +31,8 @@ namespace automix::renderers {
 namespace {
 
 using ::automix::util::metadataSourcePath;
+using ::automix::util::pathFromUtf8;
+using ::automix::util::pathToUtf8;
 
 constexpr int kPhaseLimiterSampleRate = 44100;
 constexpr int kPhaseLimiterBitDepth = 16;
@@ -174,7 +177,8 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
       }
     }
 
-    const std::filesystem::path outputPath = settings.outputPath.empty() ? "export_master.wav" : settings.outputPath;
+    const std::filesystem::path outputPath =
+        settings.outputPath.empty() ? std::filesystem::path("export_master.wav") : pathFromUtf8(settings.outputPath);
     const auto outputFormat = util::WavWriter::resolveFormat(outputPath, settings.outputFormat);
     if (outputPath.has_parent_path()) {
       std::filesystem::create_directories(outputPath.parent_path());
@@ -197,16 +201,16 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
     CurrentWorkingDirectoryGuard workingDirectory(binaryInfo->installRoot);
 
     juce::StringArray command;
-    command.add(binaryInfo->executablePath.generic_string());
-    command.add("-input=" + relativeTempInputPath.generic_string());
-    command.add("-output=" + relativeTempPhaseOutputPath.generic_string());
+    command.add(pathToUtf8(binaryInfo->executablePath));
+    command.add("-input=" + pathToUtf8(relativeTempInputPath));
+    command.add("-output=" + pathToUtf8(relativeTempPhaseOutputPath));
     command.add("-disable_input_encode=true");
     command.add("-output_format=wav");
     command.add("-sample_rate=44100");
     command.add("-bit_depth=" + std::to_string(std::clamp(settings.outputBitDepth, 16, 24)));
     command.add("-ceiling=" + std::to_string(plan.limiterCeilingDb));
     command.add("-mastering=true");
-    command.add("-tmp=" + relativeTempWorkDir.generic_string());
+    command.add("-tmp=" + pathToUtf8(relativeTempWorkDir));
 
     juce::ChildProcess process;
     if (!process.start(command)) {
@@ -285,11 +289,11 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
 
     std::filesystem::path reportPath;
     if (settings.writePerExportReportJson) {
-      reportPath = outputPath.string() + ".report.json";
+      reportPath = pathFromUtf8(pathToUtf8(outputPath) + ".report.json");
       nlohmann::json report = {
           {"renderer", "PhaseLimiter"},
-          {"phaseLimiterBinary", binaryInfo->executablePath.string()},
-          {"outputAudioPath", outputPath.string()},
+          {"phaseLimiterBinary", pathToUtf8(binaryInfo->executablePath)},
+          {"outputAudioPath", pathToUtf8(outputPath)},
           {"integratedLufs", complianceReport.integratedLufs},
           {"shortTermLufs", complianceReport.shortTermLufs},
           {"loudnessRange", complianceReport.loudnessRange},
@@ -334,11 +338,11 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
     RenderResult result;
     result.success = true;
     result.rendererName = "PhaseLimiter";
-    result.outputAudioPath = outputPath.string();
-    result.reportPath = reportPath.empty() ? std::string {} : reportPath.string();
+    result.outputAudioPath = pathToUtf8(outputPath);
+    result.reportPath = reportPath.empty() ? std::string {} : pathToUtf8(reportPath);
     result.logs.insert(result.logs.end(), renderState.logs.begin(), renderState.logs.end());
-    result.logs.push_back("PhaseLimiter executable: " + binaryInfo->executablePath.string());
-    result.logs.push_back("PhaseLimiter root: " + binaryInfo->installRoot.string());
+    result.logs.push_back("PhaseLimiter executable: " + pathToUtf8(binaryInfo->executablePath));
+    result.logs.push_back("PhaseLimiter root: " + pathToUtf8(binaryInfo->installRoot));
     result.logs.push_back("PhaseLimiter process exit code: " + std::to_string(exitCode));
     if (!processOutput.empty()) {
       result.logs.push_back("PhaseLimiter output captured (truncated to 32KB).");

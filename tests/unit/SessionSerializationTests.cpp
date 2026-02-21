@@ -12,6 +12,10 @@ TEST_CASE("Session serialization round trip preserves required fields", "[sessio
   session.sessionName = "round_trip";
   session.originalMixPath = "C:/audio/original_mix.wav";
   session.residualBlend = 7.5;
+  session.aiStemsEnabled = true;
+  session.batchRecursiveEnabled = true;
+  session.selectedMasterPreset = automix::domain::MasterPreset::UdioOptimized;
+  session.selectedPlatformPreset = automix::domain::MasterPreset::YouTube;
   session.renderSettings.outputFormat = "mp3";
   session.renderSettings.exportSpeedMode = "quick";
   session.renderSettings.lossyBitrateKbps = 256;
@@ -22,6 +26,9 @@ TEST_CASE("Session serialization round trip preserves required fields", "[sessio
   session.renderSettings.preferHardwareAcceleration = true;
   session.renderSettings.metadataPolicy = "override_template";
   session.renderSettings.metadataTemplate = {{"artist", "AutoMixMaster"}, {"comment", "test"}};
+  session.renderSettings.rendererChainEnabled = true;
+  session.renderSettings.rendererChainMode = "master_then_rsgain";
+  session.renderSettings.rendererChain = {"BuiltIn", "rsgain"};
   session.timeline.loopEnabled = true;
   session.timeline.loopInSeconds = 12.5;
   session.timeline.loopOutSeconds = 28.0;
@@ -52,6 +59,10 @@ TEST_CASE("Session serialization round trip preserves required fields", "[sessio
   REQUIRE(decoded.originalMixPath.has_value());
   REQUIRE(decoded.originalMixPath.value() == "C:/audio/original_mix.wav");
   REQUIRE(decoded.residualBlend == Catch::Approx(7.5));
+  REQUIRE(decoded.aiStemsEnabled == true);
+  REQUIRE(decoded.batchRecursiveEnabled == true);
+  REQUIRE(decoded.selectedMasterPreset == automix::domain::MasterPreset::UdioOptimized);
+  REQUIRE(decoded.selectedPlatformPreset == automix::domain::MasterPreset::YouTube);
   REQUIRE(decoded.stems.size() == 1);
   REQUIRE(decoded.stems.front().origin == automix::domain::StemOrigin::Separated);
   REQUIRE(decoded.mixPlan.has_value());
@@ -65,6 +76,10 @@ TEST_CASE("Session serialization round trip preserves required fields", "[sessio
   REQUIRE(decoded.renderSettings.processingThreads == 4);
   REQUIRE(decoded.renderSettings.metadataPolicy == "override_template");
   REQUIRE(decoded.renderSettings.metadataTemplate.at("artist") == "AutoMixMaster");
+  REQUIRE(decoded.renderSettings.rendererChainEnabled == true);
+  REQUIRE(decoded.renderSettings.rendererChainMode == "master_then_rsgain");
+  REQUIRE(decoded.renderSettings.rendererChain.size() == 2);
+  REQUIRE(decoded.renderSettings.rendererChain.front() == "BuiltIn");
   REQUIRE(decoded.timeline.loopEnabled == true);
   REQUIRE(decoded.timeline.loopInSeconds == Catch::Approx(12.5));
   REQUIRE(decoded.timeline.loopOutSeconds == Catch::Approx(28.0));
@@ -88,6 +103,10 @@ TEST_CASE("Session deserialization handles missing optional fields", "[session]"
   REQUIRE(decoded.masterPlan.has_value() == false);
   REQUIRE(decoded.originalMixPath.has_value() == false);
   REQUIRE(decoded.residualBlend == Catch::Approx(0.0));
+  REQUIRE(decoded.aiStemsEnabled == false);
+  REQUIRE(decoded.batchRecursiveEnabled == false);
+  REQUIRE(decoded.selectedMasterPreset == automix::domain::MasterPreset::UdioOptimized);
+  REQUIRE(decoded.selectedPlatformPreset == automix::domain::MasterPreset::YouTube);
   REQUIRE(decoded.renderSettings.blockSize == 1024);
   REQUIRE(decoded.renderSettings.outputFormat == "auto");
   REQUIRE(decoded.renderSettings.exportSpeedMode == "final");
@@ -98,6 +117,9 @@ TEST_CASE("Session deserialization handles missing optional fields", "[session]"
   REQUIRE(decoded.renderSettings.metadataPolicy == "copy_all");
   REQUIRE(decoded.renderSettings.metadataTemplate.empty());
   REQUIRE(decoded.renderSettings.preferHardwareAcceleration == true);
+  REQUIRE(decoded.renderSettings.rendererChainEnabled == false);
+  REQUIRE(decoded.renderSettings.rendererChainMode == "logical_all");
+  REQUIRE(decoded.renderSettings.rendererChain.empty());
   REQUIRE(decoded.timeline.loopEnabled == false);
   REQUIRE(decoded.timeline.zoom == Catch::Approx(1.0));
   REQUIRE(decoded.projectProfileId == "default");
@@ -120,4 +142,22 @@ TEST_CASE("Session repository save load", "[session]") {
   REQUIRE(loaded.sessionName == "repo_test");
 
   std::filesystem::remove(path);
+}
+
+TEST_CASE("Render settings normalize unsupported renderer chain modes", "[session]") {
+  automix::domain::Json json = {
+      {"schemaVersion", 2},
+      {"sessionName", "chain_mode_normalization"},
+      {"stems", automix::domain::Json::array()},
+      {"renderSettings",
+       {
+           {"rendererName", "BuiltIn"},
+           {"rendererChainEnabled", true},
+           {"rendererChainMode", "unsupported_mode"},
+       }},
+  };
+
+  const auto decoded = json.get<automix::domain::Session>();
+  REQUIRE(decoded.renderSettings.rendererChainEnabled == true);
+  REQUIRE(decoded.renderSettings.rendererChainMode == "logical_all");
 }

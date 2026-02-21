@@ -27,7 +27,8 @@ ImportController::ImportController(juce::ThreadPool& threadPool, Callbacks callb
 void ImportController::importFiles(std::vector<juce::File> files,
                                    const bool useSeparation,
                                    const int preferredStemCount,
-                                   std::atomic_bool& cancelFlag) {
+                                   std::atomic_bool& cancelFlag,
+                                   std::optional<std::filesystem::path> separationModelRoot) {
   if (files.empty()) {
     return;
   }
@@ -65,18 +66,21 @@ void ImportController::importFiles(std::vector<juce::File> files,
     std::vector<juce::File> files;
     bool useSeparation;
     int preferredStemCount;
+    std::optional<std::filesystem::path> separationModelRoot;
     std::atomic_bool* cancelFlag;
     Callbacks callbacks;
 
     ImportJob(std::vector<juce::File> f,
               bool sep,
               int stemCount,
+              std::optional<std::filesystem::path> separationRoot,
               std::atomic_bool* cancel,
               Callbacks cb)
         : juce::ThreadPoolJob("ImportJob"),
           files(std::move(f)),
           useSeparation(sep),
           preferredStemCount(stemCount),
+          separationModelRoot(std::move(separationRoot)),
           cancelFlag(cancel),
           callbacks(std::move(cb)) {}
 
@@ -94,10 +98,20 @@ void ImportController::importFiles(std::vector<juce::File> files,
       ImportResult result;
       std::vector<domain::Stem> importedStems;
       auto& importLines = result.logLines;
+      bool separatedFromSingleMix = false;
+
+      if (files.size() == 1) {
+        result.originalMixPath = files.front().getFullPathName().toStdString();
+      }
 
       if (isCancellationRequested()) {
         requestCancellation();
         result.cancelled = true;
+      }
+
+      if (!result.cancelled && useSeparation && files.size() != 1) {
+        importLines.push_back(
+            "AI stem separation only runs when importing one full-mix file. Multiple files were imported as regular stems.");
       }
 
       if (!result.cancelled && files.size() == 1 && useSeparation) {
@@ -112,13 +126,22 @@ void ImportController::importFiles(std::vector<juce::File> files,
           const auto outputDir = mixPath.parent_path() / (mixPath.stem().string() + "_separated");
 
           if (!result.cancelled) {
-            ai::StemSeparator separator;
+            ai::StemSeparator separator(separationModelRoot.value_or(std::filesystem::path("assets/models/stem-separator")));
+            if (separationModelRoot.has_value()) {
+              if (separator.isModelAvailable()) {
+                importLines.push_back("Separation model pack: " + separationModelRoot->string());
+              } else {
+                importLines.push_back("Separation model pack unavailable, falling back to bundled separator.");
+                separator = ai::StemSeparator();
+              }
+            }
             ai::StemSeparator::SeparationOptions separationOptions;
             separationOptions.targetStemCount = preferredStemCount;
             const auto separationResult = separator.separate(mixPath, outputDir, separationOptions);
             emitProgress(callbacks, 0.78);
             if (separationResult.success) {
               importedStems = separationResult.stems;
+              separatedFromSingleMix = true;
               importLines.push_back("Separated import from: " + mixPath.string());
               importLines.push_back("Variant stems: " + std::to_string(separationResult.stemVariantCount));
               for (const auto& stem : separationResult.stems) {
@@ -165,7 +188,7 @@ void ImportController::importFiles(std::vector<juce::File> files,
           stem.id = "stem_" + std::to_string(i + 1);
           stem.name = file.getFileNameWithoutExtension().toStdString();
           stem.filePath = file.getFullPathName().toStdString();
-          stem.origin = useSeparation ? domain::StemOrigin::Separated : domain::StemOrigin::Recorded;
+          stem.origin = separatedFromSingleMix ? domain::StemOrigin::Separated : domain::StemOrigin::Recorded;
           stem.enabled = true;
           importedStems.push_back(stem);
           emitProgress(callbacks, 0.1 + (0.82 * (static_cast<double>(i + 1) / totalFiles)));
@@ -200,7 +223,9 @@ void ImportController::importFiles(std::vector<juce::File> files,
     }
   };
 
-  threadPool_.addJob(new ImportJob(std::move(files), useSeparation, preferredStemCount, &cancelFlag, callbacks_), true);
+  threadPool_.addJob(
+      new ImportJob(std::move(files), useSeparation, preferredStemCount, std::move(separationModelRoot), &cancelFlag, callbacks_),
+      true);
 }
 
 } // namespace automix::app

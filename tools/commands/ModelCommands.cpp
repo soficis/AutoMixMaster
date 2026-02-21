@@ -111,6 +111,20 @@ int commandInstallSupportedLimiter(const CommandArgs& args) {
     return 0;
   }
 
+  if (*idArg == "ffmpeg" || *idArg == "sox" || *idArg == "rsgain") {
+    const auto source = findRepoPath(std::filesystem::path("assets") / *idArg);
+    if (!source.has_value()) {
+      std::cerr << "Bundled source package not found under assets/" << *idArg << "\n";
+      return 1;
+    }
+
+    const auto destination = destinationRoot / *idArg;
+    std::filesystem::create_directories(destination);
+    copyDirectory(source.value(), destination);
+    std::cout << "Installed limiter '" << *idArg << "' to " << destination.string() << "\n";
+    return 0;
+  }
+
   std::cerr << "Unknown supported limiter id: " << *idArg << "\n";
   return 2;
 }

@@ -21,6 +21,36 @@ TEST_CASE("Renderer registry always includes built-in renderer", "[renderer][reg
   REQUIRE(foundBuiltIn);
 }
 
+TEST_CASE("Renderer registry includes bundled GPL-compatible renderer entries", "[renderer][registry]") {
+  automix::renderers::RendererRegistry registry;
+  const auto infos = registry.list();
+
+  bool foundFfmpeg = false;
+  bool foundSox = false;
+  bool foundRsgain = false;
+  for (const auto& info : infos) {
+    if (info.id == "FFmpeg") {
+      foundFfmpeg = true;
+      REQUIRE(info.linkMode == automix::renderers::RendererLinkMode::External);
+      REQUIRE(info.discovery.find("FFMPEG_BIN") != std::string::npos);
+    }
+    if (info.id == "SoX") {
+      foundSox = true;
+      REQUIRE(info.linkMode == automix::renderers::RendererLinkMode::External);
+      REQUIRE(info.discovery.find("SOX_BIN") != std::string::npos);
+    }
+    if (info.id == "rsgain") {
+      foundRsgain = true;
+      REQUIRE(info.linkMode == automix::renderers::RendererLinkMode::External);
+      REQUIRE(info.discovery.find("RSGAIN_BIN") != std::string::npos);
+    }
+  }
+
+  REQUIRE(foundFfmpeg);
+  REQUIRE(foundSox);
+  REQUIRE(foundRsgain);
+}
+
 TEST_CASE("Renderer registry includes configured user external renderer metadata", "[renderer][registry]") {
   const std::filesystem::path tempBinary = std::filesystem::temp_directory_path() / "automix_external_renderer_dummy.bin";
   {

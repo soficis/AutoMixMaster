@@ -27,7 +27,7 @@ public:
   std::function<void()> onImport;
   std::function<void()> onAutoMix;
   std::function<void()> onAutoMaster;
-  std::function<void()> onAutoMixMaster; // One-click pipeline: Mix → Master → Export
+  std::function<void()> onAutoMixMaster; // One-click pipeline: Mix -> Master -> Export
   std::function<void()> onBatch;
   std::function<void()> onExport;
 
@@ -38,9 +38,13 @@ public:
   juce::ComboBox& getPlatformPresetBox() { return platformPresetBox_; }
   juce::ComboBox& getExportFormatBox() { return exportFormatBox_; }
   juce::ComboBox& getExportModeBox() { return exportModeBox_; }
+  juce::ToggleButton& getRendererChainToggle() { return rendererChainToggle_; }
+  juce::ComboBox& getRendererChainModeBox() { return rendererChainModeBox_; }
   juce::Slider& getResidualBlendSlider() { return residualBlendSlider_; }
   juce::ToggleButton& getSeparatedStemsToggle() { return separatedStemsToggle_; }
   juce::ToggleButton& getBatchRecursiveToggle() { return batchRecursiveToggle_; }
+  void setRendererChainPreviewText(const juce::String& text);
+  void setSeparationModelStatus(const juce::String& text, bool ready);
 
 private:
   std::unique_ptr<StemPanel> stemPanel_;
@@ -67,10 +71,19 @@ private:
   juce::ComboBox exportFormatBox_;
   juce::Label exportModeLabel_{"", "Mode"};
   juce::ComboBox exportModeBox_;
+  juce::ToggleButton rendererChainToggle_{"Renderer Chain"};
+  juce::Label rendererChainModeLabel_{"", "Chain"};
+  juce::ComboBox rendererChainModeBox_;
+  juce::Label rendererChainPreviewLabel_{"", "Active chain: BuiltIn"};
   juce::Label blendLabel_{"", "Residual Blend"};
   juce::Slider residualBlendSlider_;
-  juce::ToggleButton separatedStemsToggle_{"AI Stems"};
+  juce::ToggleButton separatedStemsToggle_{"AI Stem Separation"};
+  juce::Label separationModelStatusLabel_{"", "Separation model: none"};
   juce::ToggleButton batchRecursiveToggle_{"Recursive Batch"};
+
+  // Advanced section toggle
+  juce::TextButton advancedToggle_{"> Advanced"};
+  bool advancedExpanded_ = false;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ControlDeck)
 };

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 
@@ -65,7 +66,9 @@ TEST_CASE("Model pack loader parses schema and defaults", "[ai]") {
   "source": "unit-test",
   "feature_schema_version": "1.0.0",
   "output_schema": {
-    "target_lufs": "float"
+    "confidence": "float",
+    "global_gain_db": "float",
+    "global_pan_bias": "float"
   }
 })";
   }
@@ -74,6 +77,7 @@ TEST_CASE("Model pack loader parses schema and defaults", "[ai]") {
   REQUIRE(pack.has_value());
   REQUIRE(pack->id == "mix-v1");
   REQUIRE(pack->type == "mix_parameters");
+  REQUIRE(pack->taskScope == "mix");
   REQUIRE(pack->engine == "onnxruntime");
 
   std::filesystem::remove_all(tempDir);
@@ -114,7 +118,9 @@ TEST_CASE("Model manager scans packs and stores active selections", "[ai]") {
   "source": "unit-test",
   "feature_schema_version": "1.0.0",
   "output_schema": {
-    "target_lufs": "float"
+    "confidence": "float",
+    "global_gain_db": "float",
+    "global_pan_bias": "float"
   }
 })";
   }
@@ -139,6 +145,43 @@ TEST_CASE("Model manager scans packs and stores active selections", "[ai]") {
   std::filesystem::remove_all(root);
 }
 
+TEST_CASE("Model manager remaps legacy demucs analysis packs to separation scope", "[ai]") {
+  const auto root = std::filesystem::temp_directory_path() / "automix_model_manager_legacy_demucs_scope";
+  const auto packDir = root / "github_smartdaze_otowake-oto_htdemucs_6s.onnx";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(packDir);
+
+  {
+    std::ofstream model(packDir / "htdemucs_6s.onnx", std::ios::binary);
+    model << "demucs";
+    std::ofstream meta(packDir / "model.json");
+    meta << R"({
+  "id": "github-smartdaze-otowake-oto-htdemucs_6s-onnx",
+  "name": "smartdaze/otowake-oto/htdemucs_6s.onnx",
+  "type": "analysis_model",
+  "task_scope": "analysis",
+  "engine": "onnxruntime",
+  "model_file": "htdemucs_6s.onnx",
+  "license": "unknown",
+  "source": "https://github.com/smartdaze/otowake-oto/releases",
+  "feature_schema_version": "1.0.0",
+  "output_schema": {
+    "confidence": "float"
+  }
+})";
+  }
+
+  automix::ai::ModelManager manager(root);
+  const auto packs = manager.scan();
+  const auto selected = std::find_if(packs.begin(), packs.end(), [](const automix::ai::ModelPack& pack) {
+    return pack.id == "github-smartdaze-otowake-oto-htdemucs_6s-onnx";
+  });
+  REQUIRE(selected != packs.end());
+  REQUIRE(selected->taskScope == "separation");
+
+  std::filesystem::remove_all(root);
+}
+
 TEST_CASE("Model pack loader rejects packs missing licensing metadata", "[ai]") {
   const auto root = std::filesystem::temp_directory_path() / "automix_model_pack_invalid_meta";
   std::filesystem::remove_all(root);
@@ -154,6 +197,39 @@ TEST_CASE("Model pack loader rejects packs missing licensing metadata", "[ai]") 
   "engine": "onnxruntime",
   "model_file": "model.onnx",
   "feature_schema_version": "1.0.0"
+})";
+  }
+
+  automix::ai::ModelPackLoader loader;
+  const auto pack = loader.load(root);
+  REQUIRE_FALSE(pack.has_value());
+
+  std::filesystem::remove_all(root);
+}
+
+TEST_CASE("Model pack loader rejects mismatched task scope metadata", "[ai]") {
+  const auto root = std::filesystem::temp_directory_path() / "automix_model_pack_scope_mismatch";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+
+  {
+    std::ofstream model(root / "model.onnx", std::ios::binary);
+    model << "dummy";
+    std::ofstream meta(root / "model.json");
+    meta << R"({
+  "id": "scope-mismatch-pack",
+  "type": "mix_parameters",
+  "task_scope": "master",
+  "engine": "onnxruntime",
+  "model_file": "model.onnx",
+  "license": "MIT",
+  "source": "unit-test",
+  "feature_schema_version": "1.0.0",
+  "output_schema": {
+    "confidence": "float",
+    "global_gain_db": "float",
+    "global_pan_bias": "float"
+  }
 })";
   }
 

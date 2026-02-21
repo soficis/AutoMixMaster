@@ -293,6 +293,9 @@ const std::vector<SupportedModelPack>& supportedModelPacks() {
 const std::vector<SupportedLimiter>& supportedLimiters() {
   static const std::vector<SupportedLimiter> limiters = {
       {"phaselimiter", "PhaseLimiter", "Phase limiter external renderer package.", "See assets/phaselimiter/licenses"},
+      {"ffmpeg", "FFmpeg", "Bundled FFmpeg renderer package.", "GPL-3.0-or-later compatible"},
+      {"sox", "SoX", "Bundled SoX renderer package.", "GPL-2.0-or-later"},
+      {"rsgain", "rsgain", "Bundled rsgain ReplayGain post-render package.", "BSD-2-Clause"},
       {"external-template", "ExternalLimiterTemplate", "Template external limiter descriptor for custom tools.", "User-supplied"},
   };
   return limiters;

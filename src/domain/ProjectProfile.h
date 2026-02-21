@@ -18,7 +18,7 @@ struct ProjectProfile {
   std::string id;
   std::string name;
   std::string platformPreset = "spotify";
-  std::string rendererName = "BuiltIn";
+  std::string rendererName = "PhaseLimiter";
   std::string outputFormat = "wav";
   int lossyBitrateKbps = 320;
   bool mp3UseVbr = false;

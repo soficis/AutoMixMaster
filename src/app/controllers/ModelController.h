@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <functional>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -31,6 +32,7 @@ class ModelController {
     std::function<void()> onModelPacksChanged;
     std::function<void(bool)> onCatalogReady;
     std::function<void(bool)> onInstallComplete;
+    std::function<void(bool)> onUninstallComplete;
     std::function<void(bool)> onUpdateCheckComplete;
   };
 
@@ -41,13 +43,16 @@ class ModelController {
                   Callbacks callbacks,
                   ModelHubOps hubOps);
 
-  void fetchCatalog(std::atomic_bool& cancelFlag);
-  void installModel(const std::string& repoId, std::atomic_bool& cancelFlag);
+  void fetchCatalog(std::atomic_bool& cancelFlag, bool curatedOnly = true, std::string searchText = {});
+  void installModel(const std::string& modelId, std::atomic_bool& cancelFlag);
+  void uninstallModel(const std::string& modelId, std::atomic_bool& cancelFlag);
+  bool activateInstalledModelForTask(const std::string& modelId, const std::string& taskScope);
   void showInstalled();
   void checkUpdates(std::atomic_bool& cancelFlag);
   void verifyIntegrity();
 
   const std::vector<ai::HubModelInfo>& discoveredModels() const;
+  std::set<std::string> installedModelIds() const;
   void setModelHubRoot(const std::filesystem::path& root);
 
  private:

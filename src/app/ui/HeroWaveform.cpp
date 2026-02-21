@@ -204,10 +204,20 @@ void HeroWaveform::paint(juce::Graphics& g) {
   float midY = h * 0.5f;
 
   if (waveformPeaks_.empty()) {
-    // No waveform data — show placeholder
+    // Empty state — guide the user toward the first action.
+    // Primary call-to-action: centred in the upper half.
+    auto upperHalf = bounds.withHeight(h * 0.5f);
+    g.setFont(typography::subhead());
+    g.setColour(colour(colours::primary).withAlpha(0.85f));
+    g.drawText("Drop stems here  or  click Import (Ctrl+I)", upperHalf, juce::Justification::centredBottom);
+
+    // Workflow hint: smaller, muted, just below centre.
+    auto lowerHalf = bounds.withY(h * 0.5f).withHeight(h * 0.5f);
+    g.setFont(typography::caption());
     g.setColour(colour(colours::textMuted));
-    g.setFont(typography::body());
-    g.drawText("Drop audio files here or use Import", bounds, juce::Justification::centred);
+    g.drawText("1  Import Stems    ->    2  Mix + Master    ->    3  Export\n"
+               "Tip: enable 'AI Stem Separation' in the control deck to split one full mix into stems.",
+               lowerHalf.reduced(0.0f, 8.0f), juce::Justification::centredTop);
   } else {
     // Draw waveform fill
     juce::Path waveformPath;

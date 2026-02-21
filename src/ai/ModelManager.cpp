@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <initializer_list>
 #include <set>
 #include <sstream>
 #include <unordered_set>
@@ -17,6 +18,9 @@ using ::automix::util::toLower;
 std::vector<std::filesystem::path> defaultRoots() {
   return {
       "ModelPacks",
+      "modelhub",
+      "assets/modelhub",
+      "assets/ModelHub",
       "assets/models",
       "assets/modelpacks",
       "assets/ModelPacks",
@@ -50,6 +54,37 @@ std::vector<std::filesystem::path> parseEnvRoots() {
 
 bool isModelMetadataFile(const std::filesystem::path& path) {
   return toLower(path.filename().string()) == "model.json";
+}
+
+bool containsAny(const std::string& haystack, std::initializer_list<const char*> needles) {
+  for (const auto* needle : needles) {
+    if (haystack.find(needle) != std::string::npos) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void applyLegacyTaskScopeFix(ModelPack& pack) {
+  if (toLower(pack.taskScope) != "analysis") {
+    return;
+  }
+
+  std::string joined;
+  joined.reserve(pack.id.size() + pack.name.size() + pack.modelFile.size() + 3);
+  joined += toLower(pack.id);
+  joined += "|";
+  joined += toLower(pack.name);
+  joined += "|";
+  joined += toLower(pack.modelFile);
+
+  const bool looksLikeSeparation = containsAny(
+      joined,
+      {"demucs", "mdx", "roformer", "source-separation", "stem-separation", "separator"});
+
+  if (looksLikeSeparation) {
+    pack.taskScope = "separation";
+  }
 }
 
 std::vector<std::filesystem::path> expandRootCandidates(const std::filesystem::path& root) {
@@ -160,8 +195,10 @@ std::vector<ModelPack> ModelManager::scan() {
         if (!pack.has_value()) {
           continue;
         }
-        if (seenPackIds.insert(pack->id).second) {
-          availablePacks_.push_back(pack.value());
+        auto normalizedPack = pack.value();
+        applyLegacyTaskScopeFix(normalizedPack);
+        if (seenPackIds.insert(normalizedPack.id).second) {
+          availablePacks_.push_back(std::move(normalizedPack));
         }
       }
     }

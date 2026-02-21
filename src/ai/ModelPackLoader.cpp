@@ -1,5 +1,6 @@
 #include "ai/ModelPackLoader.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <fstream>
 
@@ -7,6 +8,7 @@
 
 #include "ai/FeatureSchema.h"
 #include "util/HashUtils.h"
+#include "util/StringUtils.h"
 
 namespace automix::ai {
 namespace {
@@ -23,6 +25,65 @@ std::vector<std::string> readStringArray(const nlohmann::json& json, const char*
 
 bool hasRequiredMetadata(const ModelPack& pack) {
   return !pack.licenseId.empty() && !pack.source.empty() && !pack.featureSchemaVersion.empty();
+}
+
+std::string normalizeTaskScope(std::string scope) {
+  scope = util::toLower(util::trim(std::move(scope)));
+  if (scope == "mix" || scope == "master" || scope == "analysis" || scope == "separation") {
+    return scope;
+  }
+  if (scope == "stem-separation" || scope == "source-separation") {
+    return "separation";
+  }
+  if (scope == "role" || scope == "classifier" || scope == "metadata") {
+    return "analysis";
+  }
+  return "";
+}
+
+std::string inferTaskScopeFromType(const std::string& type) {
+  const auto normalized = util::toLower(type);
+  if (normalized == "mix_parameters" || normalized == "mix_model") {
+    return "mix";
+  }
+  if (normalized == "master_parameters" || normalized == "master_model") {
+    return "master";
+  }
+  if (normalized == "separation_model" || normalized == "source_separation" || normalized == "stem_separation") {
+    return "separation";
+  }
+  if (normalized == "analysis_model" ||
+      normalized == "role_classifier" ||
+      normalized == "tag_classifier" ||
+      normalized == "embedding_model" ||
+      normalized == "analysis") {
+    return "analysis";
+  }
+  return "";
+}
+
+bool requiresOnnxModelForScope(const std::string& scope) {
+  return scope == "mix" || scope == "master";
+}
+
+bool hasRequiredOutputKeysForScope(const std::string& scope, const std::vector<std::string>& keys) {
+  if (scope != "mix" && scope != "master") {
+    return !keys.empty();
+  }
+
+  const auto hasKey = [&](const char* key) {
+    return std::find(keys.begin(), keys.end(), key) != keys.end();
+  };
+
+  if (scope == "mix") {
+    return hasKey("confidence") && hasKey("global_gain_db") && hasKey("global_pan_bias");
+  }
+
+  return hasKey("confidence") &&
+         hasKey("target_lufs") &&
+         hasKey("pre_gain_db") &&
+         hasKey("limiter_ceiling_db") &&
+         hasKey("glue_ratio");
 }
 
 } // namespace
@@ -42,6 +103,10 @@ std::optional<ModelPack> ModelPackLoader::load(const std::filesystem::path& dire
   pack.id = json.value("id", directory.filename().string());
   pack.name = json.value("name", pack.id);
   pack.type = json.value("type", "unknown");
+  pack.taskScope = normalizeTaskScope(json.value("task_scope", json.value("taskScope", "")));
+  if (pack.taskScope.empty()) {
+    pack.taskScope = inferTaskScopeFromType(pack.type);
+  }
   pack.engine = json.value("engine", "unknown");
   pack.minAppVersion = json.value("min_app_version", json.value("minAppVersion", "0.0.0"));
   pack.version = json.value("version", "0.0.0");
@@ -96,6 +161,13 @@ std::optional<ModelPack> ModelPackLoader::load(const std::filesystem::path& dire
   if (!hasRequiredMetadata(pack)) {
     return std::nullopt;
   }
+  if (pack.taskScope.empty()) {
+    return std::nullopt;
+  }
+  const auto inferredScope = inferTaskScopeFromType(pack.type);
+  if (!inferredScope.empty() && inferredScope != pack.taskScope) {
+    return std::nullopt;
+  }
   if (!FeatureSchemaV1::isCompatible(pack.featureSchemaVersion)) {
     return std::nullopt;
   }
@@ -107,6 +179,10 @@ std::optional<ModelPack> ModelPackLoader::load(const std::filesystem::path& dire
   if (!std::filesystem::exists(modelPath)) {
     return std::nullopt;
   }
+  if (requiresOnnxModelForScope(pack.taskScope) &&
+      util::toLower(modelPath.extension().string()) != ".onnx") {
+    return std::nullopt;
+  }
 
   const std::string computedChecksum = computeChecksum(modelPath);
   if (!pack.checksum.empty() && pack.checksum != computedChecksum) {
@@ -115,6 +191,9 @@ std::optional<ModelPack> ModelPackLoader::load(const std::filesystem::path& dire
 
   if (pack.checksum.empty()) {
     pack.checksum = computedChecksum;
+  }
+  if (!hasRequiredOutputKeysForScope(pack.taskScope, pack.expectedOutputKeys)) {
+    return std::nullopt;
   }
 
   return pack;

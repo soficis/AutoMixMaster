@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=AutoMixMaster
+Comment=Deterministic auto mix and mastering utility
+Exec=AutoMixMaster
+Icon=io.automixmaster.AutoMixMaster
+Terminal=false
+Categories=AudioVideo;Audio;Music;
+StartupNotify=true

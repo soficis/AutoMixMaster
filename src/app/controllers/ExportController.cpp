@@ -1,5 +1,6 @@
 #include "app/controllers/ExportController.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <mutex>
@@ -7,7 +8,7 @@
 #include <sstream>
 
 #include "analysis/StemHealthAssistant.h"
-#include "renderers/RendererFactory.h"
+#include "renderers/RendererPipeline.h"
 #include "util/StringUtils.h"
 
 namespace automix::app {
@@ -67,6 +68,16 @@ std::string buildHealthCacheKey(const domain::Session& session,
   return key.str();
 }
 
+double clampProgress(const double progress) {
+  return std::clamp(progress, 0.0, 1.0);
+}
+
+void emitProgress(const ExportController::Callbacks& callbacks, const double progress) {
+  if (callbacks.onProgress) {
+    callbacks.onProgress(clampProgress(progress));
+  }
+}
+
 } // namespace
 
 void ExportController::clearHealthCache() {
@@ -110,16 +121,20 @@ void ExportController::runExport(const domain::Session& session,
       size_t healthIssueCount = 0;
 
       try {
+        emitProgress(callbacks, 0.02);
         if (quickExportMode) {
           healthText = "Quick export mode: stem-health preflight skipped for faster turnaround.";
+          emitProgress(callbacks, 0.28);
         } else {
           if (analysisEntries.empty()) {
             if (callbacks.onStatus) {
               callbacks.onStatus("Export: analyzing stems");
             }
+            emitProgress(callbacks, 0.08);
 
             analysis::StemAnalyzer analyzer;
             analysisEntries = analyzer.analyzeSession(session);
+            emitProgress(callbacks, 0.22);
           }
           const auto healthCacheKey = buildHealthCacheKey(session, analysisEntries);
           bool healthCacheHit = false;
@@ -149,9 +164,8 @@ void ExportController::runExport(const domain::Session& session,
                 .issueCount = healthIssueCount,
             };
           }
+          emitProgress(callbacks, 0.32);
         }
-
-        auto renderer = renderers::createRenderer(settings.rendererName);
 
         std::mutex progressMutex;
         auto lastProgressEmit = std::chrono::steady_clock::time_point {};
@@ -159,7 +173,7 @@ void ExportController::runExport(const domain::Session& session,
         std::string lastProgressStage;
         auto capturedCallbacks = callbacks;
 
-        renderResult = renderer->render(
+        renderResult = renderers::renderWithPipeline(
             session,
             settings,
             [capturedCallbacks, &progressMutex, &lastProgressEmit, &lastProgressFraction, &lastProgressStage](
@@ -185,7 +199,7 @@ void ExportController::runExport(const domain::Session& session,
                 return;
               }
 
-              if (stage == "Mix render cache hit") {
+              if (stage.find("Mix render cache hit") != std::string::npos) {
                 if (capturedCallbacks.onStatus) {
                   capturedCallbacks.onStatus("Export: Using cached mix render (fast path)");
                 }
@@ -198,7 +212,8 @@ void ExportController::runExport(const domain::Session& session,
                 capturedCallbacks.onStatus("Export: " + stage + " (" +
                                            std::to_string(static_cast<int>(progress * 100.0)) + "%)");
               }
-              if (progress >= 0.999 || stage != "Summing stem buses") {
+              emitProgress(capturedCallbacks, 0.35 + (0.63 * progress));
+              if (progress >= 0.999 || stage.find("Summing stem buses") == std::string::npos) {
                 if (capturedCallbacks.onTaskHistory) {
                   capturedCallbacks.onTaskHistory("Export " + stage + " " +
                                                    std::to_string(static_cast<int>(progress * 100.0)) + "%");
@@ -228,6 +243,7 @@ void ExportController::runExport(const domain::Session& session,
 
       auto capturedCallbacks = callbacks;
       juce::MessageManager::callAsync([capturedCallbacks, result = std::move(result)]() mutable {
+        emitProgress(capturedCallbacks, 1.0);
         if (capturedCallbacks.onExportComplete) {
           capturedCallbacks.onExportComplete(std::move(result));
         }

@@ -1,0 +1,9 @@
+{
+  "id": "rsgain",
+  "name": "rsgain",
+  "integration": "bundled-cli",
+  "licenseId": "BSD-2-Clause",
+  "binaryPath": "bin/rsgain",
+  "envOverride": "RSGAIN_BIN",
+  "homePage": "https://github.com/complexlogic/rsgain"
+}

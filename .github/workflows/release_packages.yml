@@ -180,6 +180,12 @@ jobs:
           merge-multiple: true
           path: release-assets
 
+      - name: Create/Update Github Release
+        uses: docker://ghcr.io/mini-bomba/create-github-release:v1.2.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ github.event.release.tag_name }}
+
       - name: Publish assets
         uses: softprops/action-gh-release@v2
         with:

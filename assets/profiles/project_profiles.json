@@ -3,7 +3,7 @@
     "id": "default",
     "name": "Default Balanced",
     "platformPreset": "spotify",
-    "rendererName": "BuiltIn",
+    "rendererName": "PhaseLimiter",
     "outputFormat": "wav",
     "lossyBitrateKbps": 320,
     "mp3UseVbr": false,
@@ -16,13 +16,13 @@
     "preferredStemCount": 4,
     "metadataPolicy": "copy_common",
     "metadataTemplate": {},
-    "pinnedRendererIds": ["BuiltIn"]
+    "pinnedRendererIds": ["PhaseLimiter", "BuiltIn"]
   },
   {
     "id": "streaming_spotify",
     "name": "Streaming Spotify",
     "platformPreset": "spotify",
-    "rendererName": "BuiltIn",
+    "rendererName": "PhaseLimiter",
     "outputFormat": "mp3",
     "lossyBitrateKbps": 256,
     "mp3UseVbr": true,
@@ -35,7 +35,7 @@
     "preferredStemCount": 4,
     "metadataPolicy": "copy_common",
     "metadataTemplate": {},
-    "pinnedRendererIds": ["BuiltIn", "PhaseLimiter"]
+    "pinnedRendererIds": ["PhaseLimiter", "BuiltIn"]
   },
   {
     "id": "mobile_fast_turn",

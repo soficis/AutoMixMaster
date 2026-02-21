@@ -13,6 +13,7 @@
 #include <juce_core/juce_core.h>
 #include <nlohmann/json.hpp>
 
+#include "ai/ModelCatalogValidator.h"
 #include "util/StringUtils.h"
 
 namespace automix::ai {
@@ -298,6 +299,21 @@ std::string sourceUrlForRepo(const std::string& repoId) {
   return "https://huggingface.co/" + repoId;
 }
 
+std::vector<std::string> curatedModelIds() {
+  return {
+      "rysertio/Demucs-onnx",
+      "onnx-community/whisper-tiny.en",
+      "onnx-community/whisper-small.en",
+      "onnx-community/Speech-Emotion-Classification-ONNX",
+      "onnx-community/Musical-Instrument-Classification-ONNX",
+      "onnx-community/Musical-genres-Classification-Hubert-V1-ONNX",
+      "openai/whisper-tiny",
+      "laion/clap-htsat-unfused",
+      "pranjal-pravesh/PANNs_CNN14_ONNX",
+      "SonyCSLParis/music2latent",
+  };
+}
+
 std::string inferUseCase(const std::string& repoId,
                          const std::vector<std::string>& tags,
                          const std::string& fallbackQuery) {
@@ -371,8 +387,12 @@ std::string pickPrimaryFile(const std::vector<std::string>& files,
       "pytorch_model.bin",
       "model.safetensors",
       "model.pt",
+      "model.pth",
+      "model.th",
       "model.ckpt",
       "checkpoint.pt",
+      "checkpoint.pth",
+      "checkpoint.th",
   };
 
   auto lowerFiles = files;
@@ -406,7 +426,8 @@ std::string pickPrimaryFile(const std::vector<std::string>& files,
 
   for (size_t i = 0; i < files.size(); ++i) {
     const auto item = toLower(files[i]);
-    if (item.ends_with(".safetensors") || item.ends_with(".bin") || item.ends_with(".pt") || item.ends_with(".ckpt")) {
+    if (item.ends_with(".safetensors") || item.ends_with(".bin") || item.ends_with(".pt") ||
+        item.ends_with(".pth") || item.ends_with(".th") || item.ends_with(".ckpt")) {
       return files[i];
     }
   }
@@ -463,17 +484,21 @@ void updateInstallRegistry(const std::filesystem::path& root,
     registry = nlohmann::json::array();
   }
 
+  const auto modelKey = !result.modelId.empty() ? result.modelId : model.modelId;
   bool updated = false;
   for (auto& item : registry) {
-    if (!item.is_object() || item.value("repoId", "") != model.repoId) {
+    if (!item.is_object() || item.value("modelId", item.value("repoId", "")) != modelKey) {
       continue;
     }
     item = {
+        {"modelId", modelKey},
+        {"source", result.source.empty() ? model.source : result.source},
         {"repoId", model.repoId},
         {"revision", result.revision},
         {"installedAtUtc", iso8601NowUtc()},
         {"installPath", result.installPath.string()},
         {"primaryFile", result.primaryFilePath.filename().string()},
+        {"taskScope", result.taskScope.empty() ? model.taskScope : result.taskScope},
         {"useCase", model.useCase},
         {"license", model.license},
         {"sourceUrl", model.sourceUrl},
@@ -486,11 +511,14 @@ void updateInstallRegistry(const std::filesystem::path& root,
 
   if (!updated) {
     registry.push_back({
+        {"modelId", modelKey},
+        {"source", result.source.empty() ? model.source : result.source},
         {"repoId", model.repoId},
         {"revision", result.revision},
         {"installedAtUtc", iso8601NowUtc()},
         {"installPath", result.installPath.string()},
         {"primaryFile", result.primaryFilePath.filename().string()},
+        {"taskScope", result.taskScope.empty() ? model.taskScope : result.taskScope},
         {"useCase", model.useCase},
         {"license", model.license},
         {"sourceUrl", model.sourceUrl},
@@ -500,7 +528,7 @@ void updateInstallRegistry(const std::filesystem::path& root,
   }
 
   std::sort(registry.begin(), registry.end(), [](const nlohmann::json& a, const nlohmann::json& b) {
-    return a.value("repoId", "") < b.value("repoId", "");
+    return a.value("modelId", a.value("repoId", "")) < b.value("modelId", b.value("repoId", ""));
   });
   writeJson(registryPath, registry);
 }
@@ -514,12 +542,15 @@ void appendInstallLog(const std::filesystem::path& root,
 
   nlohmann::json event = {
       {"timestampUtc", iso8601NowUtc()},
+      {"modelId", result.modelId.empty() ? model.modelId : result.modelId},
+      {"source", result.source.empty() ? model.source : result.source},
       {"repoId", model.repoId},
       {"revision", result.revision},
       {"success", result.success},
       {"message", result.message},
       {"installPath", result.installPath.string()},
       {"primaryFile", result.primaryFilePath.filename().string()},
+      {"taskScope", result.taskScope.empty() ? model.taskScope : result.taskScope},
       {"useCase", model.useCase},
       {"license", model.license},
   };
@@ -533,13 +564,20 @@ void appendInstallLog(const std::filesystem::path& root,
 std::vector<std::string> HuggingFaceModelHub::defaultRecommendedSearchTerms() {
   return {
       "demucs",
+      "htdemucs_6s onnx",
       "mdx23c",
       "bs-roformer",
       "mel-band-roformer",
       "open-unmix",
+      "source-separation",
+      "music-source-separation",
+      "instrument classification onnx",
+      "genre classification onnx",
+      "speech emotion onnx",
       "clap",
       "basic-pitch",
       "panns",
+      "audio-onnx",
   };
 }
 
@@ -561,42 +599,58 @@ std::string HuggingFaceModelHub::resolveToken(const std::string& explicitToken) 
   return "";
 }
 
-std::optional<HubModelInfo> HuggingFaceModelHub::modelInfo(const std::string& repoId, const std::string& token) const {
+std::optional<HubModelInfo> HuggingFaceModelHub::modelInfo(const std::string& modelIdOrRepoId,
+                                                           const std::string& token) const {
+  auto repoId = trim(modelIdOrRepoId);
+  if (repoId.rfind("huggingface:", 0) == 0) {
+    repoId = repoId.substr(12);
+  }
   if (repoId.empty()) {
     return std::nullopt;
   }
 
   const auto effectiveToken = resolveToken(token);
-  const auto url = "https://huggingface.co/api/models/" + juce::URL::addEscapeChars(repoId, false).toStdString();
+  const auto baseUrl = "https://huggingface.co/api/models/" + escapePathPreservingSlash(repoId);
+  const auto url = baseUrl + "?blobs=true";
   std::string detail;
   const auto payload = fetchJson(url, effectiveToken, &detail);
-  if (!payload.has_value() || !payload->is_object()) {
-    return std::nullopt;
+  nlohmann::json modelJson;
+  if (payload.has_value() && payload->is_object()) {
+    modelJson = *payload;
+  } else {
+    // Retry without blobs metadata for repositories that do not support expanded blob payloads.
+    const auto fallbackPayload = fetchJson(baseUrl, effectiveToken, &detail);
+    if (!fallbackPayload.has_value() || !fallbackPayload->is_object()) {
+      return std::nullopt;
+    }
+    modelJson = *fallbackPayload;
   }
 
   HubModelInfo info;
-  info.repoId = payload->value("id", repoId);
+  info.source = "huggingface";
+  info.repoId = modelJson.value("id", repoId);
+  info.modelId = "huggingface:" + info.repoId;
   info.displayName = info.repoId;
-  info.revision = payload->value("sha", "main");
-  info.downloads = payload->value("downloads", 0);
-  info.likes = payload->value("likes", 0);
-  info.privateRepo = payload->value("private", false);
-  info.gated = payload->value("gated", false);
-  info.disabled = payload->value("disabled", false);
-  info.lastModified = payload->value("lastModified", "");
-  info.license = inferLicense(*payload);
+  info.revision = modelJson.value("sha", "main");
+  info.downloads = modelJson.value("downloads", 0);
+  info.likes = modelJson.value("likes", 0);
+  info.privateRepo = modelJson.value("private", false);
+  info.gated = modelJson.value("gated", false);
+  info.disabled = modelJson.value("disabled", false);
+  info.lastModified = modelJson.value("lastModified", "");
+  info.license = inferLicense(modelJson);
   info.sourceUrl = sourceUrlForRepo(info.repoId);
 
-  if (payload->contains("tags") && payload->at("tags").is_array()) {
-    for (const auto& tag : payload->at("tags")) {
+  if (modelJson.contains("tags") && modelJson.at("tags").is_array()) {
+    for (const auto& tag : modelJson.at("tags")) {
       if (tag.is_string()) {
         info.tags.push_back(tag.get<std::string>());
       }
     }
   }
 
-  if (payload->contains("siblings") && payload->at("siblings").is_array()) {
-    for (const auto& sibling : payload->at("siblings")) {
+  if (modelJson.contains("siblings") && modelJson.at("siblings").is_array()) {
+    for (const auto& sibling : modelJson.at("siblings")) {
       if (!sibling.is_object()) {
         continue;
       }
@@ -615,6 +669,10 @@ std::optional<HubModelInfo> HuggingFaceModelHub::modelInfo(const std::string& re
 
   info.primaryFile = pickPrimaryFile(info.files, &info.hasOnnx);
   info.useCase = inferUseCase(info.repoId, info.tags, "");
+  const auto compatibility = validateCatalogModel(info);
+  info.compatible = compatibility.compatible;
+  info.taskScope = compatibility.taskScope;
+  info.compatibilityReport = compatibility.reason;
 
   return info;
 }
@@ -623,8 +681,41 @@ std::vector<HubModelInfo> HuggingFaceModelHub::discoverRecommended(const HubMode
   const auto effectiveToken = resolveToken(options.token);
   std::vector<HubModelInfo> discovered;
   std::set<std::string> seen;
+  constexpr size_t kCatalogMaxEntries = 40;
 
-  for (const auto& query : defaultRecommendedSearchTerms()) {
+  if (options.curatedOnly) {
+    for (const auto& repoId : curatedModelIds()) {
+      auto info = modelInfo(repoId, effectiveToken);
+      if (!info.has_value()) {
+        continue;
+      }
+      if (!options.includeGated && info->gated) {
+        continue;
+      }
+      if (info->privateRepo || info->disabled || info->primaryFile.empty() || !info->compatible) {
+        continue;
+      }
+      if (!seen.insert(info->repoId).second) {
+        continue;
+      }
+      info->curated = true;
+      info->recommended = true;
+      discovered.push_back(std::move(info.value()));
+      if (discovered.size() >= kCatalogMaxEntries) {
+        break;
+      }
+    }
+    return discovered;
+  }
+
+  std::vector<std::string> queries;
+  if (!trim(options.searchText).empty()) {
+    queries.push_back(trim(options.searchText));
+  } else {
+    queries = defaultRecommendedSearchTerms();
+  }
+
+  for (const auto& query : queries) {
     const auto escaped = juce::URL::addEscapeChars(query, false).toStdString();
     const auto url = "https://huggingface.co/api/models?search=" + escaped +
                      "&sort=downloads&direction=-1&limit=" + std::to_string(std::max<size_t>(1, options.maxResultsPerQuery));
@@ -658,12 +749,24 @@ std::vector<HubModelInfo> HuggingFaceModelHub::discoverRecommended(const HubMode
       if (info->primaryFile.empty()) {
         continue;
       }
+      if (!info->compatible) {
+        continue;
+      }
 
       info->useCase = inferUseCase(info->repoId, info->tags, query);
+      info->curated = options.curatedOnly;
       const bool trust = trustedOrganization(info->repoId);
       const bool hasOpenLicense = info->license != "unknown" && info->license != "other";
       info->recommended = trust || (hasOpenLicense && info->downloads >= 50);
       discovered.push_back(std::move(info.value()));
+
+      if (discovered.size() >= kCatalogMaxEntries) {
+        break;
+      }
+    }
+
+    if (discovered.size() >= kCatalogMaxEntries) {
+      break;
     }
   }
 
@@ -680,14 +783,22 @@ std::vector<HubModelInfo> HuggingFaceModelHub::discoverRecommended(const HubMode
     return a.repoId < b.repoId;
   });
 
-  if (discovered.size() > 40) {
-    discovered.resize(40);
+  if (discovered.size() > kCatalogMaxEntries) {
+    discovered.resize(kCatalogMaxEntries);
   }
   return discovered;
 }
 
-HubInstallResult HuggingFaceModelHub::installModel(const std::string& repoId, const HubInstallOptions& options) const {
+HubInstallResult HuggingFaceModelHub::installModel(const std::string& modelIdOrRepoId,
+                                                   const HubInstallOptions& options) const {
   HubInstallResult result;
+  result.source = "huggingface";
+
+  std::string repoId = trim(modelIdOrRepoId);
+  if (repoId.rfind("huggingface:", 0) == 0) {
+    repoId = repoId.substr(12);
+  }
+  result.modelId = "huggingface:" + repoId;
   result.repoId = repoId;
 
   const auto effectiveToken = resolveToken(options.token);
@@ -710,8 +821,16 @@ HubInstallResult HuggingFaceModelHub::installModel(const std::string& repoId, co
     return result;
   }
 
+  const auto compatibility = validateCatalogModel(info.value());
+  if (!compatibility.compatible) {
+    result.message = "Model is not compatible for turnkey install: " + compatibility.reason;
+    return result;
+  }
+
+  result.taskScope = compatibility.taskScope;
   const auto destinationRoot = options.destinationRoot.empty() ? std::filesystem::path("assets/modelhub") : options.destinationRoot;
-  const auto installPath = destinationRoot / sanitizeRepoId(info->repoId);
+  const auto installKey = sanitizeRepoId(info->modelId.empty() ? info->repoId : info->modelId);
+  const auto installPath = destinationRoot / installKey;
   const auto primaryPath = installPath / std::filesystem::path(info->primaryFile).filename();
   result.installPath = installPath;
   result.primaryFilePath = primaryPath;
@@ -774,9 +893,12 @@ HubInstallResult HuggingFaceModelHub::installModel(const std::string& repoId, co
 
   nlohmann::json metadata = {
       {"schemaVersion", 1},
+      {"modelId", info->modelId},
+      {"source", info->source},
       {"repoId", info->repoId},
       {"revision", revision},
       {"name", info->displayName},
+      {"taskScope", compatibility.taskScope},
       {"useCase", info->useCase},
       {"license", info->license},
       {"sourceUrl", info->sourceUrl},
@@ -792,6 +914,14 @@ HubInstallResult HuggingFaceModelHub::installModel(const std::string& repoId, co
   };
   result.metadataPath = installPath / "modelhub.json";
   writeJson(result.metadataPath, metadata);
+
+  std::string manifestError;
+  if (!writeTurnkeyModelPackManifest(installPath, info.value(), result, compatibility, &manifestError)) {
+    std::filesystem::remove(primaryPath, error);
+    result.message = "Failed writing turnkey model pack metadata: " + manifestError;
+    appendInstallLog(destinationRoot, info.value(), result);
+    return result;
+  }
 
   result.success = true;
   result.message = "Model installed successfully.";

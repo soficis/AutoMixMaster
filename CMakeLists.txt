@@ -104,13 +104,23 @@ add_library(automix_core
   src/automaster/HeuristicAutoMasterStrategy.cpp
   src/automaster/OriginalMixReference.cpp
   src/renderers/BuiltInRenderer.cpp
+  src/renderers/BundledToolDiscovery.cpp
   src/renderers/ExternalLimiterRenderer.cpp
+  src/renderers/FfmpegDiscovery.cpp
+  src/renderers/FfmpegRenderer.cpp
   src/renderers/RendererRegistry.cpp
   src/renderers/PhaseLimiterDiscovery.cpp
   src/renderers/PhaseLimiterRenderer.cpp
   src/renderers/RendererFactory.cpp
+  src/renderers/RendererPipeline.cpp
+  src/renderers/RsgainDiscovery.cpp
+  src/renderers/RsgainRenderer.cpp
+  src/renderers/SoxDiscovery.cpp
+  src/renderers/SoxRenderer.cpp
   src/platform/ThirdPartyComponentRegistry.cpp
   src/ai/HuggingFaceModelHub.cpp
+  src/ai/GitHubReleaseModelHub.cpp
+  src/ai/ModelCatalogValidator.cpp
   src/ai/ModelPackLoader.cpp
   src/ai/ModelManager.cpp
   src/ai/ModelStrategy.cpp
@@ -122,6 +132,7 @@ add_library(automix_core
   src/ai/RtNeuralInference.cpp
   src/ai/StemSeparator.cpp
   src/ai/StemRoleClassifierAI.cpp
+  src/util/StringUtils.cpp
   src/util/LameDownloader.cpp
   src/util/MetadataPolicy.cpp
   src/util/WavWriter.cpp
@@ -219,16 +230,33 @@ endif()
 juce_add_gui_app(AutoMixMasterApp
   PRODUCT_NAME "AutoMixMaster"
   COMPANY_NAME "AutoMixMaster"
+  ICON_BIG "assets/icon.png"
 )
 
 target_sources(AutoMixMasterApp PRIVATE
   src/app/Main.cpp
-  src/app/MainComponent.cpp
-  src/app/WaveformPreviewComponent.cpp
+  src/app/style/AutoMixLookAndFeel.cpp
   src/app/controllers/ModelController.cpp
   src/app/controllers/ImportController.cpp
   src/app/controllers/ExportController.cpp
   src/app/controllers/ProcessingController.cpp
+  src/app/controllers/SessionController.cpp
+  src/app/controllers/PreviewController.cpp
+  src/app/controllers/ProfileController.cpp
+  src/app/ui/MainLayout.cpp
+  src/app/ui/HeaderBar.cpp
+  src/app/ui/HeroWaveform.cpp
+  src/app/ui/TransportBar.cpp
+  src/app/ui/GlowMeters.cpp
+  src/app/ui/TaskCenterPanel.cpp
+  src/app/ui/StemPanel.cpp
+  src/app/ui/ControlDeck.cpp
+  src/app/ui/SelectionState.cpp
+  src/app/ui/TaskLifecycle.cpp
+  src/app/ui/TaskOrchestrator.cpp
+  src/app/ui/AudioPreviewManager.cpp
+  src/app/ui/SessionManager.cpp
+  src/app/ui/ModelBrowserPanel.cpp
 )
 
 target_include_directories(AutoMixMasterApp PRIVATE src)
@@ -239,6 +267,7 @@ target_link_libraries(AutoMixMasterApp
     juce::juce_gui_extra
     juce::juce_audio_devices
     juce::juce_audio_formats
+    juce::juce_audio_utils
     juce::juce_dsp
 )
 
@@ -246,6 +275,28 @@ target_compile_definitions(AutoMixMasterApp PRIVATE
   JUCE_WEB_BROWSER=0
   JUCE_USE_CURL=0
 )
+
+if(EXISTS "${CMAKE_SOURCE_DIR}/assets/phaselimiter")
+  add_custom_command(TARGET AutoMixMasterApp POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:AutoMixMasterApp>/assets"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/assets/phaselimiter"
+            "$<TARGET_FILE_DIR:AutoMixMasterApp>/assets/phaselimiter"
+    COMMENT "Copying bundled PhaseLimiter assets next to AutoMixMaster executable"
+    VERBATIM
+  )
+endif()
+
+if(EXISTS "${CMAKE_SOURCE_DIR}/assets/limiters")
+  add_custom_command(TARGET AutoMixMasterApp POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:AutoMixMasterApp>/assets"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/assets/limiters"
+            "$<TARGET_FILE_DIR:AutoMixMasterApp>/assets/limiters"
+    COMMENT "Copying bundled limiter descriptors next to AutoMixMaster executable"
+    VERBATIM
+  )
+endif()
 
 if(BUILD_TOOLS)
   add_executable(automix_dev_tools
@@ -275,14 +326,18 @@ if(BUILD_TESTING)
 
   add_executable(automix_tests
     tests/unit/TestMain.cpp
+    tests/unit/ControllerTests.cpp
     tests/unit/SessionSerializationTests.cpp
     tests/unit/AudioIoTests.cpp
     tests/unit/AnalysisTests.cpp
     tests/unit/StemOriginSafetyTests.cpp
     tests/unit/ResidualBlendTests.cpp
     tests/unit/PhaseLimiterDiscoveryTests.cpp
+    tests/unit/BundledToolDiscoveryTests.cpp
     tests/unit/PhaseLimiterRendererTests.cpp
     tests/unit/ExternalLimiterRendererTests.cpp
+    tests/unit/RendererFactoryTests.cpp
+    tests/unit/RendererPipelineTests.cpp
     tests/unit/RendererRegistryTests.cpp
     tests/unit/RendererRegistryTrustPolicyTests.cpp
     tests/unit/ProjectProfileTests.cpp
@@ -300,11 +355,22 @@ if(BUILD_TESTING)
     tests/unit/StemSeparatorTests.cpp
     tests/regression/RegressionHarness.cpp
     tests/regression/RegressionHarnessTests.cpp
+    src/app/controllers/ModelController.cpp
+    src/app/controllers/ImportController.cpp
+    src/app/controllers/ExportController.cpp
+    src/app/controllers/ProcessingController.cpp
+    src/app/controllers/SessionController.cpp
+    src/app/controllers/PreviewController.cpp
+    src/app/controllers/ProfileController.cpp
+    src/app/controllers/OriginalMixController.cpp
   )
 
   target_include_directories(automix_tests PRIVATE src tests/regression)
   target_link_libraries(automix_tests PRIVATE automix_core Catch2::Catch2WithMain)
-  target_compile_definitions(automix_tests PRIVATE AUTOMIX_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+  target_compile_definitions(automix_tests PRIVATE
+    AUTOMIX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    JUCE_MODAL_LOOPS_PERMITTED=1
+  )
 
   if(ENABLE_CLANG_TIDY AND CLANG_TIDY_EXE)
     set_target_properties(automix_tests PROPERTIES CXX_CLANG_TIDY "${CLANG_TIDY_EXE}")

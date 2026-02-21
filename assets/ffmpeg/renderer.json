@@ -1,0 +1,10 @@
+{
+  "id": "FFmpeg",
+  "name": "FFmpeg",
+  "integration": "bundled-cli",
+  "licenseId": "GPL-3.0-or-later compatible",
+  "binaryPath": "bin/ffmpeg",
+  "envOverride": "FFMPEG_BIN",
+  "homePage": "https://ffmpeg.org/",
+  "docs": "https://ffmpeg.org/ffmpeg-filters.html#loudnorm"
+}

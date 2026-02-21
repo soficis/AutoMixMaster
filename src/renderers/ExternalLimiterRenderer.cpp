@@ -403,45 +403,46 @@ RenderResult ExternalLimiterRenderer::render(const domain::Session& session,
 
     const auto spectrum = analyzer.analyzeBuffer(mastered);
 
-    const std::filesystem::path reportPath = outputPath.string() + ".report.json";
-    nlohmann::json report = {
-        {"renderer", "ExternalLimiter"},
-        {"binaryPath", binaryPath.string()},
-        {"validatedVersion", validation.version},
-        {"validatedFeatures", validation.supportedFeatures},
-        {"outputAudioPath", outputPath.string()},
-        {"processExitCode", exitCode},
-        {"integratedLufs", complianceReport.integratedLufs},
-        {"shortTermLufs", complianceReport.shortTermLufs},
-        {"loudnessRange", complianceReport.loudnessRange},
-        {"truePeakDbtp", complianceReport.truePeakDbtp},
-        {"samplePeakDbfs", complianceReport.samplePeakDbfs},
-        {"monoCorrelation", complianceReport.monoCorrelation},
-        {"spectrumLow", spectrum.lowEnergy},
-        {"spectrumMid", spectrum.midEnergy},
-        {"spectrumHigh", spectrum.highEnergy},
-        {"stereoCorrelation", spectrum.stereoCorrelation},
-        {"masterPlanSource", usedSessionMasterPlan ? "session" : "heuristic"},
-        {"mixPlanSource", usedSessionMixPlan ? "session" : "heuristic"},
-        {"masterDecisionLog", boundedPlan.decisionLog},
-        {"mixDecisionLog", session.mixPlan.has_value() ? session.mixPlan->decisionLog : std::vector<std::string>{}},
-        {"exportSpeedMode", settings.exportSpeedMode},
-        {"outputFormat", outputFormat},
-        {"lossyBitrateKbps", settings.lossyBitrateKbps},
-        {"lossyQuality", settings.lossyQuality},
-        {"mp3Mode", settings.mp3UseVbr ? "vbr" : "cbr"},
-        {"mp3VbrQuality", settings.mp3VbrQuality},
-        {"metadataPolicy", settings.metadataPolicy},
-        {"targetLufs", boundedPlan.targetLufs},
-        {"targetTruePeakDbtp", boundedPlan.truePeakDbtp},
-        {"limiterCeilingDb", boundedPlan.limiterCeilingDb},
-        {"limiterLookaheadMs", boundedPlan.limiterLookaheadMs},
-        {"limiterAttackMs", boundedPlan.limiterAttackMs},
-        {"limiterReleaseMs", boundedPlan.limiterReleaseMs},
-        {"limiterTruePeakEnabled", boundedPlan.limiterTruePeakEnabled},
-        {"processOutput", processOutput},
-    };
-    {
+    std::filesystem::path reportPath;
+    if (settings.writePerExportReportJson) {
+      reportPath = outputPath.string() + ".report.json";
+      nlohmann::json report = {
+          {"renderer", "ExternalLimiter"},
+          {"binaryPath", binaryPath.string()},
+          {"validatedVersion", validation.version},
+          {"validatedFeatures", validation.supportedFeatures},
+          {"outputAudioPath", outputPath.string()},
+          {"processExitCode", exitCode},
+          {"integratedLufs", complianceReport.integratedLufs},
+          {"shortTermLufs", complianceReport.shortTermLufs},
+          {"loudnessRange", complianceReport.loudnessRange},
+          {"truePeakDbtp", complianceReport.truePeakDbtp},
+          {"samplePeakDbfs", complianceReport.samplePeakDbfs},
+          {"monoCorrelation", complianceReport.monoCorrelation},
+          {"spectrumLow", spectrum.lowEnergy},
+          {"spectrumMid", spectrum.midEnergy},
+          {"spectrumHigh", spectrum.highEnergy},
+          {"stereoCorrelation", spectrum.stereoCorrelation},
+          {"masterPlanSource", usedSessionMasterPlan ? "session" : "heuristic"},
+          {"mixPlanSource", usedSessionMixPlan ? "session" : "heuristic"},
+          {"masterDecisionLog", boundedPlan.decisionLog},
+          {"mixDecisionLog", session.mixPlan.has_value() ? session.mixPlan->decisionLog : std::vector<std::string>{}},
+          {"exportSpeedMode", settings.exportSpeedMode},
+          {"outputFormat", outputFormat},
+          {"lossyBitrateKbps", settings.lossyBitrateKbps},
+          {"lossyQuality", settings.lossyQuality},
+          {"mp3Mode", settings.mp3UseVbr ? "vbr" : "cbr"},
+          {"mp3VbrQuality", settings.mp3VbrQuality},
+          {"metadataPolicy", settings.metadataPolicy},
+          {"targetLufs", boundedPlan.targetLufs},
+          {"targetTruePeakDbtp", boundedPlan.truePeakDbtp},
+          {"limiterCeilingDb", boundedPlan.limiterCeilingDb},
+          {"limiterLookaheadMs", boundedPlan.limiterLookaheadMs},
+          {"limiterAttackMs", boundedPlan.limiterAttackMs},
+          {"limiterReleaseMs", boundedPlan.limiterReleaseMs},
+          {"limiterTruePeakEnabled", boundedPlan.limiterTruePeakEnabled},
+          {"processOutput", processOutput},
+      };
       std::ofstream out(reportPath);
       out << report.dump(2);
     }
@@ -456,13 +457,16 @@ RenderResult ExternalLimiterRenderer::render(const domain::Session& session,
     result.success = true;
     result.rendererName = "ExternalLimiter";
     result.outputAudioPath = outputPath.string();
-    result.reportPath = reportPath.string();
+    result.reportPath = reportPath.empty() ? std::string {} : reportPath.string();
     result.logs = rawResult.logs;
     result.logs.push_back("External limiter binary: " + binaryPath.string());
     result.logs.push_back("External limiter validation version: " + validation.version);
     result.logs.push_back("External process exit code: " + std::to_string(exitCode));
     if (!processOutput.empty()) {
       result.logs.push_back("External process output captured.");
+    }
+    if (!settings.writePerExportReportJson) {
+      result.logs.push_back("Report sidecar disabled (.report.json not written).");
     }
 
     if (onProgress) {

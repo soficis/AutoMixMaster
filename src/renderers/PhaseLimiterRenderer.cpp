@@ -184,11 +184,11 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
     const std::filesystem::path tempRoot = binaryInfo->installRoot / "tmp";
     const std::filesystem::path tempWorkDir = tempRoot / ("work_" + suffix);
     const std::filesystem::path tempInputPath = tempRoot / ("input_" + suffix + ".wav");
-    const std::filesystem::path tempPhaseOutputPath = outputFormat == "wav"
-                                                          ? outputPath
-                                                          : (tempRoot / ("phase_output_" + suffix + ".wav"));
+    const std::filesystem::path tempPhaseOutputPath = tempRoot / ("phase_output_" + suffix + ".wav");
     const std::filesystem::path relativeTempWorkDir = std::filesystem::path("tmp") / ("work_" + suffix);
     const std::filesystem::path relativeTempInputPath = std::filesystem::path("tmp") / ("input_" + suffix + ".wav");
+    const std::filesystem::path relativeTempPhaseOutputPath =
+        std::filesystem::path("tmp") / ("phase_output_" + suffix + ".wav");
     std::filesystem::create_directories(tempWorkDir);
 
     util::WavWriter writer;
@@ -199,7 +199,7 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
     juce::StringArray command;
     command.add(binaryInfo->executablePath.generic_string());
     command.add("-input=" + relativeTempInputPath.generic_string());
-    command.add("-output=" + tempPhaseOutputPath.generic_string());
+    command.add("-output=" + relativeTempPhaseOutputPath.generic_string());
     command.add("-disable_input_encode=true");
     command.add("-output_format=wav");
     command.add("-sample_rate=44100");
@@ -232,12 +232,18 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
     drainProcessOutput(process, processOutput);
 
     const auto exitCode = process.getExitCode();
-    if (exitCode != 0 || !pathExists(tempPhaseOutputPath)) {
+    const bool hasOutput = pathExists(tempPhaseOutputPath);
+    if (!hasOutput) {
       const std::string outputHint = processOutput.empty()
                                          ? ""
                                          : (" output=" + processOutput.substr(0, 240));
       return fallbackToBuiltIn(session, settings, onProgress, cancelFlag,
                                "phase_limiter failed (exit=" + std::to_string(exitCode) + ")" + outputHint);
+    }
+    if (exitCode != 0) {
+      renderState.logs.push_back(
+          "PhaseLimiter returned non-zero exit code (" + std::to_string(exitCode) +
+          ") but produced an output file; continuing with generated audio.");
     }
 
     if (onProgress) {
@@ -277,64 +283,68 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
 
     const auto spectrumMetrics = analyzer.analyzeBuffer(mastered);
 
-    const std::filesystem::path reportPath = outputPath.string() + ".report.json";
-    nlohmann::json report = {
-        {"renderer", "PhaseLimiter"},
-        {"phaseLimiterBinary", binaryInfo->executablePath.string()},
-        {"outputAudioPath", outputPath.string()},
-        {"integratedLufs", complianceReport.integratedLufs},
-        {"shortTermLufs", complianceReport.shortTermLufs},
-        {"loudnessRange", complianceReport.loudnessRange},
-        {"samplePeakDbfs", complianceReport.samplePeakDbfs},
-        {"truePeakDbtp", complianceReport.truePeakDbtp},
-        {"monoCorrelation", complianceReport.monoCorrelation},
-        {"spectrumLow", spectrumMetrics.lowEnergy},
-        {"spectrumMid", spectrumMetrics.midEnergy},
-        {"spectrumHigh", spectrumMetrics.highEnergy},
-        {"stereoCorrelation", spectrumMetrics.stereoCorrelation},
-        {"masterPlanSource", usedSessionMasterPlan ? "session" : "heuristic"},
-        {"mixPlanSource", usedSessionMixPlan ? "session" : "heuristic"},
-        {"masterDecisionLog", boundedPlan.decisionLog},
-        {"mixDecisionLog", session.mixPlan.has_value() ? session.mixPlan->decisionLog : std::vector<std::string>{}},
-        {"exportSpeedMode", settings.exportSpeedMode},
-        {"outputFormat", outputFormat},
-        {"lossyBitrateKbps", settings.lossyBitrateKbps},
-        {"lossyQuality", settings.lossyQuality},
-        {"mp3Mode", settings.mp3UseVbr ? "vbr" : "cbr"},
-        {"mp3VbrQuality", settings.mp3VbrQuality},
-        {"metadataPolicy", settings.metadataPolicy},
-        {"preGainDb", boundedPlan.preGainDb},
-        {"targetLufs", boundedPlan.targetLufs},
-        {"targetTruePeakDbtp", boundedPlan.truePeakDbtp},
-        {"limiterCeilingDb", boundedPlan.limiterCeilingDb},
-        {"limiterLookaheadMs", boundedPlan.limiterLookaheadMs},
-        {"limiterAttackMs", boundedPlan.limiterAttackMs},
-        {"limiterReleaseMs", boundedPlan.limiterReleaseMs},
-        {"limiterTruePeakEnabled", boundedPlan.limiterTruePeakEnabled},
-        {"renderLogs", renderState.logs},
-    };
+    std::filesystem::path reportPath;
+    if (settings.writePerExportReportJson) {
+      reportPath = outputPath.string() + ".report.json";
+      nlohmann::json report = {
+          {"renderer", "PhaseLimiter"},
+          {"phaseLimiterBinary", binaryInfo->executablePath.string()},
+          {"outputAudioPath", outputPath.string()},
+          {"integratedLufs", complianceReport.integratedLufs},
+          {"shortTermLufs", complianceReport.shortTermLufs},
+          {"loudnessRange", complianceReport.loudnessRange},
+          {"samplePeakDbfs", complianceReport.samplePeakDbfs},
+          {"truePeakDbtp", complianceReport.truePeakDbtp},
+          {"monoCorrelation", complianceReport.monoCorrelation},
+          {"spectrumLow", spectrumMetrics.lowEnergy},
+          {"spectrumMid", spectrumMetrics.midEnergy},
+          {"spectrumHigh", spectrumMetrics.highEnergy},
+          {"stereoCorrelation", spectrumMetrics.stereoCorrelation},
+          {"masterPlanSource", usedSessionMasterPlan ? "session" : "heuristic"},
+          {"mixPlanSource", usedSessionMixPlan ? "session" : "heuristic"},
+          {"masterDecisionLog", boundedPlan.decisionLog},
+          {"mixDecisionLog", session.mixPlan.has_value() ? session.mixPlan->decisionLog : std::vector<std::string>{}},
+          {"exportSpeedMode", settings.exportSpeedMode},
+          {"outputFormat", outputFormat},
+          {"lossyBitrateKbps", settings.lossyBitrateKbps},
+          {"lossyQuality", settings.lossyQuality},
+          {"mp3Mode", settings.mp3UseVbr ? "vbr" : "cbr"},
+          {"mp3VbrQuality", settings.mp3VbrQuality},
+          {"metadataPolicy", settings.metadataPolicy},
+          {"preGainDb", boundedPlan.preGainDb},
+          {"targetLufs", boundedPlan.targetLufs},
+          {"targetTruePeakDbtp", boundedPlan.truePeakDbtp},
+          {"limiterCeilingDb", boundedPlan.limiterCeilingDb},
+          {"limiterLookaheadMs", boundedPlan.limiterLookaheadMs},
+          {"limiterAttackMs", boundedPlan.limiterAttackMs},
+          {"limiterReleaseMs", boundedPlan.limiterReleaseMs},
+          {"limiterTruePeakEnabled", boundedPlan.limiterTruePeakEnabled},
+          {"renderLogs", renderState.logs},
+      };
 
-    std::ofstream out(reportPath);
-    out << report.dump(2);
+      std::ofstream out(reportPath);
+      out << report.dump(2);
+    }
 
     std::error_code ignore;
     std::filesystem::remove(tempInputPath, ignore);
     std::filesystem::remove_all(tempWorkDir, ignore);
-    if (tempPhaseOutputPath != outputPath) {
-      std::filesystem::remove(tempPhaseOutputPath, ignore);
-    }
+    std::filesystem::remove(tempPhaseOutputPath, ignore);
 
     RenderResult result;
     result.success = true;
     result.rendererName = "PhaseLimiter";
     result.outputAudioPath = outputPath.string();
-    result.reportPath = reportPath.string();
+    result.reportPath = reportPath.empty() ? std::string {} : reportPath.string();
     result.logs.insert(result.logs.end(), renderState.logs.begin(), renderState.logs.end());
     result.logs.push_back("PhaseLimiter executable: " + binaryInfo->executablePath.string());
     result.logs.push_back("PhaseLimiter root: " + binaryInfo->installRoot.string());
     result.logs.push_back("PhaseLimiter process exit code: " + std::to_string(exitCode));
     if (!processOutput.empty()) {
       result.logs.push_back("PhaseLimiter output captured (truncated to 32KB).");
+    }
+    if (!settings.writePerExportReportJson) {
+      result.logs.push_back("Report sidecar disabled (.report.json not written).");
     }
     result.logs.push_back("PhaseLimiter completed.");
 

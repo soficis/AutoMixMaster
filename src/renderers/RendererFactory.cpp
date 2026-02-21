@@ -2,7 +2,10 @@
 
 #include "renderers/BuiltInRenderer.h"
 #include "renderers/ExternalLimiterRenderer.h"
+#include "renderers/FfmpegRenderer.h"
 #include "renderers/PhaseLimiterRenderer.h"
+#include "renderers/RsgainRenderer.h"
+#include "renderers/SoxRenderer.h"
 
 namespace automix::renderers {
 
@@ -13,6 +16,18 @@ std::unique_ptr<IRenderer> createRenderer(const std::string& preferredRenderer) 
 
   if (preferredRenderer == "PhaseLimiter") {
     return std::make_unique<PhaseLimiterRenderer>();
+  }
+
+  if (preferredRenderer == "FFmpeg") {
+    return std::make_unique<FfmpegRenderer>();
+  }
+
+  if (preferredRenderer == "SoX") {
+    return std::make_unique<SoxRenderer>();
+  }
+
+  if (preferredRenderer == "rsgain") {
+    return std::make_unique<RsgainRenderer>();
   }
 
   if (preferredRenderer == "ExternalLimiter" || preferredRenderer.rfind("ExternalUser", 0) == 0) {

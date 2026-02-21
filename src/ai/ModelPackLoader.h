@@ -12,6 +12,7 @@ struct ModelPack {
   std::string id;
   std::string name;
   std::string type;
+  std::string taskScope;
   std::string engine;
   std::string minAppVersion;
   std::string version;

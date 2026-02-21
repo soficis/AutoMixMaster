@@ -1,5 +1,6 @@
 #include "app/controllers/SessionController.h"
 
+#include <algorithm>
 #include <exception>
 #include <utility>
 
@@ -7,6 +8,19 @@
 #include "util/CallbackDispatch.h"
 
 namespace automix::app {
+namespace {
+
+double clampProgress(const double progress) {
+  return std::clamp(progress, 0.0, 1.0);
+}
+
+void emitProgress(const SessionController::Callbacks& callbacks, const double progress) {
+  if (callbacks.onProgress) {
+    callbacks.onProgress(clampProgress(progress));
+  }
+}
+
+} // namespace
 
 SessionController::SessionController(juce::ThreadPool& threadPool, Callbacks callbacks)
     : threadPool_(threadPool), callbacks_(std::move(callbacks)) {}
@@ -24,6 +38,7 @@ void SessionController::saveSession(std::string path,
   if (callbacks_.onTaskHistory) {
     callbacks_.onTaskHistory("Session save started: " + path);
   }
+  emitProgress(callbacks_, 0.05);
 
   struct SaveSessionJob final : juce::ThreadPoolJob {
     std::string path;
@@ -61,9 +76,11 @@ void SessionController::saveSession(std::string path,
 
       try {
         if (!result.cancelled) {
+          emitProgress(callbacks, 0.2);
           engine::SessionRepository repository;
           repository.save(path, session);
           result.success = true;
+          emitProgress(callbacks, 0.9);
         }
         if (isCancellationRequested()) {
           requestCancellation();
@@ -87,6 +104,7 @@ void SessionController::saveSession(std::string path,
 
       auto capturedCallbacks = callbacks;
       util::dispatchCallback([capturedCallbacks, result = std::move(result)]() mutable {
+        emitProgress(capturedCallbacks, 1.0);
         if (capturedCallbacks.onSaveComplete) {
           capturedCallbacks.onSaveComplete(std::move(result));
         }
@@ -110,6 +128,7 @@ void SessionController::loadSession(std::string path, std::atomic_bool& cancelFl
   if (callbacks_.onTaskHistory) {
     callbacks_.onTaskHistory("Session load started: " + path);
   }
+  emitProgress(callbacks_, 0.05);
 
   struct LoadSessionJob final : juce::ThreadPoolJob {
     std::string path;
@@ -142,8 +161,10 @@ void SessionController::loadSession(std::string path, std::atomic_bool& cancelFl
 
       try {
         if (!result.cancelled) {
+          emitProgress(callbacks, 0.2);
           engine::SessionRepository repository;
           result.session = repository.load(path);
+          emitProgress(callbacks, 0.9);
         }
         if (isCancellationRequested()) {
           requestCancellation();
@@ -167,6 +188,7 @@ void SessionController::loadSession(std::string path, std::atomic_bool& cancelFl
 
       auto capturedCallbacks = callbacks;
       util::dispatchCallback([capturedCallbacks, result = std::move(result)]() mutable {
+        emitProgress(capturedCallbacks, 1.0);
         if (capturedCallbacks.onLoadComplete) {
           capturedCallbacks.onLoadComplete(std::move(result));
         }

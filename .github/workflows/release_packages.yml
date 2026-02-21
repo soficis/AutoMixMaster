@@ -1,0 +1,188 @@
+name: Release Packages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-packages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux-packages:
+    name: Linux (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config curl \
+            libasound2-dev libjack-jackd2-dev libfreetype6-dev libfontconfig1-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev \
+            libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libglu1-mesa-dev mesa-common-dev libcurl4-openssl-dev \
+            dpkg-dev fakeroot flatpak flatpak-builder
+
+      - name: Build .deb + AppImage
+        run: ./tools/package_linux.sh
+
+      - name: Build Flatpak bundle
+        run: ./tools/build_flatpak.sh
+
+      - name: Collect Linux release assets
+        run: |
+          mkdir -p dist/release/linux
+          cp dist/linux/*.deb dist/release/linux/
+          cp dist/linux/*.AppImage dist/release/linux/
+          cp dist/linux/*.sha256 dist/release/linux/ || true
+          cp dist/flatpak/AutoMixMaster.flatpak "dist/release/linux/AutoMixMaster-linux-${{ matrix.arch }}.flatpak"
+          (cd dist/release/linux && sha256sum * > "SHA256SUMS-linux-${{ matrix.arch }}.txt")
+
+      - name: Upload Linux assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: dist/release/linux/*
+          if-no-files-found: error
+
+  windows-package:
+    name: Windows (${{ matrix.arch }})
+    runs-on: windows-2025-vs2026
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            vs_platform: x64
+          - arch: arm64
+            vs_platform: ARM64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: >
+          cmake -S . -B build_windows_${{ matrix.arch }}
+          -G "Visual Studio 18 2026"
+          -A ${{ matrix.vs_platform }}
+          -DBUILD_TESTING=OFF
+          -DBUILD_TOOLS=OFF
+
+      - name: Build
+        run: cmake --build build_windows_${{ matrix.arch }} --config Release --target AutoMixMasterApp --parallel
+
+      - name: Package Windows zip
+        shell: pwsh
+        run: |
+          $releaseRoot = "dist/release/windows"
+          $packageDir = "$releaseRoot/AutoMixMaster-windows-${{ matrix.arch }}"
+          New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
+
+          Copy-Item "build_windows_${{ matrix.arch }}/AutoMixMasterApp_artefacts/Release/AutoMixMaster.exe" "$packageDir/AutoMixMaster.exe" -Force
+          Copy-Item "assets" "$packageDir/assets" -Recurse -Force
+
+          $zipName = "AutoMixMaster-windows-${{ matrix.arch }}.zip"
+          $zipPath = "$releaseRoot/$zipName"
+          if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+          Compress-Archive -Path "$packageDir/*" -DestinationPath $zipPath -CompressionLevel Optimal
+
+          $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
+          "$hash  $zipName" | Set-Content "$zipPath.sha256"
+
+      - name: Upload Windows assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-${{ matrix.arch }}
+          path: |
+            dist/release/windows/AutoMixMaster-windows-${{ matrix.arch }}.zip
+            dist/release/windows/AutoMixMaster-windows-${{ matrix.arch }}.zip.sha256
+          if-no-files-found: error
+
+  macos-package:
+    name: macOS (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: macos-13
+            cmake_arch: x86_64
+          - arch: arm64
+            runner: macos-14
+            cmake_arch: arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: >
+          cmake -S . -B build_macos_${{ matrix.arch }}
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_ARCHITECTURES=${{ matrix.cmake_arch }}
+          -DBUILD_TESTING=OFF
+          -DBUILD_TOOLS=OFF
+
+      - name: Build
+        run: cmake --build build_macos_${{ matrix.arch }} --target AutoMixMasterApp --parallel
+
+      - name: Package macOS zip
+        run: |
+          mkdir -p dist/release/macos
+          APP_BUNDLE="$(find build_macos_${{ matrix.arch }} -maxdepth 6 -type d -name 'AutoMixMaster.app' | head -n 1)"
+          if [[ -z "$APP_BUNDLE" ]]; then
+            echo "AutoMixMaster.app not found" >&2
+            exit 1
+          fi
+          cp -R assets "$APP_BUNDLE/Contents/MacOS/assets"
+          ZIP_PATH="dist/release/macos/AutoMixMaster-macos-${{ matrix.arch }}.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$ZIP_PATH"
+          shasum -a 256 "$ZIP_PATH" > "${ZIP_PATH}.sha256"
+
+      - name: Upload macOS assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macos-${{ matrix.arch }}
+          path: |
+            dist/release/macos/AutoMixMaster-macos-${{ matrix.arch }}.zip
+            dist/release/macos/AutoMixMaster-macos-${{ matrix.arch }}.zip.sha256
+          if-no-files-found: error
+
+  publish-release-assets:
+    name: Publish assets to GitHub Release
+    if: github.event_name == 'release'
+    runs-on: ubuntu-24.04
+    needs:
+      - linux-packages
+      - windows-package
+      - macos-package
+    steps:
+      - name: Download all packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Publish assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: release-assets/*
+          fail_on_unmatched_files: true

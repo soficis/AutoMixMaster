@@ -10,9 +10,9 @@
 
 #include "renderers/FfmpegDiscovery.h"
 #include "renderers/PhaseLimiterDiscovery.h"
+#include "renderers/PostRendererFactory.h"
 #include "renderers/RendererFactory.h"
 #include "renderers/RsgainDiscovery.h"
-#include "renderers/RsgainRenderer.h"
 #include "renderers/SoxDiscovery.h"
 #include "util/StringUtils.h"
 
@@ -297,7 +297,8 @@ RenderResult renderWithPipeline(const domain::Session& session,
     finalResult.logs.push_back(stageNamePrefix + "started");
 
     RenderResult stageResult;
-    if (isPostRenderer(stageRendererId) && stageIndex > 0) {
+    auto postRenderer = createPostRenderer(stageRendererId);
+    if (postRenderer != nullptr && stageIndex > 0) {
       // Post-renderers (e.g. rsgain) operate in-place on the previous stage's output.
       // Copy the file to the stage destination first, then apply tagging without re-rendering.
       if (previousOutputPath != stageOutputPath) {
@@ -310,8 +311,7 @@ RenderResult renderWithPipeline(const domain::Session& session,
           return finalResult;
         }
       }
-      RsgainRenderer rsgainRenderer;
-      stageResult = rsgainRenderer.applyTagging(
+      stageResult = postRenderer->applyPostRender(
           stageOutputPath, finalResult.reportPath,
           [onProgress, stageIndex, stageCount = chain.size(), stageNamePrefix](const double progress,
                                                                                const std::string& stage) {

@@ -111,6 +111,7 @@ add_library(automix_core
   src/renderers/RendererRegistry.cpp
   src/renderers/PhaseLimiterDiscovery.cpp
   src/renderers/PhaseLimiterRenderer.cpp
+  src/renderers/PostRendererFactory.cpp
   src/renderers/RendererFactory.cpp
   src/renderers/RendererPipeline.cpp
   src/renderers/RsgainDiscovery.cpp
@@ -337,6 +338,7 @@ if(BUILD_TESTING)
     tests/unit/PhaseLimiterRendererTests.cpp
     tests/unit/ExternalLimiterRendererTests.cpp
     tests/unit/RendererFactoryTests.cpp
+    tests/unit/PostRendererFactoryTests.cpp
     tests/unit/RendererPipelineTests.cpp
     tests/unit/RendererRegistryTests.cpp
     tests/unit/RendererRegistryTrustPolicyTests.cpp

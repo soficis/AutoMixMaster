@@ -20,7 +20,6 @@ artefacts/
 *artefacts/
 ntml
 docs/
-.flatpak-builder/
 
 # === CMake ===
 CMakeCache.txt
@@ -29,6 +28,11 @@ cmake_install.cmake
 CTestTestfile.cmake
 DartConfiguration.tcl
 CMakeUserPresets.json
+compile_commands.json
+install_manifest.txt
+build.ninja
+.ninja_deps
+.ninja_log
 build_*/
 
 # === Linux Packaging Artifacts ===
@@ -61,6 +65,7 @@ venv/
 
 # === Logs & Temporary ===
 *.log
+*.err
 *.tmp
 tmp/
 tmpclaude*

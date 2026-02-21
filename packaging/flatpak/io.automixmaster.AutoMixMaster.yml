@@ -16,15 +16,8 @@ modules:
   - name: automixmaster
     buildsystem: simple
     build-commands:
-      - >
-        cmake -S . -B build-flatpak -GNinja
-        -DCMAKE_BUILD_TYPE=Release
-        -DBUILD_TESTING=OFF
-        -DBUILD_TOOLS=OFF
-        -DFETCHCONTENT_FULLY_DISCONNECTED=ON
-        -DFETCHCONTENT_SOURCE_DIR_NLOHMANN_JSON=flatpak-deps/nlohmann_json
-        -DFETCHCONTENT_SOURCE_DIR_JUCE=flatpak-deps/juce
-        -DFETCHCONTENT_SOURCE_DIR_LIBEBUR128=flatpak-deps/libebur128
+      - test -d flatpak-deps/nlohmann_json && test -d flatpak-deps/juce && test -d flatpak-deps/libebur128
+      - cmake -S . -B build-flatpak -GNinja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DBUILD_TOOLS=OFF -DFETCHCONTENT_FULLY_DISCONNECTED=ON -DFETCHCONTENT_SOURCE_DIR_NLOHMANN_JSON=$PWD/flatpak-deps/nlohmann_json -DFETCHCONTENT_SOURCE_DIR_JUCE=$PWD/flatpak-deps/juce -DFETCHCONTENT_SOURCE_DIR_LIBEBUR128=$PWD/flatpak-deps/libebur128
       - cmake --build build-flatpak --target AutoMixMasterApp --parallel
       - install -Dm755 build-flatpak/AutoMixMasterApp_artefacts/Release/AutoMixMaster /app/bin/AutoMixMaster
       - cp -r assets /app/bin/assets

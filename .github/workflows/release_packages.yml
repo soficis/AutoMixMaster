@@ -42,6 +42,12 @@ jobs:
       - name: Build .deb + AppImage
         run: bash ./tools/package_linux.sh
 
+      - name: Verify Flatpak prefetch wiring
+        run: |
+          grep -q "FETCHCONTENT_FULLY_DISCONNECTED=ON" packaging/flatpak/io.automixmaster.AutoMixMaster.yml
+          grep -q "FETCHCONTENT_SOURCE_DIR_NLOHMANN_JSON" packaging/flatpak/io.automixmaster.AutoMixMaster.yml
+          grep -q "type: git" packaging/flatpak/io.automixmaster.AutoMixMaster.yml
+
       # Flatpak sandbox builds can fail if CMake FetchContent tries live GitHub clone.
       # Keep manifest prefetch sources + FETCHCONTENT_SOURCE_DIR_* overrides in sync.
       - name: Build Flatpak bundle

@@ -18,6 +18,7 @@ struct ImportResult {
   bool cancelled = false;
   std::vector<domain::Stem> stems;
   std::vector<std::string> logLines;
+  std::optional<std::string> originalMixPath;
 };
 
 class ImportController {
@@ -34,7 +35,8 @@ class ImportController {
   void importFiles(std::vector<juce::File> files,
                    bool useSeparation,
                    int preferredStemCount,
-                   std::atomic_bool& cancelFlag);
+                   std::atomic_bool& cancelFlag,
+                   std::optional<std::filesystem::path> separationModelRoot = std::nullopt);
 
  private:
   juce::ThreadPool& threadPool_;

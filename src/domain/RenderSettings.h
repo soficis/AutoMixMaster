@@ -2,6 +2,7 @@
 
 #include <map>
 #include <string>
+#include <vector>
 
 namespace automix::domain {
 
@@ -11,6 +12,7 @@ struct RenderSettings {
   int outputBitDepth = 24;
   std::string outputPath;
   std::string outputFormat = "auto";
+  bool writePerExportReportJson = true;
   std::string exportSpeedMode = "final";
   std::string gpuExecutionProvider = "auto";
   int lossyBitrateKbps = 320;
@@ -21,7 +23,10 @@ struct RenderSettings {
   bool preferHardwareAcceleration = true;
   std::string metadataPolicy = "copy_all";
   std::map<std::string, std::string> metadataTemplate;
-  std::string rendererName = "BuiltIn";
+  std::string rendererName = "PhaseLimiter";
+  bool rendererChainEnabled = false;
+  std::string rendererChainMode = "logical_all";
+  std::vector<std::string> rendererChain;
   std::string externalRendererPath;
   int externalRendererTimeoutMs = 300000;
 };

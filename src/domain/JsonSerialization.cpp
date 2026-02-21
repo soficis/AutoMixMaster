@@ -72,6 +72,7 @@ void to_json(Json& j, const RenderSettings& value) {
            {"outputBitDepth", value.outputBitDepth},
            {"outputPath", value.outputPath},
            {"outputFormat", value.outputFormat},
+           {"writePerExportReportJson", value.writePerExportReportJson},
            {"exportSpeedMode", value.exportSpeedMode},
            {"gpuExecutionProvider", value.gpuExecutionProvider},
            {"lossyBitrateKbps", value.lossyBitrateKbps},
@@ -83,6 +84,9 @@ void to_json(Json& j, const RenderSettings& value) {
            {"metadataPolicy", value.metadataPolicy},
            {"metadataTemplate", value.metadataTemplate},
            {"rendererName", value.rendererName},
+           {"rendererChainEnabled", value.rendererChainEnabled},
+           {"rendererChainMode", value.rendererChainMode},
+           {"rendererChain", value.rendererChain},
            {"externalRendererPath", value.externalRendererPath},
            {"externalRendererTimeoutMs", value.externalRendererTimeoutMs}};
 }
@@ -93,6 +97,7 @@ void from_json(const Json& j, RenderSettings& value) {
   value.outputBitDepth = j.value("outputBitDepth", 24);
   value.outputPath = j.value("outputPath", "");
   value.outputFormat = j.value("outputFormat", "auto");
+  value.writePerExportReportJson = j.value("writePerExportReportJson", true);
   value.exportSpeedMode = j.value("exportSpeedMode", "final");
   if (value.exportSpeedMode != "final" &&
       value.exportSpeedMode != "balanced" &&
@@ -115,7 +120,13 @@ void from_json(const Json& j, RenderSettings& value) {
     value.metadataPolicy = "copy_all";
   }
   value.metadataTemplate = j.value("metadataTemplate", std::map<std::string, std::string>{});
-  value.rendererName = j.value("rendererName", "BuiltIn");
+  value.rendererName = j.value("rendererName", "PhaseLimiter");
+  value.rendererChainEnabled = j.value("rendererChainEnabled", false);
+  value.rendererChainMode = j.value("rendererChainMode", "logical_all");
+  if (value.rendererChainMode != "logical_all" && value.rendererChainMode != "master_then_rsgain") {
+    value.rendererChainMode = "logical_all";
+  }
+  value.rendererChain = j.value("rendererChain", std::vector<std::string>{});
   value.externalRendererPath = j.value("externalRendererPath", "");
   value.externalRendererTimeoutMs = j.value("externalRendererTimeoutMs", 300000);
 }
@@ -260,6 +271,10 @@ void to_json(Json& j, const Session& value) {
   j = Json{{"schemaVersion", value.schemaVersion},
            {"sessionName", value.sessionName},
            {"residualBlend", value.residualBlend},
+           {"aiStemsEnabled", value.aiStemsEnabled},
+           {"batchRecursiveEnabled", value.batchRecursiveEnabled},
+           {"selectedMasterPreset", toString(value.selectedMasterPreset)},
+           {"selectedPlatformPreset", toString(value.selectedPlatformPreset)},
            {"stems", value.stems},
            {"buses", value.buses},
            {"renderSettings", value.renderSettings},
@@ -291,6 +306,10 @@ void from_json(const Json& j, Session& value) {
   value.schemaVersion = j.value("schemaVersion", 2);
   value.sessionName = j.value("sessionName", "Untitled Session");
   value.residualBlend = std::clamp(j.value("residualBlend", 0.0), 0.0, 10.0);
+  value.aiStemsEnabled = j.value("aiStemsEnabled", false);
+  value.batchRecursiveEnabled = j.value("batchRecursiveEnabled", false);
+  value.selectedMasterPreset = masterPresetFromString(j.value("selectedMasterPreset", "udio_optimized"));
+  value.selectedPlatformPreset = masterPresetFromString(j.value("selectedPlatformPreset", "youtube"));
   value.stems = j.value("stems", std::vector<Stem>{});
   value.buses = j.value("buses", std::vector<Bus>{});
   value.projectProfileId = j.value("projectProfileId", "default");

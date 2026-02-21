@@ -37,7 +37,6 @@ RenderResult BuiltInRenderer::render(const domain::Session& session,
   auto renderState = pipeline.renderRawMix(
       session, settings,
       [&](const engine::RenderProgress& progress) {
-        result.logs.push_back(progress.stage + " " + std::to_string(progress.fraction));
         if (onProgress) {
           onProgress(progress.fraction, progress.stage);
         }
@@ -105,46 +104,52 @@ RenderResult BuiltInRenderer::render(const domain::Session& session,
                settings.mp3VbrQuality,
                exportMetadata);
 
-  const std::filesystem::path reportPath = outputPath.string() + ".report.json";
-  nlohmann::json report = {
-      {"renderer", "BuiltIn"},
-      {"outputAudioPath", outputPath.string()},
-      {"integratedLufs", masteringReport.integratedLufs},
-      {"shortTermLufs", masteringReport.shortTermLufs},
-      {"loudnessRange", masteringReport.loudnessRange},
-      {"samplePeakDbfs", masteringReport.samplePeakDbfs},
-      {"truePeakDbtp", masteringReport.truePeakDbtp},
-      {"crestDb", masteringReport.crestDb},
-      {"monoCorrelation", masteringReport.monoCorrelation},
-      {"spectrumLow", spectrumMetrics.lowEnergy},
-      {"spectrumMid", spectrumMetrics.midEnergy},
-      {"spectrumHigh", spectrumMetrics.highEnergy},
-      {"stereoCorrelation", spectrumMetrics.stereoCorrelation},
-      {"masterPreset", plan.presetName},
-      {"masterPlanSource", usedSessionMasterPlan ? "session" : "heuristic"},
-      {"mixPlanSource", session.mixPlan.has_value() ? "session" : "heuristic"},
-      {"exportSpeedMode", settings.exportSpeedMode},
-      {"outputFormat", settings.outputFormat},
-      {"lossyBitrateKbps", settings.lossyBitrateKbps},
-      {"lossyQuality", settings.lossyQuality},
-      {"mp3Mode", settings.mp3UseVbr ? "vbr" : "cbr"},
-      {"mp3VbrQuality", settings.mp3VbrQuality},
-      {"metadataPolicy", settings.metadataPolicy},
-      {"targetLufs", plan.targetLufs},
-      {"targetTruePeakDbtp", plan.truePeakDbtp},
-      {"limiterCeilingDb", plan.limiterCeilingDb},
-      {"activeModules", masteringReport.activeModules},
-      {"decisionLog", plan.decisionLog},
-      {"renderLogs", renderState.logs},
-  };
+  std::filesystem::path reportPath;
+  if (settings.writePerExportReportJson) {
+    reportPath = outputPath.string() + ".report.json";
+    nlohmann::json report = {
+        {"renderer", "BuiltIn"},
+        {"outputAudioPath", outputPath.string()},
+        {"integratedLufs", masteringReport.integratedLufs},
+        {"shortTermLufs", masteringReport.shortTermLufs},
+        {"loudnessRange", masteringReport.loudnessRange},
+        {"samplePeakDbfs", masteringReport.samplePeakDbfs},
+        {"truePeakDbtp", masteringReport.truePeakDbtp},
+        {"crestDb", masteringReport.crestDb},
+        {"monoCorrelation", masteringReport.monoCorrelation},
+        {"spectrumLow", spectrumMetrics.lowEnergy},
+        {"spectrumMid", spectrumMetrics.midEnergy},
+        {"spectrumHigh", spectrumMetrics.highEnergy},
+        {"stereoCorrelation", spectrumMetrics.stereoCorrelation},
+        {"masterPreset", plan.presetName},
+        {"masterPlanSource", usedSessionMasterPlan ? "session" : "heuristic"},
+        {"mixPlanSource", session.mixPlan.has_value() ? "session" : "heuristic"},
+        {"exportSpeedMode", settings.exportSpeedMode},
+        {"outputFormat", settings.outputFormat},
+        {"lossyBitrateKbps", settings.lossyBitrateKbps},
+        {"lossyQuality", settings.lossyQuality},
+        {"mp3Mode", settings.mp3UseVbr ? "vbr" : "cbr"},
+        {"mp3VbrQuality", settings.mp3VbrQuality},
+        {"metadataPolicy", settings.metadataPolicy},
+        {"targetLufs", plan.targetLufs},
+        {"targetTruePeakDbtp", plan.truePeakDbtp},
+        {"limiterCeilingDb", plan.limiterCeilingDb},
+        {"activeModules", masteringReport.activeModules},
+        {"decisionLog", plan.decisionLog},
+        {"renderLogs", renderState.logs},
+    };
 
-  std::ofstream out(reportPath);
-  out << report.dump(2);
+    std::ofstream out(reportPath);
+    out << report.dump(2);
+  }
 
   result.success = true;
   result.outputAudioPath = outputPath.string();
-  result.reportPath = reportPath.string();
+  result.reportPath = reportPath.empty() ? std::string {} : reportPath.string();
   result.logs.insert(result.logs.end(), renderState.logs.begin(), renderState.logs.end());
+  if (!settings.writePerExportReportJson) {
+    result.logs.push_back("Report sidecar disabled (.report.json not written).");
+  }
   result.logs.push_back("Built-in renderer completed.");
   return result;
 }

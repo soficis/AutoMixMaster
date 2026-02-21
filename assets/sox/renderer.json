@@ -1,0 +1,9 @@
+{
+  "id": "SoX",
+  "name": "SoX",
+  "integration": "bundled-cli",
+  "licenseId": "GPL-2.0-or-later",
+  "binaryPath": "bin/sox",
+  "envOverride": "SOX_BIN",
+  "homePage": "https://sourceforge.net/projects/sox/"
+}

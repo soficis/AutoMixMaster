@@ -104,13 +104,23 @@ add_library(automix_core
   src/automaster/HeuristicAutoMasterStrategy.cpp
   src/automaster/OriginalMixReference.cpp
   src/renderers/BuiltInRenderer.cpp
+  src/renderers/BundledToolDiscovery.cpp
   src/renderers/ExternalLimiterRenderer.cpp
+  src/renderers/FfmpegDiscovery.cpp
+  src/renderers/FfmpegRenderer.cpp
   src/renderers/RendererRegistry.cpp
   src/renderers/PhaseLimiterDiscovery.cpp
   src/renderers/PhaseLimiterRenderer.cpp
   src/renderers/RendererFactory.cpp
+  src/renderers/RendererPipeline.cpp
+  src/renderers/RsgainDiscovery.cpp
+  src/renderers/RsgainRenderer.cpp
+  src/renderers/SoxDiscovery.cpp
+  src/renderers/SoxRenderer.cpp
   src/platform/ThirdPartyComponentRegistry.cpp
   src/ai/HuggingFaceModelHub.cpp
+  src/ai/GitHubReleaseModelHub.cpp
+  src/ai/ModelCatalogValidator.cpp
   src/ai/ModelPackLoader.cpp
   src/ai/ModelManager.cpp
   src/ai/ModelStrategy.cpp
@@ -220,6 +230,7 @@ endif()
 juce_add_gui_app(AutoMixMasterApp
   PRODUCT_NAME "AutoMixMaster"
   COMPANY_NAME "AutoMixMaster"
+  ICON_BIG "assets/icon.png"
 )
 
 target_sources(AutoMixMasterApp PRIVATE
@@ -322,8 +333,11 @@ if(BUILD_TESTING)
     tests/unit/StemOriginSafetyTests.cpp
     tests/unit/ResidualBlendTests.cpp
     tests/unit/PhaseLimiterDiscoveryTests.cpp
+    tests/unit/BundledToolDiscoveryTests.cpp
     tests/unit/PhaseLimiterRendererTests.cpp
     tests/unit/ExternalLimiterRendererTests.cpp
+    tests/unit/RendererFactoryTests.cpp
+    tests/unit/RendererPipelineTests.cpp
     tests/unit/RendererRegistryTests.cpp
     tests/unit/RendererRegistryTrustPolicyTests.cpp
     tests/unit/ProjectProfileTests.cpp

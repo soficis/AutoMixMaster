@@ -8,7 +8,7 @@
 #include <sstream>
 
 #include "analysis/StemHealthAssistant.h"
-#include "renderers/RendererFactory.h"
+#include "renderers/RendererPipeline.h"
 #include "util/StringUtils.h"
 
 namespace automix::app {
@@ -167,15 +167,13 @@ void ExportController::runExport(const domain::Session& session,
           emitProgress(callbacks, 0.32);
         }
 
-        auto renderer = renderers::createRenderer(settings.rendererName);
-
         std::mutex progressMutex;
         auto lastProgressEmit = std::chrono::steady_clock::time_point {};
         double lastProgressFraction = -1.0;
         std::string lastProgressStage;
         auto capturedCallbacks = callbacks;
 
-        renderResult = renderer->render(
+        renderResult = renderers::renderWithPipeline(
             session,
             settings,
             [capturedCallbacks, &progressMutex, &lastProgressEmit, &lastProgressFraction, &lastProgressStage](
@@ -201,7 +199,7 @@ void ExportController::runExport(const domain::Session& session,
                 return;
               }
 
-              if (stage == "Mix render cache hit") {
+              if (stage.find("Mix render cache hit") != std::string::npos) {
                 if (capturedCallbacks.onStatus) {
                   capturedCallbacks.onStatus("Export: Using cached mix render (fast path)");
                 }
@@ -215,7 +213,7 @@ void ExportController::runExport(const domain::Session& session,
                                            std::to_string(static_cast<int>(progress * 100.0)) + "%)");
               }
               emitProgress(capturedCallbacks, 0.35 + (0.63 * progress));
-              if (progress >= 0.999 || stage != "Summing stem buses") {
+              if (progress >= 0.999 || stage.find("Summing stem buses") == std::string::npos) {
                 if (capturedCallbacks.onTaskHistory) {
                   capturedCallbacks.onTaskHistory("Export " + stage + " " +
                                                    std::to_string(static_cast<int>(progress * 100.0)) + "%");

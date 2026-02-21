@@ -11,7 +11,10 @@
 #include <nlohmann/json.hpp>
 
 #include "renderers/ExternalLimiterRenderer.h"
+#include "renderers/FfmpegDiscovery.h"
 #include "renderers/PhaseLimiterDiscovery.h"
+#include "renderers/RsgainDiscovery.h"
+#include "renderers/SoxDiscovery.h"
 #include "util/HashUtils.h"
 
 namespace automix::renderers {
@@ -146,6 +149,78 @@ RendererInfo makePhaseLimiterInfo() {
   info.discovery = binaryInfo.has_value() ? "Auto-discovered in assets, PHASELIMITER_BIN, or downloaded cache."
                                           : "Not found in assets. Bundle assets/phaselimiter or set PHASELIMITER_BIN. Auto-download uses official release URLs by default.";
   info.trustPolicyStatus = "unsigned";
+
+  if (binaryInfo.has_value()) {
+    info.binaryPath = binaryInfo->executablePath;
+  }
+
+  return info;
+}
+
+RendererInfo makeFfmpegInfo() {
+  FfmpegDiscovery discovery;
+  const auto binaryInfo = discovery.find();
+
+  RendererInfo info;
+  info.id = "FFmpeg";
+  info.name = "FFmpeg";
+  info.version = "external";
+  info.licenseId = "GPL-3.0-or-later compatible";
+  info.linkMode = RendererLinkMode::External;
+  info.bundledByDefault = true;
+  info.available = binaryInfo.has_value();
+  info.discovery = binaryInfo.has_value()
+                       ? "Auto-discovered in assets/ffmpeg, FFMPEG_BIN, or PATH."
+                       : "Not found. Bundle assets/ffmpeg/bin/ffmpeg(.exe) or set FFMPEG_BIN.";
+  info.trustPolicyStatus = "trusted:bundled";
+
+  if (binaryInfo.has_value()) {
+    info.binaryPath = binaryInfo->executablePath;
+  }
+
+  return info;
+}
+
+RendererInfo makeSoxInfo() {
+  SoxDiscovery discovery;
+  const auto binaryInfo = discovery.find();
+
+  RendererInfo info;
+  info.id = "SoX";
+  info.name = "SoX";
+  info.version = "external";
+  info.licenseId = "GPL-2.0-or-later";
+  info.linkMode = RendererLinkMode::External;
+  info.bundledByDefault = true;
+  info.available = binaryInfo.has_value();
+  info.discovery = binaryInfo.has_value()
+                       ? "Auto-discovered in assets/sox, SOX_BIN, or PATH."
+                       : "Not found. Bundle assets/sox/bin/sox(.exe) or set SOX_BIN.";
+  info.trustPolicyStatus = "trusted:bundled";
+
+  if (binaryInfo.has_value()) {
+    info.binaryPath = binaryInfo->executablePath;
+  }
+
+  return info;
+}
+
+RendererInfo makeRsgainInfo() {
+  RsgainDiscovery discovery;
+  const auto binaryInfo = discovery.find();
+
+  RendererInfo info;
+  info.id = "rsgain";
+  info.name = "rsgain";
+  info.version = "external";
+  info.licenseId = "BSD-2-Clause (GPL-compatible)";
+  info.linkMode = RendererLinkMode::External;
+  info.bundledByDefault = true;
+  info.available = binaryInfo.has_value();
+  info.discovery = binaryInfo.has_value()
+                       ? "Auto-discovered in assets/rsgain, RSGAIN_BIN, or PATH."
+                       : "Not found. Bundle assets/rsgain/bin/rsgain(.exe) or set RSGAIN_BIN.";
+  info.trustPolicyStatus = "trusted:bundled";
 
   if (binaryInfo.has_value()) {
     info.binaryPath = binaryInfo->executablePath;
@@ -367,9 +442,12 @@ std::vector<RendererInfo> RendererRegistry::list(const std::vector<ExternalRende
 
   std::vector<RendererInfo> infos;
   const auto assetConfigs = discoverAssetExternalRenderers(trustPolicy);
-  infos.reserve(2 + externalConfigs.size() + assetConfigs.size());
+  infos.reserve(5 + externalConfigs.size() + assetConfigs.size());
   infos.push_back(makeBuiltInInfo());
   infos.push_back(makePhaseLimiterInfo());
+  infos.push_back(makeFfmpegInfo());
+  infos.push_back(makeSoxInfo());
+  infos.push_back(makeRsgainInfo());
 
   std::set<std::string> seenExternalIds;
   auto appendConfig = [&](const ExternalRendererConfig& config) {

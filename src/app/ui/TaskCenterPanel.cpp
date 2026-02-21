@@ -26,11 +26,19 @@ TaskCenterPanel::TaskCenterPanel() : progressBar_(progressValue_) {
 
   historyEditor_.setMultiLine(true);
   historyEditor_.setReadOnly(true);
+  historyEditor_.setCaretVisible(true);
+  historyEditor_.setWantsKeyboardFocus(true);
+  historyEditor_.setMouseClickGrabsKeyboardFocus(true);
+  historyEditor_.setPopupMenuEnabled(true);
   historyEditor_.setScrollbarsShown(true);
   historyEditor_.setFont(juce::Font(juce::FontOptions{}
       .withName(juce::Font::getDefaultMonospacedFontName())
       .withPointHeight(12.0f)));
   historyEditor_.setText("Task history will appear here.");
+
+  copyLogButton_.onClick = [this] {
+    juce::SystemClipboard::copyTextToClipboard(historyEditor_.getText());
+  };
 
   cancelButton_.setEnabled(false);
   cancelButton_.onClick = [this] {
@@ -42,6 +50,7 @@ TaskCenterPanel::TaskCenterPanel() : progressBar_(progressValue_) {
   addAndMakeVisible(stateBadge_);
   addAndMakeVisible(progressBar_);
   addAndMakeVisible(progressLabel_);
+  addAndMakeVisible(copyLogButton_);
   addAndMakeVisible(cancelButton_);
   addAndMakeVisible(historyEditor_);
 }
@@ -60,6 +69,7 @@ void TaskCenterPanel::resized() {
   // Top row: state badge + task label + progress + cancel
   auto topRow = area.removeFromTop(24);
   cancelButton_.setBounds(topRow.removeFromRight(64).reduced(1));
+  copyLogButton_.setBounds(topRow.removeFromRight(84).reduced(1));
   progressLabel_.setBounds(topRow.removeFromRight(48).reduced(1));
   auto progressArea = topRow.removeFromRight(std::min(220, topRow.getWidth() / 2));
   progressBar_.setBounds(progressArea.reduced(2));

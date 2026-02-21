@@ -142,6 +142,8 @@ TEST_CASE("ImportController imports selected files", "[controllers][import]") {
   REQUIRE(waitFor([&]() { return result.has_value(); }));
   REQUIRE(result->stems.size() == 1);
   REQUIRE(result->stems.front().filePath == wavPath.string());
+  REQUIRE(result->originalMixPath.has_value());
+  REQUIRE(result->originalMixPath.value() == wavPath.string());
 
   std::filesystem::remove_all(testDir);
 }
@@ -189,6 +191,7 @@ TEST_CASE("ImportController cancellation terminates early", "[controllers][impor
   REQUIRE(waitFor([&]() { return result.has_value(); }));
   REQUIRE(result->cancelled);
   REQUIRE(result->stems.empty());
+  REQUIRE_FALSE(result->originalMixPath.has_value());
 
   std::filesystem::remove_all(testDir);
 }
@@ -272,6 +275,32 @@ TEST_CASE("ModelController check updates respects pre-set cancel", "[controllers
   REQUIRE(waitFor([&]() { return cancelled.has_value(); }));
   REQUIRE(cancelled.value());
   REQUIRE(fakeState.modelInfoCalls == 0);
+}
+
+TEST_CASE("ModelController uninstall respects pre-set cancel", "[controllers][model][cancel]") {
+  juce::ScopedJuceInitialiser_GUI juceInit;
+
+  juce::ThreadPool pool(1);
+  automix::ai::ModelManager modelManager;
+  FakeModelHubState fakeState;
+  std::optional<bool> cancelled;
+
+  automix::app::ModelController::Callbacks callbacks;
+  callbacks.onUninstallComplete = [&](const bool value) {
+    cancelled = value;
+  };
+
+  automix::app::ModelController controller(
+      modelManager,
+      pool,
+      std::move(callbacks),
+      makeFakeModelHubOps(fakeState));
+
+  std::atomic_bool cancelFlag {true};
+  controller.uninstallModel("fake/install-model", cancelFlag);
+
+  REQUIRE(waitFor([&]() { return cancelled.has_value(); }));
+  REQUIRE(cancelled.value());
 }
 
 TEST_CASE("ExportController returns cancelled result when cancel flag is pre-set", "[controllers][export][cancel]") {

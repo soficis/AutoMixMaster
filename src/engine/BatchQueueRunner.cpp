@@ -2,15 +2,19 @@
 
 #include <algorithm>
 #include <cctype>
+#include <ctime>
 #include <exception>
+#include <iomanip>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "analysis/StemAnalyzer.h"
 #include "automix/HeuristicAutoMixStrategy.h"
-#include "renderers/RendererFactory.h"
+#include "renderers/RendererPipeline.h"
 #include "util/StringUtils.h"
 #include "util/WavWriter.h"
 
@@ -50,6 +54,7 @@ std::string trimTokenSeparators(std::string value) {
 }
 
 std::string sanitizeOutputStem(std::string value) {
+  static constexpr size_t kMaxStemLength = 80;
   value = trimTokenSeparators(std::move(value));
   if (value.empty()) {
     return "song";
@@ -73,7 +78,67 @@ std::string sanitizeOutputStem(std::string value) {
     }
   }
 
+  if (value.size() > kMaxStemLength) {
+    value.resize(kMaxStemLength);
+    value = trimTokenSeparators(std::move(value));
+  }
+
+  if (value.empty()) {
+    return "song";
+  }
+
   return value;
+}
+
+std::string currentDateStamp() {
+  const std::time_t now = std::time(nullptr);
+  std::tm localTime{};
+#if defined(_WIN32)
+  localtime_s(&localTime, &now);
+#else
+  localtime_r(&now, &localTime);
+#endif
+
+  std::ostringstream output;
+  output << std::put_time(&localTime, "%Y%m%d");
+  return output.str();
+}
+
+std::string buildOutputFilename(const std::string& sessionName, const std::string& extension) {
+  const auto safeTitle = sanitizeOutputStem(sessionName);
+  return safeTitle + "_AutoMixMaster_" + currentDateStamp() + "_01" + extension;
+}
+
+std::string toPathKey(const std::filesystem::path& path) {
+  return toLower(path.lexically_normal().string());
+}
+
+std::filesystem::path buildUniqueOutputPath(const std::filesystem::path& outputFolder,
+                                            const std::string& sessionName,
+                                            const std::string& extension,
+                                            std::unordered_set<std::string>& reservedPaths) {
+  const auto safeTitle = sanitizeOutputStem(sessionName);
+  const auto dateStamp = currentDateStamp();
+
+  for (int index = 1; index <= 9999; ++index) {
+    std::ostringstream sequence;
+    sequence << std::setw(2) << std::setfill('0') << index;
+    const auto fileName = safeTitle + "_AutoMixMaster_" + dateStamp + "_" + sequence.str() + extension;
+    const auto candidate = outputFolder / fileName;
+    const auto key = toPathKey(candidate);
+    if (reservedPaths.contains(key)) {
+      continue;
+    }
+    std::error_code existsError;
+    if (!std::filesystem::exists(candidate, existsError) && !existsError) {
+      reservedPaths.insert(key);
+      return candidate;
+    }
+  }
+
+  const auto fallback = outputFolder / buildOutputFilename(sessionName, extension);
+  reservedPaths.insert(toPathKey(fallback));
+  return fallback;
 }
 
 struct ParsedStemName {
@@ -258,6 +323,7 @@ std::vector<domain::BatchItem> BatchQueueRunner::buildItemsFromFolder(const std:
     }
   }
 
+  std::unordered_set<std::string> reservedPaths;
   items.reserve(groupedFiles.size());
   for (auto& [groupName, grouped] : groupedFiles) {
     std::sort(grouped.stems.begin(), grouped.stems.end(), [](const auto& left, const auto& right) {
@@ -282,7 +348,7 @@ std::vector<domain::BatchItem> BatchQueueRunner::buildItemsFromFolder(const std:
     domain::BatchItem item;
     item.session = session;
     item.sourcePath = inputFolder;
-    item.outputPath = outputFolder / (sanitizeOutputStem(session.sessionName) + "_master.wav");
+    item.outputPath = buildUniqueOutputPath(outputFolder, session.sessionName, ".wav", reservedPaths);
     item.status = domain::BatchItemStatus::Pending;
     items.push_back(item);
   }
@@ -400,6 +466,24 @@ domain::BatchResult BatchQueueRunner::process(domain::BatchJob& job,
     }
   }
 
+  std::unordered_set<std::string> reservedPaths;
+  for (const auto& item : job.items) {
+    if (!item.outputPath.empty()) {
+      reservedPaths.insert(toPathKey(item.outputPath));
+    }
+  }
+
+  for (auto& item : job.items) {
+    auto settings = job.settings.renderSettings;
+    const std::string resolvedFormat = util::WavWriter::resolveFormat(item.outputPath, settings.outputFormat);
+    const std::string requiredExtension = extensionForFormat(resolvedFormat);
+
+    if (!item.outputPath.empty()) {
+      reservedPaths.erase(toPathKey(item.outputPath));
+    }
+    item.outputPath = buildUniqueOutputPath(job.settings.outputFolder, item.session.sessionName, requiredExtension, reservedPaths);
+  }
+
   std::atomic<size_t> renderIndex{0};
 
   const auto renderWorker = [&]() {
@@ -438,19 +522,11 @@ domain::BatchResult BatchQueueRunner::process(domain::BatchJob& job,
       }
 
       const std::string resolvedFormat = util::WavWriter::resolveFormat(item.outputPath, settings.outputFormat);
-      const std::string requiredExtension = extensionForFormat(resolvedFormat);
-      if (item.outputPath.empty()) {
-        item.outputPath = job.settings.outputFolder / (item.session.sessionName + "_master" + requiredExtension);
-      } else if (toLower(item.outputPath.extension().string()) != requiredExtension) {
-        item.outputPath.replace_extension(requiredExtension);
-      }
-
       settings.outputFormat = resolvedFormat;
       settings.outputPath = item.outputPath.string();
 
       try {
-        auto renderer = renderers::createRenderer(settings.rendererName);
-        const auto renderResult = renderer->render(
+        const auto renderResult = renderers::renderWithPipeline(
             item.session,
             settings,
             [&](const double stageProgress, const std::string& stage) {

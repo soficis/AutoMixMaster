@@ -2,14 +2,19 @@
 
 #include <algorithm>
 #include <cctype>
+#include <ctime>
 #include <exception>
+#include <iomanip>
 #include <mutex>
+#include <optional>
+#include <sstream>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "analysis/StemAnalyzer.h"
 #include "automix/HeuristicAutoMixStrategy.h"
-#include "renderers/RendererFactory.h"
+#include "renderers/RendererPipeline.h"
 #include "util/StringUtils.h"
 #include "util/WavWriter.h"
 
@@ -18,6 +23,7 @@ namespace {
 
 using ::automix::util::toLower;
 using ::automix::util::extensionForFormat;
+using ::automix::util::trim;
 
 bool hasAudioExtension(const std::filesystem::path& path) {
   const std::string ext = toLower(path.extension().string());
@@ -32,38 +38,225 @@ void runAnalysisForItem(domain::BatchItem& item) {
   item.session.mixPlan = autoMix.buildPlan(item.session, analysisEntries, 1.0);
 }
 
-std::pair<std::string, std::string> splitGroupAndStem(const std::filesystem::path& filePath) {
-  const std::string stemName = toLower(filePath.stem().string());
-  static const std::vector<std::string> suffixes = {
-      "_vocals", "-vocals", "_vocal", "-vocal", "_vox", "-vox",
-      "_bass", "-bass", "_drums", "-drums", "_drum", "-drum",
-      "_other", "-other", "_music", "-music"};
+bool isTrimSeparator(const char value) {
+  return std::isspace(static_cast<unsigned char>(value)) != 0 || value == '_' || value == '-' || value == '.';
+}
 
-  for (const auto& suffix : suffixes) {
-    if (stemName.size() <= suffix.size()) {
-      continue;
-    }
-    if (stemName.ends_with(suffix)) {
-      const std::string group = stemName.substr(0, stemName.size() - suffix.size());
-      const std::string role = suffix.substr(1);
-      return {group.empty() ? "song" : group, role};
+std::string trimTokenSeparators(std::string value) {
+  value = trim(std::move(value));
+  while (!value.empty() && isTrimSeparator(value.front())) {
+    value.erase(value.begin());
+  }
+  while (!value.empty() && isTrimSeparator(value.back())) {
+    value.pop_back();
+  }
+  return value;
+}
+
+std::string sanitizeOutputStem(std::string value) {
+  static constexpr size_t kMaxStemLength = 80;
+  value = trimTokenSeparators(std::move(value));
+  if (value.empty()) {
+    return "song";
+  }
+
+  for (char& ch : value) {
+    switch (ch) {
+      case '<':
+      case '>':
+      case ':':
+      case '"':
+      case '/':
+      case '\\':
+      case '|':
+      case '?':
+      case '*':
+        ch = '_';
+        break;
+      default:
+        break;
     }
   }
 
-  return {stemName, "mix"};
+  if (value.size() > kMaxStemLength) {
+    value.resize(kMaxStemLength);
+    value = trimTokenSeparators(std::move(value));
+  }
+
+  if (value.empty()) {
+    return "song";
+  }
+
+  return value;
+}
+
+std::string currentDateStamp() {
+  const std::time_t now = std::time(nullptr);
+  std::tm localTime{};
+#if defined(_WIN32)
+  localtime_s(&localTime, &now);
+#else
+  localtime_r(&now, &localTime);
+#endif
+
+  std::ostringstream output;
+  output << std::put_time(&localTime, "%Y%m%d");
+  return output.str();
+}
+
+std::string buildOutputFilename(const std::string& sessionName, const std::string& extension) {
+  const auto safeTitle = sanitizeOutputStem(sessionName);
+  return safeTitle + "_AutoMixMaster_" + currentDateStamp() + "_01" + extension;
+}
+
+std::string toPathKey(const std::filesystem::path& path) {
+  return toLower(path.lexically_normal().string());
+}
+
+std::filesystem::path buildUniqueOutputPath(const std::filesystem::path& outputFolder,
+                                            const std::string& sessionName,
+                                            const std::string& extension,
+                                            std::unordered_set<std::string>& reservedPaths) {
+  const auto safeTitle = sanitizeOutputStem(sessionName);
+  const auto dateStamp = currentDateStamp();
+
+  for (int index = 1; index <= 9999; ++index) {
+    std::ostringstream sequence;
+    sequence << std::setw(2) << std::setfill('0') << index;
+    const auto fileName = safeTitle + "_AutoMixMaster_" + dateStamp + "_" + sequence.str() + extension;
+    const auto candidate = outputFolder / fileName;
+    const auto key = toPathKey(candidate);
+    if (reservedPaths.contains(key)) {
+      continue;
+    }
+    std::error_code existsError;
+    if (!std::filesystem::exists(candidate, existsError) && !existsError) {
+      reservedPaths.insert(key);
+      return candidate;
+    }
+  }
+
+  const auto fallback = outputFolder / buildOutputFilename(sessionName, extension);
+  reservedPaths.insert(toPathKey(fallback));
+  return fallback;
+}
+
+struct ParsedStemName {
+  std::string groupKey;
+  std::string groupDisplay;
+  std::string roleToken;
+};
+
+std::optional<ParsedStemName> parseParenthesizedStemName(const std::string& originalStemName) {
+  const auto lowerStemName = toLower(originalStemName);
+  if (lowerStemName.size() < 4 || lowerStemName.back() != ')') {
+    return std::nullopt;
+  }
+
+  const auto openPos = lowerStemName.find_last_of('(');
+  if (openPos == std::string::npos || openPos == 0 || openPos + 1 >= lowerStemName.size() - 1) {
+    return std::nullopt;
+  }
+
+  const auto roleToken = trimTokenSeparators(lowerStemName.substr(openPos + 1, lowerStemName.size() - openPos - 2));
+  auto groupDisplay = trimTokenSeparators(originalStemName.substr(0, openPos));
+  if (roleToken.empty() || groupDisplay.empty()) {
+    return std::nullopt;
+  }
+
+  return ParsedStemName{
+      .groupKey = toLower(groupDisplay),
+      .groupDisplay = groupDisplay,
+      .roleToken = roleToken,
+  };
+}
+
+std::optional<ParsedStemName> parseSuffixedStemName(const std::string& originalStemName) {
+  static const std::vector<std::string> roleTokens = {
+      "vocals", "vocal", "vox",
+      "bass",
+      "drums", "drum", "kick", "snare",
+      "guitar", "gtr",
+      "piano", "keys", "key", "synth",
+      "fx", "effects", "sfx",
+      "other", "music",
+  };
+
+  const auto lowerStemName = toLower(originalStemName);
+  static constexpr char separators[] = {'_', '-', ' '};
+
+  for (const auto& role : roleTokens) {
+    for (const auto separator : separators) {
+      const std::string suffix = std::string(1, separator) + role;
+      if (lowerStemName.size() <= suffix.size() || !lowerStemName.ends_with(suffix)) {
+        continue;
+      }
+
+      auto groupDisplay = trimTokenSeparators(originalStemName.substr(0, originalStemName.size() - suffix.size()));
+      if (groupDisplay.empty()) {
+        continue;
+      }
+
+      return ParsedStemName{
+          .groupKey = toLower(groupDisplay),
+          .groupDisplay = groupDisplay,
+          .roleToken = role,
+      };
+    }
+  }
+
+  return std::nullopt;
+}
+
+ParsedStemName parseStemName(const std::filesystem::path& filePath) {
+  const auto originalStemName = trimTokenSeparators(filePath.stem().string());
+  if (originalStemName.empty()) {
+    return ParsedStemName{.groupKey = "song", .groupDisplay = "song", .roleToken = "mix"};
+  }
+
+  if (const auto parsed = parseParenthesizedStemName(originalStemName); parsed.has_value()) {
+    return parsed.value();
+  }
+
+  if (const auto parsed = parseSuffixedStemName(originalStemName); parsed.has_value()) {
+    return parsed.value();
+  }
+
+  return ParsedStemName{
+      .groupKey = toLower(originalStemName),
+      .groupDisplay = originalStemName,
+      .roleToken = "mix",
+  };
 }
 
 domain::StemRole roleFromSuffix(const std::string& suffix) {
-  if (suffix == "vocals" || suffix == "vocal" || suffix == "vox") {
+  const auto normalized = toLower(trimTokenSeparators(suffix));
+
+  if (normalized == "vocals" || normalized == "vocal" || normalized == "vox") {
     return domain::StemRole::Vocals;
   }
-  if (suffix == "bass") {
+  if (normalized == "bass") {
     return domain::StemRole::Bass;
   }
-  if (suffix == "drums" || suffix == "drum") {
+  if (normalized == "drums" || normalized == "drum") {
     return domain::StemRole::Drums;
   }
-  if (suffix == "other" || suffix == "music") {
+  if (normalized == "kick") {
+    return domain::StemRole::Kick;
+  }
+  if (normalized == "snare") {
+    return domain::StemRole::Snare;
+  }
+  if (normalized == "guitar" || normalized == "gtr") {
+    return domain::StemRole::Guitar;
+  }
+  if (normalized == "piano" || normalized == "keys" || normalized == "key" || normalized == "synth") {
+    return domain::StemRole::Keys;
+  }
+  if (normalized == "fx" || normalized == "effects" || normalized == "sfx") {
+    return domain::StemRole::Fx;
+  }
+  if (normalized == "other" || normalized == "music" || normalized == "mix") {
     return domain::StemRole::Music;
   }
   return domain::StemRole::Unknown;
@@ -72,42 +265,82 @@ domain::StemRole roleFromSuffix(const std::string& suffix) {
 } // namespace
 
 std::vector<domain::BatchItem> BatchQueueRunner::buildItemsFromFolder(const std::filesystem::path& inputFolder,
-                                                                       const std::filesystem::path& outputFolder) const {
+                                                                       const std::filesystem::path& outputFolder,
+                                                                       const bool recursiveScan) const {
   std::vector<domain::BatchItem> items;
   std::error_code error;
   if (!std::filesystem::exists(inputFolder, error) || error) {
     return items;
   }
 
-  std::unordered_map<std::string, std::vector<std::filesystem::path>> groupedFiles;
-  for (const auto& entry : std::filesystem::directory_iterator(inputFolder)) {
-    if (!entry.is_regular_file()) {
-      continue;
-    }
-    if (!hasAudioExtension(entry.path())) {
-      continue;
+  struct GroupedStemFile {
+    std::filesystem::path filePath;
+    std::string roleToken;
+  };
+  struct GroupedSessionFiles {
+    std::string displayName;
+    std::vector<GroupedStemFile> stems;
+  };
+
+  std::unordered_map<std::string, GroupedSessionFiles> groupedFiles;
+  auto appendFile = [&](const std::filesystem::path& filePath) {
+    if (!hasAudioExtension(filePath)) {
+      return;
     }
 
-    const auto [group, stem] = splitGroupAndStem(entry.path());
-    (void)stem;
-    groupedFiles[group].push_back(entry.path());
+    auto parsed = parseStemName(filePath);
+    std::string groupKey = parsed.groupKey;
+    std::string groupDisplay = parsed.groupDisplay;
+
+    std::error_code relativeError;
+    const auto relativeParent = std::filesystem::relative(filePath.parent_path(), inputFolder, relativeError);
+    if (!relativeError && !relativeParent.empty() && relativeParent != std::filesystem::path(".")) {
+      const auto relativeParentText = relativeParent.generic_string();
+      groupKey = toLower(relativeParentText) + "/" + groupKey;
+      groupDisplay = relativeParentText + "/" + groupDisplay;
+    }
+
+    auto& grouped = groupedFiles[groupKey];
+    if (grouped.displayName.empty()) {
+      grouped.displayName = groupDisplay;
+    }
+    grouped.stems.push_back({filePath, parsed.roleToken});
+  };
+
+  if (recursiveScan) {
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(inputFolder)) {
+      if (!entry.is_regular_file()) {
+        continue;
+      }
+      appendFile(entry.path());
+    }
+  } else {
+    for (const auto& entry : std::filesystem::directory_iterator(inputFolder)) {
+      if (!entry.is_regular_file()) {
+        continue;
+      }
+      appendFile(entry.path());
+    }
   }
 
+  std::unordered_set<std::string> reservedPaths;
   items.reserve(groupedFiles.size());
-  for (const auto& [groupName, files] : groupedFiles) {
+  for (auto& [groupName, grouped] : groupedFiles) {
+    std::sort(grouped.stems.begin(), grouped.stems.end(), [](const auto& left, const auto& right) {
+      return left.filePath.filename().string() < right.filePath.filename().string();
+    });
+
     domain::Session session;
-    session.sessionName = groupName;
-    session.stems.reserve(files.size());
+    session.sessionName = grouped.displayName.empty() ? groupName : grouped.displayName;
+    session.stems.reserve(grouped.stems.size());
 
     int stemIndex = 1;
-    for (const auto& file : files) {
-      const auto split = splitGroupAndStem(file);
-      const auto& suffix = split.second;
+    for (const auto& groupedStem : grouped.stems) {
       domain::Stem stem;
       stem.id = "stem_" + std::to_string(stemIndex++);
-      stem.name = file.stem().string();
-      stem.filePath = file.string();
-      stem.role = roleFromSuffix(suffix);
+      stem.name = groupedStem.filePath.stem().string();
+      stem.filePath = groupedStem.filePath.string();
+      stem.role = roleFromSuffix(groupedStem.roleToken);
       stem.origin = domain::StemOrigin::Separated;
       session.stems.push_back(stem);
     }
@@ -115,7 +348,7 @@ std::vector<domain::BatchItem> BatchQueueRunner::buildItemsFromFolder(const std:
     domain::BatchItem item;
     item.session = session;
     item.sourcePath = inputFolder;
-    item.outputPath = outputFolder / (groupName + "_master.wav");
+    item.outputPath = buildUniqueOutputPath(outputFolder, session.sessionName, ".wav", reservedPaths);
     item.status = domain::BatchItemStatus::Pending;
     items.push_back(item);
   }
@@ -144,6 +377,27 @@ domain::BatchResult BatchQueueRunner::process(domain::BatchJob& job,
                                                                                : std::max(1, defaultThreads / 2))
                                 : 1;
 
+  std::vector<double> perItemProgress(job.items.size(), 0.0);
+  std::mutex progressStateMutex;
+  double accumulatedProgress = 0.0;
+  const auto reportProgress = [&](const size_t itemIndex, const double itemFraction, const std::string& stage) {
+    if (!progressCallback || itemIndex >= perItemProgress.size()) {
+      return;
+    }
+
+    const double bounded = std::clamp(itemFraction, 0.0, 1.0);
+    double overallProgress = 0.0;
+    {
+      std::scoped_lock lock(progressStateMutex);
+      const double previous = perItemProgress[itemIndex];
+      const double next = std::max(previous, bounded);
+      perItemProgress[itemIndex] = next;
+      accumulatedProgress += (next - previous);
+      overallProgress = std::clamp(accumulatedProgress / static_cast<double>(perItemProgress.size()), 0.0, 1.0);
+    }
+    progressCallback(itemIndex, overallProgress, stage);
+  };
+
   if (job.settings.parallelAnalysis && analysisThreads > 1) {
     std::atomic<size_t> nextIndex{0};
     std::vector<std::thread> workers;
@@ -160,18 +414,23 @@ domain::BatchResult BatchQueueRunner::process(domain::BatchJob& job,
           auto& item = job.items[i];
           if (cancelFlag != nullptr && cancelFlag->load()) {
             item.status = domain::BatchItemStatus::Cancelled;
+            item.error = "Cancelled";
+            reportProgress(i, 1.0, "Cancelled");
             continue;
           }
 
           if (item.status == domain::BatchItemStatus::Pending) {
             try {
               runAnalysisForItem(item);
+              reportProgress(i, 0.12, "Analyzing stems");
             } catch (const std::exception& errorException) {
               item.status = domain::BatchItemStatus::Failed;
               item.error = errorException.what();
+              reportProgress(i, 1.0, "Analysis failed");
             } catch (...) {
               item.status = domain::BatchItemStatus::Failed;
               item.error = "Unknown analysis failure.";
+              reportProgress(i, 1.0, "Analysis failed");
             }
           }
         }
@@ -183,29 +442,49 @@ domain::BatchResult BatchQueueRunner::process(domain::BatchJob& job,
     }
   } else {
     for (auto& item : job.items) {
+      const auto i = static_cast<size_t>(&item - job.items.data());
       if (cancelFlag != nullptr && cancelFlag->load()) {
         item.status = domain::BatchItemStatus::Cancelled;
+        item.error = "Cancelled";
+        reportProgress(i, 1.0, "Cancelled");
         continue;
       }
       if (item.status == domain::BatchItemStatus::Pending) {
         try {
           runAnalysisForItem(item);
+          reportProgress(i, 0.12, "Analyzing stems");
         } catch (const std::exception& errorException) {
           item.status = domain::BatchItemStatus::Failed;
           item.error = errorException.what();
+          reportProgress(i, 1.0, "Analysis failed");
         } catch (...) {
           item.status = domain::BatchItemStatus::Failed;
           item.error = "Unknown analysis failure.";
+          reportProgress(i, 1.0, "Analysis failed");
         }
       }
     }
   }
 
-  std::atomic<int> completed{0};
-  std::atomic<int> failed{0};
-  std::atomic<int> cancelled{0};
+  std::unordered_set<std::string> reservedPaths;
+  for (const auto& item : job.items) {
+    if (!item.outputPath.empty()) {
+      reservedPaths.insert(toPathKey(item.outputPath));
+    }
+  }
+
+  for (auto& item : job.items) {
+    auto settings = job.settings.renderSettings;
+    const std::string resolvedFormat = util::WavWriter::resolveFormat(item.outputPath, settings.outputFormat);
+    const std::string requiredExtension = extensionForFormat(resolvedFormat);
+
+    if (!item.outputPath.empty()) {
+      reservedPaths.erase(toPathKey(item.outputPath));
+    }
+    item.outputPath = buildUniqueOutputPath(job.settings.outputFolder, item.session.sessionName, requiredExtension, reservedPaths);
+  }
+
   std::atomic<size_t> renderIndex{0};
-  std::mutex itemMutex;
 
   const auto renderWorker = [&]() {
     for (;;) {
@@ -218,11 +497,21 @@ domain::BatchResult BatchQueueRunner::process(domain::BatchJob& job,
       if (cancelFlag != nullptr && cancelFlag->load()) {
         item.status = domain::BatchItemStatus::Cancelled;
         item.error = "Cancelled";
-        ++cancelled;
+        reportProgress(i, 1.0, "Cancelled");
+        continue;
+      }
+
+      if (item.status == domain::BatchItemStatus::Cancelled) {
+        reportProgress(i, 1.0, "Cancelled");
+        continue;
+      }
+      if (item.status == domain::BatchItemStatus::Failed) {
+        reportProgress(i, 1.0, "Skipped failed item");
         continue;
       }
 
       item.status = domain::BatchItemStatus::Rendering;
+      item.error.clear();
 
       auto settings = job.settings.renderSettings;
       if (settings.rendererName.empty()) {
@@ -233,49 +522,35 @@ domain::BatchResult BatchQueueRunner::process(domain::BatchJob& job,
       }
 
       const std::string resolvedFormat = util::WavWriter::resolveFormat(item.outputPath, settings.outputFormat);
-      const std::string requiredExtension = extensionForFormat(resolvedFormat);
-      if (item.outputPath.empty()) {
-        item.outputPath = job.settings.outputFolder / (item.session.sessionName + "_master" + requiredExtension);
-      } else if (toLower(item.outputPath.extension().string()) != requiredExtension) {
-        item.outputPath.replace_extension(requiredExtension);
-      }
-
       settings.outputFormat = resolvedFormat;
       settings.outputPath = item.outputPath.string();
 
       try {
-        auto renderer = renderers::createRenderer(settings.rendererName);
-        const auto renderResult = renderer->render(
+        const auto renderResult = renderers::renderWithPipeline(
             item.session,
             settings,
             [&](const double stageProgress, const std::string& stage) {
-              if (!progressCallback) {
-                return;
-              }
-              const double itemWeight = 1.0 / static_cast<double>(job.items.size());
-              const double progress = std::clamp(itemWeight * (static_cast<double>(i) + stageProgress), 0.0, 1.0);
-              progressCallback(i, progress, stage);
+              reportProgress(i, stageProgress, stage);
             },
             cancelFlag);
 
         if (renderResult.cancelled) {
           item.status = domain::BatchItemStatus::Cancelled;
           item.error = "Cancelled";
-          ++cancelled;
+          reportProgress(i, 1.0, "Cancelled");
         } else if (renderResult.success) {
           item.status = domain::BatchItemStatus::Completed;
           item.reportPath = renderResult.reportPath;
-          ++completed;
+          reportProgress(i, 1.0, "Render complete");
         } else {
           item.status = domain::BatchItemStatus::Failed;
           item.error = renderResult.logs.empty() ? "Render failed" : renderResult.logs.back();
-          ++failed;
+          reportProgress(i, 1.0, "Render failed");
         }
       } catch (const std::exception& error) {
-        std::scoped_lock lock(itemMutex);
         item.status = domain::BatchItemStatus::Failed;
         item.error = error.what();
-        ++failed;
+        reportProgress(i, 1.0, "Render failed");
       }
     }
   };
@@ -293,9 +568,21 @@ domain::BatchResult BatchQueueRunner::process(domain::BatchJob& job,
     renderWorker();
   }
 
-  result.completed = completed.load();
-  result.failed = failed.load();
-  result.cancelled = cancelled.load();
+  for (const auto& item : job.items) {
+    switch (item.status) {
+      case domain::BatchItemStatus::Completed:
+        ++result.completed;
+        break;
+      case domain::BatchItemStatus::Failed:
+        ++result.failed;
+        break;
+      case domain::BatchItemStatus::Cancelled:
+        ++result.cancelled;
+        break;
+      default:
+        break;
+    }
+  }
   return result;
 }
 

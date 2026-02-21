@@ -1,0 +1,32 @@
+app-id: io.automixmaster.AutoMixMaster
+runtime: org.freedesktop.Platform
+runtime-version: "24.08"
+sdk: org.freedesktop.Sdk
+command: AutoMixMaster
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --socket=pulseaudio
+  - --device=dri
+  - --filesystem=home
+
+modules:
+  - name: automixmaster
+    buildsystem: simple
+    build-commands:
+      - cmake -S . -B build-flatpak -GNinja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DBUILD_TOOLS=OFF
+      - cmake --build build-flatpak --target AutoMixMasterApp --parallel
+      - install -Dm755 build-flatpak/AutoMixMasterApp_artefacts/Release/AutoMixMaster /app/bin/AutoMixMaster
+      - cp -r assets /app/bin/assets
+      - >
+        sh -c 'if [ -d /app/bin/assets/phaselimiter/bin ]; then
+          find /app/bin/assets/phaselimiter/bin -type f \( -iname "*.exe" -o -iname "*.dll" \) -delete;
+          find /app/bin/assets/phaselimiter/bin -mindepth 1 -maxdepth 1 -type f | grep -q . || rm -rf /app/bin/assets/phaselimiter/bin;
+        fi'
+      - install -Dm644 packaging/flatpak/io.automixmaster.AutoMixMaster.desktop /app/share/applications/io.automixmaster.AutoMixMaster.desktop
+      - install -Dm644 packaging/linux/automixmaster.svg /app/share/icons/hicolor/scalable/apps/io.automixmaster.AutoMixMaster.svg
+    sources:
+      - type: dir
+        path: ../..

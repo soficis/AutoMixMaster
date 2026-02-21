@@ -34,6 +34,7 @@ class ExportController {
   struct Callbacks {
     std::function<void(const std::string&)> onStatus;
     std::function<void(const std::string&)> onTaskHistory;
+    std::function<void(double)> onProgress;
     std::function<void(ExportResult)> onExportComplete;
   };
 

@@ -9,9 +9,12 @@
 namespace automix::ai {
 
 struct HubModelInfo {
+  std::string modelId;
+  std::string source = "huggingface";
   std::string repoId;
   std::string displayName;
   std::string useCase;
+  std::string taskScope;
   std::string license;
   std::string revision;
   int downloads = 0;
@@ -21,6 +24,9 @@ struct HubModelInfo {
   bool disabled = false;
   bool hasOnnx = false;
   bool recommended = false;
+  bool curated = false;
+  bool compatible = false;
+  std::string compatibilityReport;
   std::string lastModified;
   std::string sourceUrl;
   std::string primaryFile;
@@ -32,6 +38,8 @@ struct HubModelInfo {
 struct HubModelQueryOptions {
   size_t maxResultsPerQuery = 8;
   bool includeGated = false;
+  bool curatedOnly = true;
+  std::string searchText;
   std::string token;
 };
 
@@ -44,6 +52,9 @@ struct HubInstallOptions {
 
 struct HubInstallResult {
   bool success = false;
+  std::string modelId;
+  std::string source = "huggingface";
+  std::string taskScope;
   std::string repoId;
   std::filesystem::path installPath;
   std::filesystem::path primaryFilePath;
@@ -56,8 +67,8 @@ struct HubInstallResult {
 class HuggingFaceModelHub {
  public:
   std::vector<HubModelInfo> discoverRecommended(const HubModelQueryOptions& options = {}) const;
-  std::optional<HubModelInfo> modelInfo(const std::string& repoId, const std::string& token = "") const;
-  HubInstallResult installModel(const std::string& repoId, const HubInstallOptions& options = {}) const;
+  std::optional<HubModelInfo> modelInfo(const std::string& modelIdOrRepoId, const std::string& token = "") const;
+  HubInstallResult installModel(const std::string& modelIdOrRepoId, const HubInstallOptions& options = {}) const;
 
   std::string resolveToken(const std::string& explicitToken = "") const;
   static std::vector<std::string> defaultRecommendedSearchTerms();

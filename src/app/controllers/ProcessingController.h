@@ -41,6 +41,10 @@ struct AutoMasterResult {
 struct BatchResult {
   juce::String summary;
   juce::String errorText;
+  std::string outputFolder;
+  int completed = 0;
+  int failed = 0;
+  int cancelled = 0;
 };
 
 class ProcessingController {
@@ -48,6 +52,7 @@ class ProcessingController {
   struct Callbacks {
     std::function<void(const std::string&)> onStatus;
     std::function<void(const std::string&)> onTaskHistory;
+    std::function<void(double)> onProgress;
     std::function<void(AutoMixResult)> onAutoMixComplete;
     std::function<void(AutoMasterResult)> onAutoMasterComplete;
     std::function<void(BatchResult)> onBatchComplete;

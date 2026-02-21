@@ -331,6 +331,7 @@ if(BUILD_TESTING)
   add_executable(automix_tests
     tests/unit/TestMain.cpp
     tests/unit/ControllerTests.cpp
+    tests/unit/TaskCenterPanelTests.cpp
     tests/unit/SessionSerializationTests.cpp
     tests/unit/AudioIoTests.cpp
     tests/unit/AnalysisTests.cpp

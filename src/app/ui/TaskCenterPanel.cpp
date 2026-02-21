@@ -118,18 +118,49 @@ void TaskCenterPanel::appendHistory(const juce::String& line) {
                                                   now.getMinutes(),
                                                   now.getSeconds());
   const auto entry = "[" + timestamp + "] " + line;
+  const auto entryWithNewline = entry + "\n";
 
-  auto currentText = historyEditor_.getText();
-  if (currentText == "Task history will appear here.") {
-    historyEditor_.setText(entry + "\n", false);
-  } else {
-    historyEditor_.moveCaretToEnd(false);
-    historyEditor_.insertTextAtCaret(entry + "\n");
+  if (!hasHistoryEntries_) {
+    historyEditor_.setText(entryWithNewline, false);
+    hasHistoryEntries_ = true;
+    historyLineCount_ = 1;
+    return;
   }
+
+  historyEditor_.moveCaretToEnd(false);
+  historyEditor_.insertTextAtCaret(entryWithNewline);
+  ++historyLineCount_;
+
+  if (historyLineCount_ <= kMaxHistoryLines) {
+    return;
+  }
+
+  auto text = historyEditor_.getText();
+  int scanIndex = 0;
+  int removedLines = 0;
+  while (removedLines < kHistoryTrimChunkLines) {
+    const int newlineIndex = text.indexOfChar(scanIndex, '\n');
+    if (newlineIndex < 0) {
+      break;
+    }
+    scanIndex = newlineIndex + 1;
+    ++removedLines;
+  }
+
+  if (removedLines <= 0 || scanIndex <= 0) {
+    return;
+  }
+
+  historyEditor_.setText(text.substring(scanIndex), false);
+  historyEditor_.moveCaretToEnd(false);
+  historyLineCount_ = std::max(0, historyLineCount_ - removedLines);
+  hasHistoryEntries_ = historyLineCount_ > 0;
 }
 
 void TaskCenterPanel::clearHistory() {
   historyEditor_.setText("", false);
+  hasHistoryEntries_ = false;
+  historyLineCount_ = 0;
 }
 
 juce::Colour TaskCenterPanel::stateColour(TaskState state) {

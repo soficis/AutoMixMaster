@@ -29,6 +29,9 @@ public:
   std::function<void()> onCancel;
 
 private:
+  static constexpr int kMaxHistoryLines = 1500;
+  static constexpr int kHistoryTrimChunkLines = 300;
+
   static juce::Colour stateColour(TaskState state);
   static const char* stateLabel(TaskState state);
 
@@ -42,6 +45,8 @@ private:
 
   double progressValue_ = 0.0;
   TaskState currentState_ = TaskState::Idle;
+  bool hasHistoryEntries_ = false;
+  int historyLineCount_ = 0;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(TaskCenterPanel)
 };

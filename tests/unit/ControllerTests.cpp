@@ -6,6 +6,7 @@
 #include <numbers>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -42,6 +43,23 @@ automix::engine::AudioBuffer makeTone(const double sampleRate, const int samples
 std::filesystem::path uniqueTempPath(const std::string& stem) {
   const auto nonce = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
   return std::filesystem::temp_directory_path() / (stem + "_" + nonce);
+}
+
+int countOccurrences(std::string_view text, std::string_view token) {
+  if (token.empty()) {
+    return 0;
+  }
+  int count = 0;
+  size_t offset = 0;
+  while (offset < text.size()) {
+    const size_t hit = text.find(token, offset);
+    if (hit == std::string_view::npos) {
+      break;
+    }
+    ++count;
+    offset = hit + token.size();
+  }
+  return count;
 }
 
 bool waitFor(const std::function<bool()>& predicate, const int timeoutMs = 6000) {
@@ -382,6 +400,45 @@ TEST_CASE("ProcessingController batch callback fires for empty folder", "[contro
 
   REQUIRE(waitFor([&]() { return result.has_value(); }));
   REQUIRE_FALSE(result->errorText.isEmpty());
+
+  std::filesystem::remove_all(inputDir);
+}
+
+TEST_CASE("ProcessingController batch summary limits detailed cancelled entries", "[controllers][processing][batch]") {
+  juce::ScopedJuceInitialiser_GUI juceInit;
+
+  const auto inputDir = uniqueTempPath("automix_batch_summary_limit");
+  std::filesystem::create_directories(inputDir);
+
+  automix::util::WavWriter writer;
+  for (int i = 0; i < 260; ++i) {
+    const auto stemPath = inputDir / ("song_" + std::to_string(i) + ".wav");
+    writer.write(stemPath, makeTone(44100.0, 1024, 100.0 + static_cast<double>(i)), 24);
+  }
+
+  juce::ThreadPool pool(1);
+  std::atomic_bool cancelFlag {true};
+  std::optional<automix::app::BatchResult> result;
+
+  automix::app::ProcessingController::Callbacks callbacks;
+  callbacks.onBatchComplete = [&](automix::app::BatchResult value) {
+    result = std::move(value);
+  };
+  automix::app::ProcessingController controller(pool, std::move(callbacks));
+
+  automix::domain::RenderSettings settings;
+  settings.rendererName = "BuiltIn";
+  settings.outputFormat = "wav";
+
+  controller.runBatch(inputDir, settings, cancelFlag);
+
+  REQUIRE(waitFor([&]() { return result.has_value(); }, 12000));
+  REQUIRE(result->cancelled > 0);
+
+  const auto summary = result->summary.toStdString();
+  const int cancelledDetails = countOccurrences(summary, "[cancelled]");
+  REQUIRE(cancelledDetails <= 200);
+  REQUIRE(summary.find("additional failed/cancelled items omitted.") != std::string::npos);
 
   std::filesystem::remove_all(inputDir);
 }

@@ -471,9 +471,12 @@ void ProcessingController::runBatch(const std::filesystem::path& inputFolder,
       engine::BatchQueueRunner runner;
       std::mutex progressMutex;
       auto lastStatusEmit = std::chrono::steady_clock::time_point{};
+      auto lastHistoryEmit = std::chrono::steady_clock::time_point{};
       size_t lastStatusItemIndex = std::numeric_limits<size_t>::max();
       std::string lastStatusStage;
       int lastStatusPercent = -1;
+      size_t throttledHistoryUpdates = 0;
+      size_t suppressedCancelledHistoryUpdates = 0;
       std::unordered_map<size_t, std::string> stageHistoryByItem;
       auto capturedCallbacks = callbacks;
       const size_t totalItemCount = job.items.size();
@@ -483,14 +486,18 @@ void ProcessingController::runBatch(const std::filesystem::path& inputFolder,
           [capturedCallbacks,
            &progressMutex,
            &lastStatusEmit,
+           &lastHistoryEmit,
            &lastStatusItemIndex,
            &lastStatusStage,
            &lastStatusPercent,
+           &throttledHistoryUpdates,
+           &suppressedCancelledHistoryUpdates,
            &stageHistoryByItem,
            totalItemCount](const size_t itemIndex, const double progress, const std::string& stage) {
             const double clampedProgress = std::clamp(progress, 0.0, 1.0);
             const int percent = static_cast<int>(std::round(clampedProgress * 100.0));
             const std::string stageLabel = stage.empty() ? std::string("Processing") : stage;
+            const std::string stageLower = toLower(stageLabel);
 
             bool emitStatus = false;
             bool emitHistory = false;
@@ -512,9 +519,24 @@ void ProcessingController::runBatch(const std::filesystem::path& inputFolder,
               }
 
               const auto it = stageHistoryByItem.find(itemIndex);
-              emitHistory = (it == stageHistoryByItem.end()) || (it->second != stageLabel);
-              if (emitHistory) {
+              const bool stageChanged = (it == stageHistoryByItem.end()) || (it->second != stageLabel);
+              if (stageChanged) {
                 stageHistoryByItem[itemIndex] = stageLabel;
+
+                const bool terminalFailure = stageLower.find("failed") != std::string::npos;
+                const bool cancellationStage = stageLower == "cancelled";
+                const bool historyIntervalOpen =
+                    lastHistoryEmit.time_since_epoch().count() == 0 ||
+                    now - lastHistoryEmit >= std::chrono::milliseconds(300);
+
+                if (cancellationStage) {
+                  ++suppressedCancelledHistoryUpdates;
+                } else if (terminalFailure || percent >= 100 || historyIntervalOpen) {
+                  emitHistory = true;
+                  lastHistoryEmit = now;
+                } else {
+                  ++throttledHistoryUpdates;
+                }
               }
             }
 
@@ -535,19 +557,47 @@ void ProcessingController::runBatch(const std::filesystem::path& inputFolder,
           },
           cancelFlag);
 
+      if (capturedCallbacks.onTaskHistory && throttledHistoryUpdates > 0) {
+        capturedCallbacks.onTaskHistory("Batch history throttled: skipped " +
+                                        std::to_string(throttledHistoryUpdates) +
+                                        " high-frequency item updates.");
+      }
+      if (capturedCallbacks.onTaskHistory && suppressedCancelledHistoryUpdates > 0) {
+        capturedCallbacks.onTaskHistory("Batch cancellation collapsed: skipped " +
+                                        std::to_string(suppressedCancelledHistoryUpdates) +
+                                        " per-item cancel updates.");
+      }
+
       juce::String summary;
       summary << "Batch completed\n";
       summary << "Completed: " << batchResult.completed << "\n";
       summary << "Failed: " << batchResult.failed << "\n";
       summary << "Cancelled: " << batchResult.cancelled << "\n";
+      summary << "Detail lines: failed/cancelled items only (max 200)\n";
 
+      constexpr size_t maxDetailLines = 200;
+      size_t detailLines = 0;
+      size_t omittedLines = 0;
       for (const auto& item : job.items) {
+        if (item.status == domain::BatchItemStatus::Completed) {
+          continue;
+        }
+
+        if (detailLines >= maxDetailLines) {
+          ++omittedLines;
+          continue;
+        }
+
         summary << item.session.sessionName << " -> " << juce::String(pathToUtf8(item.outputPath)) << " ["
                 << juce::String(domain::toString(item.status)) << "]";
         if (!item.error.empty()) {
           summary << " error=" << juce::String(item.error);
         }
         summary << "\n";
+        ++detailLines;
+      }
+      if (omittedLines > 0) {
+        summary << "... " << static_cast<int>(omittedLines) << " additional failed/cancelled items omitted.\n";
       }
 
       BatchResult result;

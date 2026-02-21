@@ -4,6 +4,21 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag name to publish (for example: v0.4.1 or preview)"
+        required: true
+        type: string
+      release_name:
+        description: Optional release title override
+        required: false
+        default: ""
+        type: string
+      prerelease:
+        description: Mark the release as prerelease
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -15,6 +30,7 @@ concurrency:
 jobs:
   linux-packages:
     name: Linux (${{ matrix.arch }})
+    if: ${{ !matrix.public_repo_only || !github.event.repository.private }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -22,8 +38,10 @@ jobs:
         include:
           - arch: x64
             runner: ubuntu-24.04
+            public_repo_only: false
           - arch: arm64
             runner: ubuntu-24.04-arm
+            public_repo_only: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -174,7 +192,7 @@ jobs:
 
   publish-release-assets:
     name: Publish assets to GitHub Release
-    if: github.event_name == 'release'
+    if: ${{ (github.event_name == 'release' || github.event_name == 'workflow_dispatch') && always() }}
     runs-on: ubuntu-24.04
     needs:
       - linux-packages
@@ -188,16 +206,54 @@ jobs:
           merge-multiple: true
           path: release-assets
 
-      - name: Create/Update Github Release
-        uses: docker://ghcr.io/mini-bomba/create-github-release:v1.2.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ github.event.release.tag_name }}
-          name: AutoMixMaster Release ${{ github.event.release.tag_name }}
+      - name: Resolve release metadata
+        id: release-meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
+            tag="${{ github.event.release.tag_name }}"
+            name="${{ github.event.release.name }}"
+            prerelease="${{ github.event.release.prerelease }}"
+          else
+            tag="${{ inputs.release_tag }}"
+            name="${{ inputs.release_name }}"
+            prerelease="${{ inputs.prerelease }}"
+          fi
+
+          if [[ -z "$tag" ]]; then
+            echo "Release tag is required." >&2
+            exit 1
+          fi
+
+          if [[ -z "$name" ]]; then
+            name="AutoMixMaster Release ${tag}"
+          fi
+
+          {
+            echo "tag=$tag"
+            echo "name=$name"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Ensure release assets exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(release-assets/*)
+          if (( ${#assets[@]} == 0 )); then
+            echo "No release artifacts were found in release-assets/." >&2
+            exit 1
+          fi
 
       - name: Publish assets
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.release.tag_name }}
+          tag_name: ${{ steps.release-meta.outputs.tag }}
+          name: ${{ steps.release-meta.outputs.name }}
+          prerelease: ${{ steps.release-meta.outputs.prerelease }}
           files: release-assets/*
           fail_on_unmatched_files: true
+          overwrite_files: true

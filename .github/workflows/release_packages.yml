@@ -193,6 +193,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           tag: ${{ github.event.release.tag_name }}
+          name: AutoMixMaster Release ${{ github.event.release.tag_name }}
 
       - name: Publish assets
         uses: softprops/action-gh-release@v2

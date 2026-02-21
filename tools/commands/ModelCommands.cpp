@@ -119,8 +119,13 @@ int commandInstallSupportedLimiter(const CommandArgs& args) {
     }
 
     const auto destination = destinationRoot / *idArg;
-    std::filesystem::create_directories(destination);
-    copyDirectory(source.value(), destination);
+    try {
+      std::filesystem::create_directories(destination);
+      copyDirectory(source.value(), destination);
+    } catch (const std::exception& ex) {
+      std::cerr << "Failed to install limiter '" << *idArg << "': " << ex.what() << "\n";
+      return 1;
+    }
     std::cout << "Installed limiter '" << *idArg << "' to " << destination.string() << "\n";
     return 0;
   }

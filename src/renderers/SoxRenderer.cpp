@@ -33,6 +33,8 @@ namespace {
 
 using ::automix::util::isRegularFile;
 using ::automix::util::metadataSourcePath;
+using ::automix::util::pathFromUtf8;
+using ::automix::util::pathToUtf8;
 
 constexpr size_t kMaxProcessOutputCaptureBytes = 32768;
 
@@ -132,7 +134,8 @@ RenderResult SoxRenderer::render(const domain::Session& session,
       }
     }
 
-    const std::filesystem::path outputPath = settings.outputPath.empty() ? "export_master.wav" : settings.outputPath;
+    const std::filesystem::path outputPath =
+        settings.outputPath.empty() ? std::filesystem::path("export_master.wav") : pathFromUtf8(settings.outputPath);
     const auto outputFormat = util::WavWriter::resolveFormat(outputPath, settings.outputFormat);
     if (outputPath.has_parent_path()) {
       std::filesystem::create_directories(outputPath.parent_path());
@@ -150,9 +153,9 @@ RenderResult SoxRenderer::render(const domain::Session& session,
     writer.write(tempInputPath, renderState.mixBuffer, std::clamp(settings.outputBitDepth, 16, 24));
 
     juce::StringArray command;
-    command.add(binaryInfo->executablePath.generic_string());
-    command.add(tempInputPath.generic_string());
-    command.add(tempSoxOutputPath.generic_string());
+    command.add(pathToUtf8(binaryInfo->executablePath));
+    command.add(pathToUtf8(tempInputPath));
+    command.add(pathToUtf8(tempSoxOutputPath));
     command.add("gain");
     command.add("-n");
     command.add(std::to_string(std::clamp(plan.limiterCeilingDb, -6.0, -0.1)));
@@ -234,11 +237,11 @@ RenderResult SoxRenderer::render(const domain::Session& session,
 
     std::filesystem::path reportPath;
     if (settings.writePerExportReportJson) {
-      reportPath = outputPath.string() + ".report.json";
+      reportPath = pathFromUtf8(pathToUtf8(outputPath) + ".report.json");
       nlohmann::json report = {
           {"renderer", "SoX"},
-          {"soxBinary", binaryInfo->executablePath.string()},
-          {"outputAudioPath", outputPath.string()},
+          {"soxBinary", pathToUtf8(binaryInfo->executablePath)},
+          {"outputAudioPath", pathToUtf8(outputPath)},
           {"integratedLufs", complianceReport.integratedLufs},
           {"shortTermLufs", complianceReport.shortTermLufs},
           {"loudnessRange", complianceReport.loudnessRange},
@@ -282,10 +285,10 @@ RenderResult SoxRenderer::render(const domain::Session& session,
     RenderResult result;
     result.success = true;
     result.rendererName = "SoX";
-    result.outputAudioPath = outputPath.string();
-    result.reportPath = reportPath.empty() ? std::string {} : reportPath.string();
+    result.outputAudioPath = pathToUtf8(outputPath);
+    result.reportPath = reportPath.empty() ? std::string {} : pathToUtf8(reportPath);
     result.logs.insert(result.logs.end(), renderState.logs.begin(), renderState.logs.end());
-    result.logs.push_back("SoX executable: " + binaryInfo->executablePath.string());
+    result.logs.push_back("SoX executable: " + pathToUtf8(binaryInfo->executablePath));
     result.logs.push_back("SoX process exit code: " + std::to_string(exitCode));
     if (!processOutput.empty()) {
       result.logs.push_back("SoX output captured (truncated to 32KB).");

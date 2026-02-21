@@ -7,6 +7,8 @@
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
+#include "util/FileUtils.h"
+
 namespace automix::engine {
 
 namespace {
@@ -14,17 +16,23 @@ namespace {
 std::unique_ptr<juce::AudioFormatReader> createReader(const std::filesystem::path& filePath,
                                                        juce::AudioFormatManager* managerOut) {
   managerOut->registerBasicFormats();
-  const juce::File juceFile(filePath.string());
+  const auto utf8Path = util::pathToUtf8(filePath);
+  const juce::File juceFile(juce::String::fromUTF8(utf8Path.c_str(),
+                                                    static_cast<int>(utf8Path.size())));
   return std::unique_ptr<juce::AudioFormatReader>(managerOut->createReaderFor(juceFile));
 }
 
 } // namespace
 
+AudioBuffer AudioFileIO::readAudioFile(const std::string& utf8FilePath) const {
+  return readAudioFile(util::pathFromUtf8(utf8FilePath));
+}
+
 AudioBuffer AudioFileIO::readAudioFile(const std::filesystem::path& filePath) const {
   juce::AudioFormatManager manager;
   std::unique_ptr<juce::AudioFormatReader> reader = createReader(filePath, &manager);
   if (reader == nullptr) {
-    throw std::runtime_error("Failed to open audio file: " + filePath.string());
+    throw std::runtime_error("Failed to open audio file: " + util::pathToUtf8(filePath));
   }
 
   const int channels = static_cast<int>(reader->numChannels);
@@ -34,7 +42,7 @@ AudioBuffer AudioFileIO::readAudioFile(const std::filesystem::path& filePath) co
   juce::AudioBuffer<float> juceBuffer(channels, samples);
   const bool success = reader->read(&juceBuffer, 0, samples, 0, true, true);
   if (!success) {
-    throw std::runtime_error("Failed to read audio data: " + filePath.string());
+    throw std::runtime_error("Failed to read audio data: " + util::pathToUtf8(filePath));
   }
 
   for (int channel = 0; channel < channels; ++channel) {
@@ -46,11 +54,15 @@ AudioBuffer AudioFileIO::readAudioFile(const std::filesystem::path& filePath) co
   return output;
 }
 
+std::map<std::string, std::string> AudioFileIO::readMetadata(const std::string& utf8FilePath) const {
+  return readMetadata(util::pathFromUtf8(utf8FilePath));
+}
+
 std::map<std::string, std::string> AudioFileIO::readMetadata(const std::filesystem::path& filePath) const {
   juce::AudioFormatManager manager;
   std::unique_ptr<juce::AudioFormatReader> reader = createReader(filePath, &manager);
   if (reader == nullptr) {
-    throw std::runtime_error("Failed to open audio file metadata: " + filePath.string());
+    throw std::runtime_error("Failed to open audio file metadata: " + util::pathToUtf8(filePath));
   }
 
   std::map<std::string, std::string> metadata;

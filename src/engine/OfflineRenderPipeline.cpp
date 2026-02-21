@@ -21,12 +21,15 @@
 #include "engine/AudioFileIO.h"
 #include "engine/AudioResampler.h"
 #include "engine/ResidualBlendProcessor.h"
+#include "util/FileUtils.h"
 #include "util/StringUtils.h"
 
 namespace automix::engine {
 namespace {
 
 using ::automix::util::toLower;
+using ::automix::util::pathFromUtf8;
+using ::automix::util::pathToGenericUtf8;
 
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kSqrtHalf = 0.7071067811865476;
@@ -112,9 +115,9 @@ std::string normalizedPathString(const std::filesystem::path& path) {
   std::error_code error;
   const auto absolute = std::filesystem::absolute(path, error);
   if (error) {
-    return path.lexically_normal().string();
+    return pathToGenericUtf8(path.lexically_normal());
   }
-  return absolute.lexically_normal().string();
+  return pathToGenericUtf8(absolute.lexically_normal());
 }
 
 FileStamp fileStampForPath(const std::filesystem::path& path) {
@@ -200,7 +203,8 @@ std::string makeRenderMixCacheKey(const domain::Session& session, const domain::
       << session.buses.size();
 
   for (const auto& stem : session.stems) {
-    const auto stamp = fileStampForPath(stem.filePath);
+    const auto stemPath = pathFromUtf8(stem.filePath);
+    const auto stamp = fileStampForPath(stemPath);
     out << "|s:" << stem.id
         << ':' << stem.filePath
         << ':' << stem.enabled
@@ -228,7 +232,8 @@ std::string makeRenderMixCacheKey(const domain::Session& session, const domain::
   }
 
   if (session.residualBlend > 0.0 && session.originalMixPath.has_value()) {
-    const auto originalStamp = fileStampForPath(session.originalMixPath.value());
+    const auto originalPath = pathFromUtf8(session.originalMixPath.value());
+    const auto originalStamp = fileStampForPath(originalPath);
     out << "|orig:" << session.originalMixPath.value()
         << ':' << originalStamp.valid
         << ':' << originalStamp.size
@@ -687,11 +692,12 @@ OfflineRenderResult OfflineRenderPipeline::renderRawMix(const domain::Session& s
         const auto decisionIt = decisions.find(stem.id);
         const domain::StemMixDecision* decision = decisionIt != decisions.end() ? &decisionIt->second : nullptr;
         const std::string busId = defaultBusIdForStem(stem);
-        const auto resampled = loadStemResampledCached(stem.filePath,
+        const auto stemPath = pathFromUtf8(stem.filePath);
+        const auto resampled = loadStemResampledCached(stemPath,
                                                        settings.outputSampleRate,
                                                        workerFileIO,
                                                        workerResampler);
-        const auto processed = processStemCached(stem.filePath,
+        const auto processed = processStemCached(stemPath,
                                                  settings.outputSampleRate,
                                                  resampled,
                                                  decision,

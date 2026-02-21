@@ -21,6 +21,8 @@ namespace automix::renderers {
 namespace {
 
 using ::automix::util::isRegularFile;
+using ::automix::util::pathFromUtf8;
+using ::automix::util::pathToUtf8;
 using ::automix::util::toLower;
 
 constexpr size_t kMaxProcessOutputCaptureBytes = 32768;
@@ -36,7 +38,7 @@ bool supportsReplayGainTagging(const std::filesystem::path& outputPath) {
       ".wv",
       ".wma",
   };
-  return supportedExtensions.contains(toLower(outputPath.extension().string()));
+  return supportedExtensions.contains(toLower(pathToUtf8(outputPath.extension())));
 }
 
 void drainProcessOutput(juce::ChildProcess& process, std::string& outputCapture) {
@@ -100,9 +102,9 @@ RenderResult RsgainRenderer::applyPostRender(const std::filesystem::path& output
 
     RenderResult result;
     result.rendererName = "rsgain";
-    result.outputAudioPath = outputPath.string();
+    result.outputAudioPath = pathToUtf8(outputPath);
     result.reportPath = existingReportPath;
-    result.logs.push_back("rsgain executable: " + binaryInfo->executablePath.string());
+    result.logs.push_back("rsgain executable: " + pathToUtf8(binaryInfo->executablePath));
 
     if (!supportsReplayGainTagging(outputPath)) {
       result.success = true;
@@ -115,9 +117,9 @@ RenderResult RsgainRenderer::applyPostRender(const std::filesystem::path& output
     }
 
     juce::StringArray command;
-    command.add(binaryInfo->executablePath.generic_string());
+    command.add(pathToUtf8(binaryInfo->executablePath));
     command.add("easy");
-    command.add(outputPath.generic_string());
+    command.add(pathToUtf8(outputPath));
 
     juce::ChildProcess process;
     if (!process.start(command)) {
@@ -166,7 +168,7 @@ RenderResult RsgainRenderer::applyPostRender(const std::filesystem::path& output
     }
 
     report["renderer"] = "rsgain";
-    report["rsgainBinary"] = binaryInfo->executablePath.string();
+    report["rsgainBinary"] = pathToUtf8(binaryInfo->executablePath);
     report["rsgainApplied"] = result.success;
     report["rsgainOutput"] = processOutput.substr(0, 240);
     report["outputAudioPath"] = result.outputAudioPath;
@@ -222,7 +224,7 @@ RenderResult RsgainRenderer::render(const domain::Session& session,
       return failed;
     }
 
-    const std::filesystem::path outputPath = builtInResult.outputAudioPath;
+    const std::filesystem::path outputPath = pathFromUtf8(builtInResult.outputAudioPath);
     auto taggingResult = applyPostRender(
         outputPath, builtInResult.reportPath,
         [&](const double fraction, const std::string& stage) {

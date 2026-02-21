@@ -23,6 +23,7 @@
 #include "engine/AudioResampler.h"
 #include "engine/BatchQueueRunner.h"
 #include "engine/OfflineRenderPipeline.h"
+#include "util/FileUtils.h"
 #include "util/StringUtils.h"
 
 namespace automix::app {
@@ -30,6 +31,7 @@ namespace {
 
 using ::automix::util::toLower;
 using ::automix::util::toJuceText;
+using ::automix::util::pathToUtf8;
 
 double clampProgress(const double progress) {
   return std::clamp(progress, 0.0, 1.0);
@@ -436,7 +438,7 @@ void ProcessingController::runBatch(const std::filesystem::path& inputFolder,
 
       if (!prepError.isEmpty() || items.empty()) {
         BatchResult result;
-        result.outputFolder = outputFolder.string();
+        result.outputFolder = pathToUtf8(outputFolder);
         if (!prepError.isEmpty()) {
           result.errorText = "Batch preparation error:\n" + prepError;
         } else {
@@ -540,7 +542,7 @@ void ProcessingController::runBatch(const std::filesystem::path& inputFolder,
       summary << "Cancelled: " << batchResult.cancelled << "\n";
 
       for (const auto& item : job.items) {
-        summary << item.session.sessionName << " -> " << juce::String(item.outputPath.string()) << " ["
+        summary << item.session.sessionName << " -> " << juce::String(pathToUtf8(item.outputPath)) << " ["
                 << juce::String(domain::toString(item.status)) << "]";
         if (!item.error.empty()) {
           summary << " error=" << juce::String(item.error);
@@ -550,7 +552,7 @@ void ProcessingController::runBatch(const std::filesystem::path& inputFolder,
 
       BatchResult result;
       result.summary = summary;
-      result.outputFolder = outputFolder.string();
+      result.outputFolder = pathToUtf8(outputFolder);
       result.completed = batchResult.completed;
       result.failed = batchResult.failed;
       result.cancelled = batchResult.cancelled;

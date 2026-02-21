@@ -13,6 +13,7 @@
 #include "engine/AudioFileIO.h"
 #include "engine/AudioResampler.h"
 #include "engine/OfflineRenderPipeline.h"
+#include "util/FileUtils.h"
 #include "util/MetadataPolicy.h"
 #include "util/MetadataSourceResolver.h"
 #include "util/WavWriter.h"
@@ -21,6 +22,8 @@ namespace automix::renderers {
 namespace {
 
 using ::automix::util::metadataSourcePath;
+using ::automix::util::pathFromUtf8;
+using ::automix::util::pathToUtf8;
 
 } // namespace
 
@@ -93,7 +96,9 @@ RenderResult BuiltInRenderer::render(const domain::Session& session,
   for (const auto& note : metadataPolicyNotes) {
     result.logs.push_back(note);
   }
-  const std::filesystem::path outputPath = settings.outputPath.empty() ? "export_master.wav" : settings.outputPath;
+  const std::filesystem::path outputPath =
+      settings.outputPath.empty() ? std::filesystem::path("export_master.wav")
+                                  : pathFromUtf8(settings.outputPath);
   writer.write(outputPath,
                mastered,
                settings.outputBitDepth,
@@ -106,10 +111,10 @@ RenderResult BuiltInRenderer::render(const domain::Session& session,
 
   std::filesystem::path reportPath;
   if (settings.writePerExportReportJson) {
-    reportPath = outputPath.string() + ".report.json";
+    reportPath = pathToUtf8(outputPath) + ".report.json";
     nlohmann::json report = {
         {"renderer", "BuiltIn"},
-        {"outputAudioPath", outputPath.string()},
+        {"outputAudioPath", pathToUtf8(outputPath)},
         {"integratedLufs", masteringReport.integratedLufs},
         {"shortTermLufs", masteringReport.shortTermLufs},
         {"loudnessRange", masteringReport.loudnessRange},
@@ -144,8 +149,8 @@ RenderResult BuiltInRenderer::render(const domain::Session& session,
   }
 
   result.success = true;
-  result.outputAudioPath = outputPath.string();
-  result.reportPath = reportPath.empty() ? std::string {} : reportPath.string();
+  result.outputAudioPath = pathToUtf8(outputPath);
+  result.reportPath = reportPath.empty() ? std::string {} : pathToUtf8(reportPath);
   result.logs.insert(result.logs.end(), renderState.logs.begin(), renderState.logs.end());
   if (!settings.writePerExportReportJson) {
     result.logs.push_back("Report sidecar disabled (.report.json not written).");

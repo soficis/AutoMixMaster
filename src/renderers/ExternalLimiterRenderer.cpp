@@ -21,6 +21,7 @@
 #include "engine/AudioResampler.h"
 #include "engine/OfflineRenderPipeline.h"
 #include "renderers/BuiltInRenderer.h"
+#include "util/FileUtils.h"
 #include "util/MetadataPolicy.h"
 #include "util/MetadataSourceResolver.h"
 #include "util/WavWriter.h"
@@ -29,6 +30,8 @@ namespace automix::renderers {
 namespace {
 
 using ::automix::util::metadataSourcePath;
+using ::automix::util::pathFromUtf8;
+using ::automix::util::pathToUtf8;
 
 RenderResult fallbackToBuiltIn(const domain::Session& session,
                                const domain::RenderSettings& settings,
@@ -137,10 +140,10 @@ ExternalLimiterRenderer::ValidationResult ExternalLimiterRenderer::validateBinar
   }
 
   juce::StringArray command;
-  command.add(binaryPath.string());
+  command.add(pathToUtf8(binaryPath));
   command.add("--validate");
   command.add("--request");
-  command.add(requestPath.string());
+  command.add(pathToUtf8(requestPath));
 
   juce::ChildProcess process;
   if (!process.start(command)) {
@@ -256,7 +259,9 @@ RenderResult ExternalLimiterRenderer::render(const domain::Session& session,
       return cancelledResult;
     }
 
-    const std::filesystem::path outputPath = settings.outputPath.empty() ? "export_master.wav" : settings.outputPath;
+    const std::filesystem::path outputPath =
+        settings.outputPath.empty() ? std::filesystem::path("export_master.wav")
+                                    : pathFromUtf8(settings.outputPath);
     const auto outputFormat = util::WavWriter::resolveFormat(outputPath, settings.outputFormat);
     if (outputPath.has_parent_path()) {
       std::filesystem::create_directories(outputPath.parent_path());
@@ -294,8 +299,8 @@ RenderResult ExternalLimiterRenderer::render(const domain::Session& session,
     }
 
     nlohmann::json request = {
-        {"inputPath", tempInputPath.string()},
-        {"outputPath", tempLimiterOutputPath.string()},
+        {"inputPath", pathToUtf8(tempInputPath)},
+        {"outputPath", pathToUtf8(tempLimiterOutputPath)},
         {"sampleRate", settings.outputSampleRate},
         {"bitDepth", settings.outputBitDepth},
         {"targetLufs", plan.targetLufs},
@@ -325,9 +330,9 @@ RenderResult ExternalLimiterRenderer::render(const domain::Session& session,
     }
 
     juce::StringArray command;
-    command.add(binaryPath.string());
+    command.add(pathToUtf8(binaryPath));
     command.add("--request");
-    command.add(requestPath.string());
+    command.add(pathToUtf8(requestPath));
 
     juce::ChildProcess process;
     if (!process.start(command)) {
@@ -405,13 +410,13 @@ RenderResult ExternalLimiterRenderer::render(const domain::Session& session,
 
     std::filesystem::path reportPath;
     if (settings.writePerExportReportJson) {
-      reportPath = outputPath.string() + ".report.json";
+      reportPath = pathToUtf8(outputPath) + ".report.json";
       nlohmann::json report = {
           {"renderer", "ExternalLimiter"},
-          {"binaryPath", binaryPath.string()},
+          {"binaryPath", pathToUtf8(binaryPath)},
           {"validatedVersion", validation.version},
           {"validatedFeatures", validation.supportedFeatures},
-          {"outputAudioPath", outputPath.string()},
+          {"outputAudioPath", pathToUtf8(outputPath)},
           {"processExitCode", exitCode},
           {"integratedLufs", complianceReport.integratedLufs},
           {"shortTermLufs", complianceReport.shortTermLufs},
@@ -456,10 +461,10 @@ RenderResult ExternalLimiterRenderer::render(const domain::Session& session,
     RenderResult result;
     result.success = true;
     result.rendererName = "ExternalLimiter";
-    result.outputAudioPath = outputPath.string();
-    result.reportPath = reportPath.empty() ? std::string {} : reportPath.string();
+    result.outputAudioPath = pathToUtf8(outputPath);
+    result.reportPath = reportPath.empty() ? std::string {} : pathToUtf8(reportPath);
     result.logs = rawResult.logs;
-    result.logs.push_back("External limiter binary: " + binaryPath.string());
+    result.logs.push_back("External limiter binary: " + pathToUtf8(binaryPath));
     result.logs.push_back("External limiter validation version: " + validation.version);
     result.logs.push_back("External process exit code: " + std::to_string(exitCode));
     if (!processOutput.empty()) {

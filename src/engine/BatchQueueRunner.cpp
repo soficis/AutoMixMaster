@@ -15,6 +15,7 @@
 #include "analysis/StemAnalyzer.h"
 #include "automix/HeuristicAutoMixStrategy.h"
 #include "renderers/RendererPipeline.h"
+#include "util/FileUtils.h"
 #include "util/StringUtils.h"
 #include "util/WavWriter.h"
 
@@ -23,10 +24,13 @@ namespace {
 
 using ::automix::util::toLower;
 using ::automix::util::extensionForFormat;
+using ::automix::util::pathFromUtf8;
+using ::automix::util::pathToGenericUtf8;
+using ::automix::util::pathToUtf8;
 using ::automix::util::trim;
 
 bool hasAudioExtension(const std::filesystem::path& path) {
-  const std::string ext = toLower(path.extension().string());
+  const std::string ext = toLower(pathToUtf8(path.extension()));
   return ext == ".wav" || ext == ".aif" || ext == ".aiff" || ext == ".flac" || ext == ".mp3" || ext == ".ogg";
 }
 
@@ -79,7 +83,12 @@ std::string sanitizeOutputStem(std::string value) {
   }
 
   if (value.size() > kMaxStemLength) {
-    value.resize(kMaxStemLength);
+    size_t truncationIndex = kMaxStemLength;
+    while (truncationIndex > 0 &&
+           (static_cast<unsigned char>(value[truncationIndex]) & 0xC0) == 0x80) {
+      --truncationIndex;
+    }
+    value.resize(truncationIndex);
     value = trimTokenSeparators(std::move(value));
   }
 
@@ -110,7 +119,7 @@ std::string buildOutputFilename(const std::string& sessionName, const std::strin
 }
 
 std::string toPathKey(const std::filesystem::path& path) {
-  return toLower(path.lexically_normal().string());
+  return toLower(pathToGenericUtf8(path.lexically_normal()));
 }
 
 std::filesystem::path buildUniqueOutputPath(const std::filesystem::path& outputFolder,
@@ -124,7 +133,7 @@ std::filesystem::path buildUniqueOutputPath(const std::filesystem::path& outputF
     std::ostringstream sequence;
     sequence << std::setw(2) << std::setfill('0') << index;
     const auto fileName = safeTitle + "_AutoMixMaster_" + dateStamp + "_" + sequence.str() + extension;
-    const auto candidate = outputFolder / fileName;
+    const auto candidate = outputFolder / pathFromUtf8(fileName);
     const auto key = toPathKey(candidate);
     if (reservedPaths.contains(key)) {
       continue;
@@ -136,7 +145,7 @@ std::filesystem::path buildUniqueOutputPath(const std::filesystem::path& outputF
     }
   }
 
-  const auto fallback = outputFolder / buildOutputFilename(sessionName, extension);
+  const auto fallback = outputFolder / pathFromUtf8(buildOutputFilename(sessionName, extension));
   reservedPaths.insert(toPathKey(fallback));
   return fallback;
 }
@@ -209,7 +218,7 @@ std::optional<ParsedStemName> parseSuffixedStemName(const std::string& originalS
 }
 
 ParsedStemName parseStemName(const std::filesystem::path& filePath) {
-  const auto originalStemName = trimTokenSeparators(filePath.stem().string());
+  const auto originalStemName = trimTokenSeparators(pathToUtf8(filePath.stem()));
   if (originalStemName.empty()) {
     return ParsedStemName{.groupKey = "song", .groupDisplay = "song", .roleToken = "mix"};
   }
@@ -295,7 +304,7 @@ std::vector<domain::BatchItem> BatchQueueRunner::buildItemsFromFolder(const std:
     std::error_code relativeError;
     const auto relativeParent = std::filesystem::relative(filePath.parent_path(), inputFolder, relativeError);
     if (!relativeError && !relativeParent.empty() && relativeParent != std::filesystem::path(".")) {
-      const auto relativeParentText = relativeParent.generic_string();
+      const auto relativeParentText = pathToGenericUtf8(relativeParent);
       groupKey = toLower(relativeParentText) + "/" + groupKey;
       groupDisplay = relativeParentText + "/" + groupDisplay;
     }
@@ -327,7 +336,7 @@ std::vector<domain::BatchItem> BatchQueueRunner::buildItemsFromFolder(const std:
   items.reserve(groupedFiles.size());
   for (auto& [groupName, grouped] : groupedFiles) {
     std::sort(grouped.stems.begin(), grouped.stems.end(), [](const auto& left, const auto& right) {
-      return left.filePath.filename().string() < right.filePath.filename().string();
+      return pathToUtf8(left.filePath.filename()) < pathToUtf8(right.filePath.filename());
     });
 
     domain::Session session;
@@ -338,8 +347,8 @@ std::vector<domain::BatchItem> BatchQueueRunner::buildItemsFromFolder(const std:
     for (const auto& groupedStem : grouped.stems) {
       domain::Stem stem;
       stem.id = "stem_" + std::to_string(stemIndex++);
-      stem.name = groupedStem.filePath.stem().string();
-      stem.filePath = groupedStem.filePath.string();
+      stem.name = pathToUtf8(groupedStem.filePath.stem());
+      stem.filePath = pathToUtf8(groupedStem.filePath);
       stem.role = roleFromSuffix(groupedStem.roleToken);
       stem.origin = domain::StemOrigin::Separated;
       session.stems.push_back(stem);
@@ -523,7 +532,7 @@ domain::BatchResult BatchQueueRunner::process(domain::BatchJob& job,
 
       const std::string resolvedFormat = util::WavWriter::resolveFormat(item.outputPath, settings.outputFormat);
       settings.outputFormat = resolvedFormat;
-      settings.outputPath = item.outputPath.string();
+      settings.outputPath = pathToUtf8(item.outputPath);
 
       try {
         const auto renderResult = renderers::renderWithPipeline(

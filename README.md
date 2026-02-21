@@ -2,7 +2,7 @@
 
 # AutoMixMaster
 
-**Version 0.4.0**
+**Version 0.4.1**
 
 <img src="assets/AutoMixMaster.jpg" alt="AutoMixMaster application interface" width="860">
 
@@ -233,6 +233,8 @@ Output artifacts are written to `dist/linux/`.
 Manifest path:
 
 `packaging/flatpak/io.automixmaster.AutoMixMaster.yml`
+
+> Note: the Flatpak manifest prefetches JUCE/nlohmann/libebur128 sources and passes `FETCHCONTENT_SOURCE_DIR_*` flags so CMake does not need live GitHub access inside the Flatpak sandbox.
 
 Install Flatpak tooling:
 

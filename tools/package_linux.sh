@@ -249,12 +249,38 @@ APPRUN
   local tools_dir="$DIST_DIR/tools"
   mkdir -p "$tools_dir"
   local appimagetool="$tools_dir/appimagetool-${arch}.AppImage"
-  local appimagetool_url="https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-${arch}.AppImage"
+
+  # Pinned release of appimagetool (AppImage/appimagetool v1.9.1, 2025-11-18).
+  # Update APPIMAGETOOL_VERSION and the matching SHA-256 entries when upgrading.
+  local APPIMAGETOOL_VERSION="1.9.1"
+  local appimagetool_url="https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-${arch}.AppImage"
+
+  # Expected SHA-256 checksums for each supported architecture.
+  local expected_sha256
+  case "$arch" in
+    x86_64)  expected_sha256="ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0" ;;
+    aarch64) expected_sha256="f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158" ;;
+    *)
+      echo "No known checksum for appimagetool on arch '${arch}'" >&2
+      exit 1
+      ;;
+  esac
 
   if [[ ! -x "$appimagetool" ]]; then
-    echo "Downloading appimagetool (${arch})..."
+    echo "Downloading appimagetool ${APPIMAGETOOL_VERSION} (${arch})..."
     curl -L --fail --retry 3 --output "$appimagetool" "$appimagetool_url"
     chmod 0755 "$appimagetool"
+  fi
+
+  echo "Verifying appimagetool checksum..."
+  local actual_sha256
+  actual_sha256="$(sha256sum "$appimagetool" | awk '{print $1}')"
+  if [[ "$actual_sha256" != "$expected_sha256" ]]; then
+    echo "Checksum mismatch for appimagetool-${arch}.AppImage" >&2
+    echo "  expected: $expected_sha256" >&2
+    echo "  got:      $actual_sha256" >&2
+    rm -f "$appimagetool"
+    exit 1
   fi
 
   local output="$DIST_DIR/${APP_NAME}-${VERSION}-${arch}.AppImage"

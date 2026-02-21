@@ -36,6 +36,7 @@ private:
   juce::Label stateBadge_;
   juce::ProgressBar progressBar_;
   juce::Label progressLabel_;
+  juce::TextButton copyLogButton_{"Copy Log"};
   juce::TextButton cancelButton_{"Cancel"};
   juce::TextEditor historyEditor_;
 

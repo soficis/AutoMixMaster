@@ -72,13 +72,14 @@ private:
   void onImport();
   void onAutoMix();
   void onAutoMaster();
-  void onAutoMixMaster(); // Pipeline: Mix → Master → Export
+  void onAutoMixMaster(); // Pipeline: Mix -> Master -> Export
   void onBatch();
   void onExport();
   void onSaveSession();
   void onLoadSession();
   void onModelsDialog();
   void onSettings();
+  bool startAiSeparationBeforeAutoMixIfNeeded();
 
   // Import helper shared by button and drag/drop
   void importFiles(std::vector<juce::File> files);
@@ -93,8 +94,12 @@ private:
   void refreshRenderers();
   void refreshCodecAvailability();
   void refreshModelPacks();
+  void updateSeparationModelBadge();
   void refreshProjectProfiles();
   void populateMasterPresetSelectors();
+  void updateRendererChainPreview();
+  void applySessionUiSelections();
+  void syncSessionUiSelections();
   void updateMeterPanel(const automaster::MasteringReport& report);
   void applyLoadedSession(domain::Session loadedSession, const juce::String& sourcePath);
   void startExportVerification(const std::string& outputAudioPath);
@@ -102,6 +107,7 @@ private:
 
   // Query helpers
   domain::RenderSettings buildCurrentRenderSettings(const std::string& outputPath) const;
+  std::optional<ai::ModelPack> resolveActiveModelPackForTask(const std::string& taskScope);
   std::vector<renderers::ExternalRendererConfig> loadConfiguredExternalRenderers();
 
   // ── UI Components ───────────────────────────────────────────────
@@ -129,6 +135,7 @@ private:
   std::vector<renderers::RendererInfo> rendererInfos_;
   SelectionState selectionState_;
   std::vector<domain::ProjectProfile> projectProfiles_;
+  juce::Component::SafePointer<ModelBrowserPanel> modelBrowserPanel_;
   std::optional<domain::Session> exportVerificationSession_;
   std::optional<domain::RenderSettings> exportVerificationSettings_;
   std::optional<std::filesystem::path> batchVerificationInputFolder_;
@@ -146,6 +153,8 @@ private:
   // Pipeline state: non-empty while Auto Mix+Master pipeline is running.
   // Stores the folder path to export into after mastering completes.
   std::string pendingPipelineExportFolder_;
+  bool pendingAutoMixAfterSeparationImport_ = false;
+  bool skipNextAutoMixSeparationCheck_ = false;
 
   // Controllers
   std::unique_ptr<ModelController> modelController_;

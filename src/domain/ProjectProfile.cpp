@@ -14,7 +14,7 @@ ProjectProfile profileFromJson(const nlohmann::json& json) {
   profile.id = json.value("id", "");
   profile.name = json.value("name", profile.id);
   profile.platformPreset = json.value("platformPreset", json.value("platform", "spotify"));
-  profile.rendererName = json.value("rendererName", "BuiltIn");
+  profile.rendererName = json.value("rendererName", "PhaseLimiter");
   profile.outputFormat = json.value("outputFormat", "wav");
   profile.lossyBitrateKbps = std::clamp(json.value("lossyBitrateKbps", 320), 64, 320);
   profile.mp3UseVbr = json.value("mp3UseVbr", false);
@@ -86,7 +86,7 @@ std::vector<ProjectProfile> defaultProjectProfiles() {
           .id = "default",
           .name = "Default Balanced",
           .platformPreset = "spotify",
-          .rendererName = "BuiltIn",
+          .rendererName = "PhaseLimiter",
           .outputFormat = "wav",
           .lossyBitrateKbps = 320,
           .mp3UseVbr = false,
@@ -99,13 +99,13 @@ std::vector<ProjectProfile> defaultProjectProfiles() {
           .preferredStemCount = 4,
           .metadataPolicy = "copy_common",
           .metadataTemplate = {},
-          .pinnedRendererIds = {"BuiltIn"},
+          .pinnedRendererIds = {"PhaseLimiter", "BuiltIn"},
       },
       ProjectProfile{
           .id = "streaming_spotify",
           .name = "Streaming Spotify",
           .platformPreset = "spotify",
-          .rendererName = "BuiltIn",
+          .rendererName = "PhaseLimiter",
           .outputFormat = "mp3",
           .lossyBitrateKbps = 256,
           .mp3UseVbr = true,
@@ -118,7 +118,7 @@ std::vector<ProjectProfile> defaultProjectProfiles() {
           .preferredStemCount = 4,
           .metadataPolicy = "copy_common",
           .metadataTemplate = {},
-          .pinnedRendererIds = {"BuiltIn", "PhaseLimiter"},
+          .pinnedRendererIds = {"PhaseLimiter", "BuiltIn"},
       },
       ProjectProfile{
           .id = "mobile_fast_turn",

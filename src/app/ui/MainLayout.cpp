@@ -20,6 +20,7 @@
 #include "engine/LoudnessMeter.h"
 #include "engine/OfflineRenderPipeline.h"
 #include "renderers/RendererPipeline.h"
+#include "util/FileUtils.h"
 #include "util/StringUtils.h"
 #include "util/WavWriter.h"
 
@@ -1538,13 +1539,15 @@ void MainLayout::onBatch() {
     }
 
     setBatchRecursiveEnvironment(controlDeck_->getBatchRecursiveToggle().getToggleState());
-    batchVerificationInputFolder_ = std::filesystem::path(selected.getFullPathName().toStdString());
+    const auto selectedPathUtf8 = selected.getFullPathName().toStdString();
+    const auto selectedPath = util::pathFromUtf8(selectedPathUtf8);
+    batchVerificationInputFolder_ = selectedPath;
     batchVerificationRecursiveScan_ = controlDeck_->getBatchRecursiveToggle().getToggleState();
 
     auto settings = buildCurrentRenderSettings("");
     batchVerificationSettings_ = settings;
     processingController_->runBatch(
-        selected.getFullPathName().toStdString(),
+        selectedPath,
         settings,
         taskOrchestrator_->cancelFlag(ActiveTask::Batch));
 
@@ -1818,7 +1821,7 @@ void MainLayout::startBatchVerification(const std::string& outputFolder) {
         const auto resolvedFormat = util::WavWriter::resolveFormat(std::filesystem::path{}, settings.outputFormat);
         const auto requiredExtension = util::extensionForFormat(resolvedFormat);
         for (auto& item : items) {
-          if (util::toLower(item.outputPath.extension().string()) != requiredExtension) {
+          if (util::toLower(util::pathToUtf8(item.outputPath.extension())) != requiredExtension) {
             item.outputPath.replace_extension(requiredExtension);
           }
         }
@@ -1851,14 +1854,14 @@ void MainLayout::startBatchVerification(const std::string& outputFolder) {
 
         if (analysisPack.has_value()) {
           const auto modelPath = analysisPack->rootPath / analysisPack->modelFile;
-          if (util::toLower(modelPath.extension().string()) == ".onnx") {
+          if (util::toLower(util::pathToUtf8(modelPath.extension())) == ".onnx") {
             configureInferenceBackend(analysisInference, analysisPack.value(), settings.gpuExecutionProvider);
             if (analysisInference.loadModel(modelPath)) {
               analysisInferenceReady = true;
               analysisTask = analysisPack->type.empty() ? std::string("analysis_model") : analysisPack->type;
               analysisPackDiagnostics = analysisInference.backendDiagnostics();
             } else {
-              analysisPackDiagnostics = "failed to load analysis model at " + modelPath.string();
+              analysisPackDiagnostics = "failed to load analysis model at " + util::pathToUtf8(modelPath);
             }
           } else {
             analysisPackDiagnostics = "analysis pack is not ONNX and was skipped";
@@ -1872,7 +1875,7 @@ void MainLayout::startBatchVerification(const std::string& outputFolder) {
               continue;
             }
 
-            auto outputBuffer = fileIO.readAudioFile(item.outputPath.string());
+            auto outputBuffer = fileIO.readAudioFile(item.outputPath);
             if (outputBuffer.getNumSamples() <= 0 || outputBuffer.getNumChannels() <= 0) {
               ++missingOutputs;
               continue;
@@ -1947,8 +1950,8 @@ void MainLayout::startBatchVerification(const std::string& outputFolder) {
         std::ostringstream report;
         report << std::fixed << std::setprecision(2);
         report << "Batch verification summary\n";
-        report << "Input folder: " << inputFolder.string() << "\n";
-        report << "Output folder: " << outputFolder.string() << "\n";
+        report << "Input folder: " << util::pathToUtf8(inputFolder) << "\n";
+        report << "Output folder: " << util::pathToUtf8(outputFolder) << "\n";
         report << "Items discovered: " << items.size() << "\n";
         report << "Items verified: " << verified << "\n";
         report << "Missing/undecodable outputs: " << missingOutputs << "\n";
@@ -2004,7 +2007,7 @@ void MainLayout::startBatchVerification(const std::string& outputFolder) {
 
   backgroundPool_.addJob(
       new VerifyBatchJob(inputFolderSnapshot,
-                         outputFolder,
+                         util::pathFromUtf8(outputFolder),
                          settingsSnapshot,
                          analysisPack,
                          recursiveSnapshot,

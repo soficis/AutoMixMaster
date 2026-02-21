@@ -10,7 +10,9 @@ namespace automix::engine {
 
 class AudioFileIO {
  public:
+  AudioBuffer readAudioFile(const std::string& utf8FilePath) const;
   AudioBuffer readAudioFile(const std::filesystem::path& filePath) const;
+  std::map<std::string, std::string> readMetadata(const std::string& utf8FilePath) const;
   std::map<std::string, std::string> readMetadata(const std::filesystem::path& filePath) const;
 };
 

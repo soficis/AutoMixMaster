@@ -14,12 +14,15 @@
 #include "renderers/RendererFactory.h"
 #include "renderers/RsgainDiscovery.h"
 #include "renderers/SoxDiscovery.h"
+#include "util/FileUtils.h"
 #include "util/StringUtils.h"
 
 namespace automix::renderers {
 namespace {
 
 using ::automix::util::toLower;
+using ::automix::util::pathFromUtf8;
+using ::automix::util::pathToUtf8;
 
 constexpr const char* kBuiltInRendererId = "BuiltIn";
 constexpr const char* kPhaseLimiterRendererId = "PhaseLimiter";
@@ -191,8 +194,8 @@ domain::Session stageSessionFromAudioPath(const std::filesystem::path& inputAudi
 
   domain::Stem stageStem;
   stageStem.id = "chain_input";
-  stageStem.name = inputAudioPath.stem().string();
-  stageStem.filePath = inputAudioPath.string();
+  stageStem.name = pathToUtf8(inputAudioPath.stem());
+  stageStem.filePath = pathToUtf8(inputAudioPath);
   stageStem.role = domain::StemRole::Music;
   stageStem.origin = domain::StemOrigin::Recorded;
   stageStem.enabled = true;
@@ -282,12 +285,13 @@ RenderResult renderWithPipeline(const domain::Session& session,
 
     std::filesystem::path stageOutputPath;
     if (isLastStage) {
-      stageOutputPath = std::filesystem::path(settings.outputPath);
+      stageOutputPath = settings.outputPath.empty() ? std::filesystem::path("export_master.wav")
+                                                    : pathFromUtf8(settings.outputPath);
     } else {
       stageOutputPath = tempRoot / ("stage_" + std::to_string(stageIndex + 1) + "_" +
                                     sanitizePathToken(stageRendererId) + ".wav");
     }
-    stageSettings.outputPath = stageOutputPath.string();
+    stageSettings.outputPath = pathToUtf8(stageOutputPath);
 
     const domain::Session stageSession =
         stageIndex == 0 ? session : stageSessionFromAudioPath(previousOutputPath, session);
@@ -359,7 +363,7 @@ RenderResult renderWithPipeline(const domain::Session& session,
       return finalResult;
     }
 
-    previousOutputPath = stageResult.outputAudioPath;
+    previousOutputPath = pathFromUtf8(stageResult.outputAudioPath);
     finalResult.outputAudioPath = stageResult.outputAudioPath;
     finalResult.reportPath = stageResult.reportPath;
     finalResult.logs.push_back(stageNamePrefix + "completed");

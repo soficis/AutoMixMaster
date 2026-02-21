@@ -79,10 +79,10 @@ bool RsgainRenderer::isAvailable() const {
   return discovery.find().has_value();
 }
 
-RenderResult RsgainRenderer::render(const domain::Session& session,
-                                    const domain::RenderSettings& settings,
-                                    const ProgressCallback& onProgress,
-                                    std::atomic_bool* cancelFlag) const {
+RenderResult RsgainRenderer::applyTagging(const std::filesystem::path& outputPath,
+                                           const std::string& existingReportPath,
+                                           const ProgressCallback& onProgress,
+                                           std::atomic_bool* cancelFlag) const {
   try {
     if (cancelFlag != nullptr && cancelFlag->load()) {
       return cancelledResult();
@@ -94,37 +94,14 @@ RenderResult RsgainRenderer::render(const domain::Session& session,
       return unavailableResult("rsgain binary not found. Bundle under assets/rsgain or set RSGAIN_BIN.");
     }
 
-    BuiltInRenderer builtInRenderer;
-    const auto builtInResult = builtInRenderer.render(
-        session, settings,
-        [&](const double fraction, const std::string& stage) {
-          if (onProgress) {
-            onProgress(fraction * 0.85, stage);
-          }
-        },
-        cancelFlag);
-
-    if (builtInResult.cancelled) {
-      return cancelledResult(builtInResult.logs);
-    }
-    if (!builtInResult.success || builtInResult.outputAudioPath.empty()) {
-      RenderResult failed = unavailableResult("rsgain renderer failed: built-in pre-render step failed.");
-      failed.logs.insert(failed.logs.end(), builtInResult.logs.begin(), builtInResult.logs.end());
-      return failed;
-    }
-
-    const std::filesystem::path outputPath = builtInResult.outputAudioPath;
     if (!isRegularFile(outputPath)) {
-      RenderResult failed = unavailableResult("rsgain renderer failed: output file missing after pre-render.");
-      failed.logs.insert(failed.logs.end(), builtInResult.logs.begin(), builtInResult.logs.end());
-      return failed;
+      return unavailableResult("rsgain tagging failed: input file missing.");
     }
 
     RenderResult result;
     result.rendererName = "rsgain";
-    result.outputAudioPath = builtInResult.outputAudioPath;
-    result.reportPath = builtInResult.reportPath;
-    result.logs = builtInResult.logs;
+    result.outputAudioPath = outputPath.string();
+    result.reportPath = existingReportPath;
     result.logs.push_back("rsgain executable: " + binaryInfo->executablePath.string());
 
     if (!supportsReplayGainTagging(outputPath)) {
@@ -150,7 +127,7 @@ RenderResult RsgainRenderer::render(const domain::Session& session,
     }
 
     if (onProgress) {
-      onProgress(0.92, "rsgain loudness tagging");
+      onProgress(0.9, "rsgain loudness tagging");
     }
 
     std::string processOutput;
@@ -204,6 +181,59 @@ RenderResult RsgainRenderer::render(const domain::Session& session,
     }
 
     return result;
+  } catch (const std::exception& error) {
+    return unavailableResult("rsgain tagging failed: " + std::string(error.what()));
+  } catch (...) {
+    return unavailableResult("rsgain tagging failed: unknown error.");
+  }
+}
+
+RenderResult RsgainRenderer::render(const domain::Session& session,
+                                    const domain::RenderSettings& settings,
+                                    const ProgressCallback& onProgress,
+                                    std::atomic_bool* cancelFlag) const {
+  try {
+    if (cancelFlag != nullptr && cancelFlag->load()) {
+      return cancelledResult();
+    }
+
+    RsgainDiscovery discovery;
+    const auto binaryInfo = discovery.find();
+    if (!binaryInfo.has_value()) {
+      return unavailableResult("rsgain binary not found. Bundle under assets/rsgain or set RSGAIN_BIN.");
+    }
+
+    BuiltInRenderer builtInRenderer;
+    const auto builtInResult = builtInRenderer.render(
+        session, settings,
+        [&](const double fraction, const std::string& stage) {
+          if (onProgress) {
+            onProgress(fraction * 0.85, stage);
+          }
+        },
+        cancelFlag);
+
+    if (builtInResult.cancelled) {
+      return cancelledResult(builtInResult.logs);
+    }
+    if (!builtInResult.success || builtInResult.outputAudioPath.empty()) {
+      RenderResult failed = unavailableResult("rsgain renderer failed: built-in pre-render step failed.");
+      failed.logs.insert(failed.logs.end(), builtInResult.logs.begin(), builtInResult.logs.end());
+      return failed;
+    }
+
+    const std::filesystem::path outputPath = builtInResult.outputAudioPath;
+    auto taggingResult = applyTagging(
+        outputPath, builtInResult.reportPath,
+        [&](const double fraction, const std::string& stage) {
+          if (onProgress) {
+            onProgress(0.85 + fraction * 0.15, stage);
+          }
+        },
+        cancelFlag);
+
+    taggingResult.logs.insert(taggingResult.logs.begin(), builtInResult.logs.begin(), builtInResult.logs.end());
+    return taggingResult;
   } catch (const std::exception& error) {
     return unavailableResult("rsgain renderer failed: " + std::string(error.what()));
   } catch (...) {

@@ -12,6 +12,7 @@
 #include "renderers/PhaseLimiterDiscovery.h"
 #include "renderers/RendererFactory.h"
 #include "renderers/RsgainDiscovery.h"
+#include "renderers/RsgainRenderer.h"
 #include "renderers/SoxDiscovery.h"
 #include "util/StringUtils.h"
 
@@ -295,20 +296,50 @@ RenderResult renderWithPipeline(const domain::Session& session,
                                  " [" + stageRendererId + "] ";
     finalResult.logs.push_back(stageNamePrefix + "started");
 
-    auto stageResult = runSingleRenderer(
-        stageRendererId,
-        stageSession,
-        stageSettings,
-        [onProgress, stageIndex, stageCount = chain.size(), stageNamePrefix](const double progress, const std::string& stage) {
-          if (!onProgress) {
-            return;
-          }
-          const double clampedProgress = std::clamp(progress, 0.0, 1.0);
-          const double overallProgress = (static_cast<double>(stageIndex) + clampedProgress) /
-                                         static_cast<double>(stageCount);
-          onProgress(overallProgress, stageNamePrefix + stage);
-        },
-        cancelFlag);
+    RenderResult stageResult;
+    if (isPostRenderer(stageRendererId) && stageIndex > 0) {
+      // Post-renderers (e.g. rsgain) operate in-place on the previous stage's output.
+      // Copy the file to the stage destination first, then apply tagging without re-rendering.
+      if (previousOutputPath != stageOutputPath) {
+        std::filesystem::copy_file(previousOutputPath, stageOutputPath,
+                                   std::filesystem::copy_options::overwrite_existing, error);
+        if (error) {
+          finalResult.success = false;
+          finalResult.logs.push_back(stageNamePrefix + "failed to copy audio for post-processing: " + error.message());
+          std::filesystem::remove_all(tempRoot, error);
+          return finalResult;
+        }
+      }
+      RsgainRenderer rsgainRenderer;
+      stageResult = rsgainRenderer.applyTagging(
+          stageOutputPath, finalResult.reportPath,
+          [onProgress, stageIndex, stageCount = chain.size(), stageNamePrefix](const double progress,
+                                                                               const std::string& stage) {
+            if (!onProgress) {
+              return;
+            }
+            const double clampedProgress = std::clamp(progress, 0.0, 1.0);
+            const double overallProgress = (static_cast<double>(stageIndex) + clampedProgress) /
+                                           static_cast<double>(stageCount);
+            onProgress(overallProgress, stageNamePrefix + stage);
+          },
+          cancelFlag);
+    } else {
+      stageResult = runSingleRenderer(
+          stageRendererId,
+          stageSession,
+          stageSettings,
+          [onProgress, stageIndex, stageCount = chain.size(), stageNamePrefix](const double progress, const std::string& stage) {
+            if (!onProgress) {
+              return;
+            }
+            const double clampedProgress = std::clamp(progress, 0.0, 1.0);
+            const double overallProgress = (static_cast<double>(stageIndex) + clampedProgress) /
+                                           static_cast<double>(stageCount);
+            onProgress(overallProgress, stageNamePrefix + stage);
+          },
+          cancelFlag);
+    }
 
     for (auto& logLine : stageResult.logs) {
       finalResult.logs.push_back(stageNamePrefix + std::move(logLine));

@@ -40,10 +40,10 @@ jobs:
             dpkg-dev fakeroot flatpak flatpak-builder
 
       - name: Build .deb + AppImage
-        run: ./tools/package_linux.sh
+        run: bash ./tools/package_linux.sh
 
       - name: Build Flatpak bundle
-        run: ./tools/build_flatpak.sh
+        run: bash ./tools/build_flatpak.sh
 
       - name: Collect Linux release assets
         run: |
@@ -122,7 +122,7 @@ jobs:
       matrix:
         include:
           - arch: x64
-            runner: macos-13
+            runner: macos-15-intel
             cmake_arch: x86_64
           - arch: arm64
             runner: macos-14

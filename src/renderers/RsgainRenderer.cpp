@@ -79,10 +79,10 @@ bool RsgainRenderer::isAvailable() const {
   return discovery.find().has_value();
 }
 
-RenderResult RsgainRenderer::applyTagging(const std::filesystem::path& outputPath,
-                                           const std::string& existingReportPath,
-                                           const ProgressCallback& onProgress,
-                                           std::atomic_bool* cancelFlag) const {
+RenderResult RsgainRenderer::applyPostRender(const std::filesystem::path& outputPath,
+                                             const std::string& existingReportPath,
+                                             const ProgressCallback& onProgress,
+                                             std::atomic_bool* cancelFlag) const {
   try {
     if (cancelFlag != nullptr && cancelFlag->load()) {
       return cancelledResult();
@@ -223,7 +223,7 @@ RenderResult RsgainRenderer::render(const domain::Session& session,
     }
 
     const std::filesystem::path outputPath = builtInResult.outputAudioPath;
-    auto taggingResult = applyTagging(
+    auto taggingResult = applyPostRender(
         outputPath, builtInResult.reportPath,
         [&](const double fraction, const std::string& stage) {
           if (onProgress) {

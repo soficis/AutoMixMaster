@@ -66,6 +66,9 @@ if(ENABLE_LIBEBUR128)
     GIT_TAG v1.2.6
   )
   FetchContent_MakeAvailable(libebur128)
+  if(MSVC AND TARGET ebur128)
+    target_compile_options(ebur128 PRIVATE /std:clatest)
+  endif()
 endif()
 
 add_library(automix_core

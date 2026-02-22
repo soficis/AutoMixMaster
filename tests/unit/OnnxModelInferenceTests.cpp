@@ -54,7 +54,7 @@ TEST_CASE("ONNX inference backend validates model load and schema", "[ai][onnx]"
   REQUIRE(resultA.usedModel);
   REQUIRE(resultB.usedModel);
   REQUIRE(resultA.outputs == resultB.outputs);
-  REQUIRE(inference.backendDiagnostics().find("calls=2") != std::string::npos);
+  REQUIRE(inference.backendDiagnostics().find("calls=3") != std::string::npos);
 
   std::filesystem::remove_all(tempDir);
 #endif

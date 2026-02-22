@@ -361,6 +361,8 @@ if(BUILD_TESTING)
     tests/unit/StemSeparatorTests.cpp
     tests/regression/RegressionHarness.cpp
     tests/regression/RegressionHarnessTests.cpp
+    src/app/ui/TaskCenterPanel.cpp
+    src/app/style/AutoMixLookAndFeel.cpp
     src/app/controllers/ModelController.cpp
     src/app/controllers/ImportController.cpp
     src/app/controllers/ExportController.cpp
@@ -372,7 +374,7 @@ if(BUILD_TESTING)
   )
 
   target_include_directories(automix_tests PRIVATE src tests/regression)
-  target_link_libraries(automix_tests PRIVATE automix_core Catch2::Catch2WithMain)
+  target_link_libraries(automix_tests PRIVATE automix_core Catch2::Catch2WithMain juce::juce_gui_extra)
   target_compile_definitions(automix_tests PRIVATE
     AUTOMIX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     JUCE_MODAL_LOOPS_PERMITTED=1

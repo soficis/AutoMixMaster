@@ -94,7 +94,7 @@ fi
 
 if [[ $SKIP_BUILD -eq 0 ]]; then
   cmake -S "$REPO_ROOT" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DBUILD_TOOLS=OFF
-  cmake --build "$BUILD_DIR" --config Release --target AutoMixMasterApp --parallel
+  cmake --build "$BUILD_DIR" --config Release --target AutoMixMasterApp --parallel 3
 fi
 
 BINARY_PATH="$BUILD_DIR/AutoMixMasterApp_artefacts/Release/$APP_NAME"

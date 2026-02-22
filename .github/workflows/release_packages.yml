@@ -108,7 +108,7 @@ jobs:
           -DBUILD_TOOLS=OFF
 
       - name: Build
-        run: cmake --build build_windows_${{ matrix.arch }} --config Release --target AutoMixMasterApp --parallel
+        run: cmake --build build_windows_${{ matrix.arch }} --config Release --target AutoMixMasterApp --parallel 3
 
       - name: Package Windows zip
         shell: pwsh
@@ -163,7 +163,7 @@ jobs:
           -DBUILD_TOOLS=OFF
 
       - name: Build
-        run: cmake --build build_macos_${{ matrix.arch }} --target AutoMixMasterApp --parallel
+        run: cmake --build build_macos_${{ matrix.arch }} --target AutoMixMasterApp --parallel 3
 
       - name: Package macOS zip
         run: |

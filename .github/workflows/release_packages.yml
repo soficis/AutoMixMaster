@@ -30,7 +30,6 @@ concurrency:
 jobs:
   linux-packages:
     name: Linux (${{ matrix.arch }})
-    if: ${{ !matrix.public_repo_only || !github.event.repository.private }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -38,10 +37,8 @@ jobs:
         include:
           - arch: x64
             runner: ubuntu-24.04
-            public_repo_only: false
           - arch: arm64
             runner: ubuntu-24.04-arm
-            public_repo_only: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -151,7 +148,7 @@ jobs:
             runner: macos-15-intel
             cmake_arch: x86_64
           - arch: arm64
-            runner: macos-14
+            runner: macos-15
             cmake_arch: arm64
     steps:
       - name: Checkout

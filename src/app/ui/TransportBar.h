@@ -30,7 +30,6 @@ public:
   std::function<void(double)> onVolumeChanged;
   std::function<void()> onLoopToggle;
   std::function<void(double)> onSeekRelative; // seconds offset (+/- 5s)
-  std::function<void()> onClearTracks;
   std::function<void()> onShowShortcuts; // opens the keyboard-shortcuts cheatsheet
 
 private:
@@ -41,7 +40,6 @@ private:
   juce::TextButton playPauseButton_{"Play"};
   juce::TextButton stopButton_{"Stop"};
   juce::TextButton skipEndButton_{">|"};
-  juce::TextButton clearTracksButton_{"Clear"};
   juce::TextButton shortcutsButton_{"?"};
   juce::Label timeLabel_;
   juce::Slider volumeSlider_;

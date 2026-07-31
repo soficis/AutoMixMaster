@@ -84,6 +84,16 @@ MainLayout::MainLayout() {
   addAndMakeVisible(*controlDeck_);
   addAndMakeVisible(*taskCenter_);
 
+  // Destructive Clear: MainLayout-owned (not part of TransportBar), confirmed on click.
+  clearTracksButton_.setTooltip("Clear Imported Tracks (asks for confirmation)");
+  clearTracksButton_.setWantsKeyboardFocus(true);
+  clearTracksButton_.setColour(juce::TextButton::buttonColourId, colour(colours::surface));
+  clearTracksButton_.setColour(juce::TextButton::buttonOnColourId, colour(colours::surfaceLight));
+  clearTracksButton_.setColour(juce::TextButton::textColourOffId, colour(colours::warning));
+  clearTracksButton_.setColour(juce::TextButton::textColourOnId, colour(colours::warning));
+  clearTracksButton_.onClick = [this] { onClearTracks(); };
+  addAndMakeVisible(clearTracksButton_);
+
   // 2. Create coordinators
   taskOrchestrator_ = std::make_unique<TaskOrchestrator>(*taskCenter_);
   previewManager_ = std::make_unique<AudioPreviewManager>(backgroundPool_, this);
@@ -527,13 +537,26 @@ void MainLayout::paint(juce::Graphics& g) {
 void MainLayout::resized() {
   auto area = getLocalBounds();
 
+  // Transport row: transport bar (flex) + destructive Clear (fixed, right edge,
+  // outside the TransportBar component so it stays a deliberate, confirmed action).
+  auto transportRow = area.removeFromTop(kTransportHeight);
+  {
+    juce::FlexBox rowFb;
+    rowFb.flexDirection = juce::FlexBox::Direction::row;
+    rowFb.items.add(juce::FlexItem(*transportBar_).withFlex(1.0f));
+    rowFb.items.add(
+        juce::FlexItem(clearTracksButton_)
+            .withWidth(68.0f)
+            .withMargin(juce::FlexItem::Margin(8.0f, 4.0f, 8.0f, 4.0f)));
+    rowFb.performLayout(transportRow);
+  }
+
   juce::FlexBox fb;
   fb.flexDirection = juce::FlexBox::Direction::column;
   fb.justifyContent = juce::FlexBox::JustifyContent::flexStart;
 
   fb.items.add(juce::FlexItem(*headerBar_).withHeight(static_cast<float>(kHeaderHeight)));
   fb.items.add(juce::FlexItem(*heroWaveform_).withFlex(1.5f).withMinHeight(120.0f));
-  fb.items.add(juce::FlexItem(*transportBar_).withHeight(static_cast<float>(kTransportHeight)));
   fb.items.add(juce::FlexItem(*controlDeck_).withFlex(2.5f).withMinHeight(180.0f));
   fb.items.add(juce::FlexItem(*taskCenter_).withFlex(1.2f).withMinHeight(160.0f));
 
@@ -902,16 +925,37 @@ void MainLayout::wireTransportCallbacks() {
     }
   };
   transportBar_->onVolumeChanged = [this](double volume) {
-    outputVolume_.store(static_cast<float>(std::clamp(volume, 0.0, 1.5)), std::memory_order_relaxed);
-  };
-  transportBar_->onClearTracks = [this] {
-    transportController_.stop();
-    transportBar_->setPlaying(false);
-    transportBar_->setTimeDisplay(0.0, 0.0);
-    sessionManager_.session().stems.clear();
-    detail::updateStemPanelFromSession(controlDeck_->getStemPanel(), sessionManager_.session());
+    outputVolume_.store(static_cast<float>(clampVolumeToEngineRange(volume)), std::memory_order_relaxed);
   };
   transportBar_->onShowShortcuts = [this] { showShortcutsDialog(); };
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Clear imported tracks (destructive — confirmation required)
+// ─────────────────────────────────────────────────────────────────
+
+void MainLayout::onClearTracks() {
+  const int numTracks = static_cast<int>(sessionManager_.session().stems.size());
+  if (numTracks == 0)
+    return; // Nothing imported; nothing to clear.
+
+  juce::AlertWindow::showOkCancelBox(
+      juce::MessageBoxIconType::WarningIcon, "Clear imported tracks",
+      "Clear " + juce::String(numTracks) +
+          " imported tracks? This cannot be undone \xe2\x80\x94 use Undo after T4.1.",
+      "Clear", "Cancel", this,
+      juce::ModalCallbackFunction::create([safe = safeAsync(this), numTracks](int result) {
+        if (safe != nullptr && confirmClear(numTracks, result == 1))
+          safe->performClearTracks();
+      }));
+}
+
+void MainLayout::performClearTracks() {
+  transportController_.stop();
+  transportBar_->setPlaying(false);
+  transportBar_->setTimeDisplay(0.0, 0.0);
+  sessionManager_.session().stems.clear();
+  detail::updateStemPanelFromSession(controlDeck_->getStemPanel(), sessionManager_.session());
 }
 
 // ─────────────────────────────────────────────────────────────────

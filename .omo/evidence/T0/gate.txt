@@ -1,0 +1,6 @@
+﻿T0 Build Verification Gate - PASSED 2026-07-31
+Configure: cmake -S . -B build-v11 -G "Visual Studio 18 2026" -A x64 -DBUILD_TESTING=ON -DBUILD_TOOLS=ON (131.3s, success)
+Build: cmake --build build-v11 --config Release --parallel (SUCCESS - AutoMixMaster.exe + automix_tests.exe linked)
+Tests: ctest --test-dir build-v11 -C Release --output-on-failure => 119/119 PASSED (100%), 9.63s
+ORT Probe: build-ort-probe -DENABLE_ONNX=ON => "ENABLE_ONNX is ON but native ONNX Runtime headers/library were not found. Falling back to deterministic ONNX adapter."
+Decision: NATIVE ORT ABSENT - deterministic fallback active. T3.8 ONNX tests must assert static shape contract; T3.2 panel shows fallback state.

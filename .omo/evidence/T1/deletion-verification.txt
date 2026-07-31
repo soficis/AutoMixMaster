@@ -1,0 +1,132 @@
+Task T1 — Orphan Resolution: grep sweep verification
+=====================================================
+Date: 2026-07-31
+Branch: v1.1-overhaul
+Baseline: 0c1737d (clean tree, 119/119 ctest passed)
+
+Sweep scope: whole tree (src/, tools/, tests/, assets/, CMakeLists.txt),
+excluding .omo/ and build*/ — see per-symbol results below.
+
+Rule: zero matches outside .omo/ and build*/ for every deleted symbol,
+EXCEPT the known rewire targets handled in this commit:
+  - src/app/controllers/ProcessingController.cpp (RtNeural consumer, rewired)
+  - tools/commands/ModelCommands.cpp             (RtNeural consumer, rewired)
+  - tests/unit/GpuBenchmarkTests.cpp             (anira cases removed)
+
+------------------------------------------------------------------
+RtNeuralInference / rtneural
+------------------------------------------------------------------
+  CMakeLists.txt:166                          -> source entry REMOVED
+  tools/commands/ModelCommands.cpp:13,188,189 -> include+branch REMOVED (rewired)
+  src/ai/RtNeuralInference.h                 -> DELETED
+  src/ai/RtNeuralInference.cpp               -> DELETED
+  src/app/controllers/ProcessingController.cpp:18,92,93,96 -> include+branches REMOVED (rewired; fallback now returns nullptr)
+  RESULT: zero remaining references.
+
+------------------------------------------------------------------
+LockFreeRingBuffer
+------------------------------------------------------------------
+  src/engine/LockFreeRingBuffer.h (self)     -> DELETED
+  RESULT: zero remaining references. Header-only; no CMake entry.
+
+------------------------------------------------------------------
+SimpleThreadPool
+------------------------------------------------------------------
+  src/engine/SimpleThreadPool.h (self)       -> DELETED
+  src/renderers/ParallelRenderPipeline.h:10,35 / .cpp:11 (consumer, also deleted)
+  RESULT: zero remaining references. Header-only; no CMake entry.
+
+------------------------------------------------------------------
+AudioBufferPool
+------------------------------------------------------------------
+  CMakeLists.txt:112                          -> source entry REMOVED
+  src/engine/AudioBufferPool.h/.cpp (self)   -> DELETED
+  RESULT: zero remaining references.
+
+------------------------------------------------------------------
+BatchStreamer
+------------------------------------------------------------------
+  CMakeLists.txt:113                          -> source entry REMOVED
+  src/engine/BatchStreamer.h/.cpp (self)     -> DELETED
+  RESULT: zero remaining references.
+
+------------------------------------------------------------------
+ProgressTracker
+------------------------------------------------------------------
+  CMakeLists.txt:120                          -> source entry REMOVED
+  src/engine/ProgressTracker.h/.cpp (self)   -> DELETED
+  RESULT: zero remaining references.
+
+------------------------------------------------------------------
+ParallelRenderPipeline
+------------------------------------------------------------------
+  CMakeLists.txt:149                          -> source entry REMOVED
+  src/renderers/ParallelRenderPipeline.h/.cpp (self) -> DELETED
+  RESULT: zero remaining references.
+
+------------------------------------------------------------------
+RendererPipeline::parallelFor / effectiveParallelism
+------------------------------------------------------------------
+  src/renderers/RendererPipeline.h:20-25 (decls)  -> REMOVED
+  src/renderers/RendererPipeline.cpp:220-265 (defs) -> REMOVED
+  RESULT: zero callers anywhere (confirmed by sweep); no remaining references.
+
+------------------------------------------------------------------
+AniraInference / anira / AUTOMIX_HAS_ANIRA / ENABLE_ANIRA
+------------------------------------------------------------------
+  CMakeLists.txt:30  (ENABLE_ANIRA option)            -> REMOVED
+  CMakeLists.txt:75-98 (anira FetchContent block)     -> REMOVED
+  CMakeLists.txt:167 (source entry)                   -> REMOVED
+  CMakeLists.txt:204-206 (anira link)                 -> REMOVED
+  CMakeLists.txt:244 (AUTOMIX_HAS_ANIRA define)       -> REMOVED
+  src/ai/AniraInference.h/.cpp (self)                 -> DELETED
+  tests/unit/GpuBenchmarkTests.cpp:12 (include)       -> REMOVED
+  tests/unit/GpuBenchmarkTests.cpp:29-35 (hasAnira()) -> REMOVED
+  tests/unit/GpuBenchmarkTests.cpp:159,305,336,349   -> 4 TEST_CASEs REMOVED
+  RESULT: zero remaining references (CMakeLists.txt verified with
+  targeted grep for ANIRA|anira: no matches).
+
+------------------------------------------------------------------
+FallbackInference
+------------------------------------------------------------------
+  CMakeLists.txt:168                          -> source entry REMOVED
+  src/ai/FallbackInference.h/.cpp (self)     -> DELETED
+  RESULT: zero remaining references.
+
+------------------------------------------------------------------
+KeyboardShortcuts
+------------------------------------------------------------------
+  src/app/ui/KeyboardShortcuts.h (self)      -> DELETED
+  RESULT: zero remaining references. Never instantiated anywhere; conflicts
+  with MainLayout::keyPressed. Header-only; no CMake entry.
+
+------------------------------------------------------------------
+BatchProgressPanel
+------------------------------------------------------------------
+  CMakeLists.txt:303                          -> source entry REMOVED
+  src/app/ui/BatchProgressPanel.h/.cpp (self) -> DELETED
+  RESULT: zero remaining references.
+
+------------------------------------------------------------------
+ProfileQuickSwitch
+------------------------------------------------------------------
+  CMakeLists.txt:304                          -> source entry REMOVED
+  src/app/ui/ProfileQuickSwitch.h/.cpp (self) -> DELETED
+  RESULT: zero remaining references.
+
+------------------------------------------------------------------
+KEPT (per verdict, NOT deleted)
+------------------------------------------------------------------
+  src/ai/GpuCapabilityDetector.h/.cpp — retained for wiring in T3.2.
+  CMakeLists.txt:169 source entry and GpuCapabilityDetector references
+  untouched.
+
+------------------------------------------------------------------
+Summary
+------------------------------------------------------------------
+  Files deleted: 21 (11 .cpp/.h pairs minus header-only singles)
+  Files modified: CMakeLists.txt, ProcessingController.cpp,
+                  ModelCommands.cpp, RendererPipeline.h,
+                  RendererPipeline.cpp, GpuBenchmarkTests.cpp
+  Build: cmake --build build-v11 --config Release --parallel -> GREEN
+  Tests: 115/115 passed (was 119; -4 anira TEST_CASEs, as planned)

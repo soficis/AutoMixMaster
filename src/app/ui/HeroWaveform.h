@@ -13,8 +13,7 @@ namespace automix::app {
 /// Full-width stereo waveform display with playhead, zoom, seek, loop regions, file drop target,
 /// stem colour overlays, zoom controls, and OpenGL-accelerated rendering.
 class HeroWaveform final : public juce::Component,
-                           public juce::FileDragAndDropTarget,
-                           private juce::Timer {
+                           public juce::FileDragAndDropTarget {
 public:
   HeroWaveform();
   ~HeroWaveform() override;
@@ -44,11 +43,35 @@ public:
   std::function<void(std::vector<juce::File>)> onFilesDropped; // audio/preset files dropped
   std::function<void(juce::File)> onPresetDropped;           // JSON preset file dropped
 
+  // ── Pure geometry / dirty-check seams (shared by drawing, hit-testing and unit tests) ──
+
+  // Zoom control layout constants (button size 28, gap 4, total strip width 140, top y 4).
+  static constexpr int kZoomButtonSize = 28;
+  static constexpr int kZoomGap = 4;
+  static constexpr int kZoomControlsWidth = 140;
+  static constexpr int kZoomControlTop = 4;
+
+  /// Rect of zoom control `index` (0 = zoom in, 1 = zoom out, 2 = reset) within `bounds`.
+  /// The same rect is used for drawing and for mouseDown hit-testing, so both stay aligned.
+  static juce::Rectangle<int> zoomControlRectFor(int index, const juce::Rectangle<int>& bounds) {
+    const int xStart = bounds.getRight() - kZoomControlsWidth;
+    const int x = xStart + index * (kZoomButtonSize + kZoomGap) + kZoomGap;
+    return {x, kZoomControlTop, kZoomButtonSize, kZoomButtonSize};
+  }
+
+  /// Pure dirty-check seam backing setPlayheadProgress: returns true when the playhead's
+  /// x-pixel changed relative to `lastPixel` (updating `lastPixel`), i.e. a repaint is
+  /// actually needed. Unchanged pixels skip the repaint.
+  static bool playheadPixelChanged(int newPixel, int& lastPixel) {
+    const bool changed = newPixel != lastPixel;
+    lastPixel = newPixel;
+    return changed;
+  }
+
 private:
   double progressFromX(int x) const;
   void buildWaveformCache();
   void buildMipLevels();
-  void timerCallback() override;
 
   void drawZoomControls(juce::Graphics& g);
   void drawStemOverlay(juce::Graphics& g, const juce::Rectangle<float>& bounds, float midY, int w, float h);
@@ -61,17 +84,19 @@ private:
   bool zoomOutHover_ = false;
   bool zoomResetHover_ = false;
 
-  // Mip-level cached peak data (built once on setBuffer)
+  // Mip-level cached peak data (built lazily on first paint after setBuffer)
   static constexpr int kMipLevels = 3;
   static constexpr int kMipFactors[kMipLevels] = {1, 4, 16};
   std::vector<float> mipPeaks_[kMipLevels];
   int mipSampleCounts_[kMipLevels] = {0, 0, 0};
+  bool mipsDirty_ = false;
 
   std::vector<float> waveformPeaks_;
   int cachedWidth_ = 0;
   double cachedZoomFactor_ = 0.0;
   double cachedZoomCenter_ = 0.0;
   double playheadProgress_ = 0.0;
+  int lastPlayheadPixel_ = -1;
   double zoomFactor_ = 1.0;
   double zoomCenter_ = 0.5;
   bool loopEnabled_ = false;

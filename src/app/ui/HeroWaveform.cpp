@@ -13,7 +13,6 @@ HeroWaveform::HeroWaveform() {
   setOpaque(true);
   openGLContext_.setComponentPaintingEnabled(true);
   openGLContext_.attachTo(*this);
-  startTimerHz(30);
 
   // Default stem colours for up to 4 groups
   stemColours_[0] = juce::Colour(0xFF4361EE); // blue
@@ -23,14 +22,7 @@ HeroWaveform::HeroWaveform() {
 }
 
 HeroWaveform::~HeroWaveform() {
-  stopTimer();
   openGLContext_.detach();
-}
-
-void HeroWaveform::timerCallback() {
-  // Periodic repaint for playhead animation during playback
-  if (playheadProgress_ >= 0.0)
-    repaint();
 }
 
 void HeroWaveform::setBuffer(const engine::AudioBuffer& buffer) {
@@ -49,7 +41,9 @@ void HeroWaveform::setBuffer(const engine::AudioBuffer& buffer) {
     }
   }
 
-  buildMipLevels();
+  // Mip levels are rebuilt lazily on the next paint (message thread) instead of
+  // synchronously here, so loading a large buffer does not stall the UI.
+  mipsDirty_ = true;
   cachedWidth_ = 0;
   cachedZoomFactor_ = 0.0;
   cachedZoomCenter_ = 0.0;
@@ -68,7 +62,19 @@ void HeroWaveform::setStemGroups(const std::vector<StemGroup>& groups) {
 
 void HeroWaveform::setPlayheadProgress(double progress) {
   playheadProgress_ = progress;
-  repaint();
+
+  // Repaint only when the playhead's x pixel actually moved (mirrors the pixel
+  // computation in paint()). At 20 Hz progress updates, sub-pixel motion would
+  // otherwise trigger ~50 repaints/s, 30 of them empty. The playhead is only
+  // drawn while inside [0, width], so off-view positions collapse to one sentinel.
+  const int w = getWidth();
+  const double visibleWidth = 1.0 / zoomFactor_;
+  const double viewStart = std::clamp(zoomCenter_ - visibleWidth * 0.5, 0.0, 1.0 - visibleWidth);
+  const double x = (progress - viewStart) / visibleWidth * static_cast<double>(w);
+  const int newPixel = (x < 0.0 || x > static_cast<double>(w)) ? -1 : static_cast<int>(x);
+
+  if (playheadPixelChanged(newPixel, lastPlayheadPixel_))
+    repaint();
 }
 
 void HeroWaveform::setZoom(double zoomFactor, double centerProgress) {
@@ -95,20 +101,18 @@ double HeroWaveform::progressFromX(int x) const {
 }
 
 void HeroWaveform::mouseDown(const juce::MouseEvent& event) {
-  // Check if click is on zoom controls (top-right corner)
-  auto bounds = getLocalBounds();
-  auto zoomArea = bounds.removeFromTop(28).removeFromRight(140);
-  if (zoomArea.contains(event.getPosition())) {
-    if (event.x >= bounds.getRight() - 130 && event.x < bounds.getRight() - 90) {
-      setZoom(zoomFactor_ * 2.0, zoomCenter_);
-      if (onZoomChanged) onZoomChanged(zoomFactor_);
-    } else if (event.x >= bounds.getRight() - 90 && event.x < bounds.getRight() - 46) {
-      setZoom(std::max(1.0, zoomFactor_ * 0.5), zoomCenter_);
-      if (onZoomChanged) onZoomChanged(zoomFactor_);
-    } else if (event.x >= bounds.getRight() - 46) {
-      setZoom(1.0, 0.5);
-      if (onZoomChanged) onZoomChanged(zoomFactor_);
+  // Hit-test zoom controls (top-right corner) against the same rects they are
+  // drawn with, so clicks land exactly where the buttons are painted.
+  const auto bounds = getLocalBounds();
+  for (int index = 0; index < 3; ++index) {
+    if (!zoomControlRectFor(index, bounds).contains(event.getPosition()))
+      continue;
+    switch (index) {
+      case 0: setZoom(zoomFactor_ * 2.0, zoomCenter_); break;
+      case 1: setZoom(std::max(1.0, zoomFactor_ * 0.5), zoomCenter_); break;
+      default: setZoom(1.0, 0.5); break;
     }
+    if (onZoomChanged) onZoomChanged(zoomFactor_);
     return;
   }
 
@@ -253,18 +257,17 @@ void HeroWaveform::buildWaveformCache() {
 }
 
 void HeroWaveform::drawZoomControls(juce::Graphics& g) {
-  const auto bounds = getLocalBounds().toFloat();
-  const float btnSize = 28.0f;
-  const float gap = 4.0f;
-  const float xStart = bounds.getRight() - 140.0f;
+  const auto bounds = getLocalBounds();
+  const float btnSize = static_cast<float>(kZoomButtonSize);
+  const float xStart = static_cast<float>(bounds.getRight() - kZoomControlsWidth);
 
   // Background pill for zoom controls
   g.setColour(juce::Colours::black.withAlpha(0.35f));
-  g.fillRoundedRectangle(xStart, 4.0f, 136.0f, btnSize, btnSize * 0.5f);
+  g.fillRoundedRectangle(xStart, static_cast<float>(kZoomControlTop), 136.0f, btnSize, btnSize * 0.5f);
 
   g.setFont(typography::caption());
-  auto drawBtn = [&](float x, const juce::String& label, bool hovered) {
-    auto r = juce::Rectangle<float>(x, 4.0f, btnSize, btnSize);
+  auto drawBtn = [&](int index, const juce::String& label, bool hovered) {
+    const auto r = zoomControlRectFor(index, bounds).toFloat();
     if (hovered) {
       g.setColour(juce::Colours::white.withAlpha(0.25f));
       g.fillRoundedRectangle(r, 4.0f);
@@ -273,12 +276,13 @@ void HeroWaveform::drawZoomControls(juce::Graphics& g) {
     g.drawText(label, r, juce::Justification::centred);
   };
 
-  drawBtn(xStart + gap, "+", zoomInHover_);
-  drawBtn(xStart + btnSize + gap * 2, "\u2212", zoomOutHover_);
-  drawBtn(xStart + (btnSize + gap) * 2 + gap, "R", zoomResetHover_);
+  drawBtn(0, "+", zoomInHover_);
+  drawBtn(1, "\u2212", zoomOutHover_);
+  drawBtn(2, "R", zoomResetHover_);
 
   // Zoom level text
-  auto zoomLabel = juce::Rectangle<float>(xStart + (btnSize + gap) * 3 + gap * 2, 4.0f, 40.0f, btnSize);
+  auto zoomLabel = juce::Rectangle<float>(xStart + static_cast<float>((kZoomButtonSize + kZoomGap) * 3 + kZoomGap * 2),
+                                          static_cast<float>(kZoomControlTop), 40.0f, btnSize);
   g.setColour(juce::Colours::white.withAlpha(0.7f));
   g.drawText(juce::String(static_cast<int>(zoomFactor_)) + "x", zoomLabel, juce::Justification::centredLeft);
 }
@@ -334,6 +338,13 @@ void HeroWaveform::paint(juce::Graphics& g) {
   auto bounds = getLocalBounds().toFloat();
 
   g.fillAll(colour(colours::background));
+
+  // Build mip levels lazily here (first paint after setBuffer) instead of in
+  // setBuffer, keeping buffer loading off the synchronous mip-reduction pass.
+  if (mipsDirty_) {
+    buildMipLevels();
+    mipsDirty_ = false;
+  }
 
   if (cachedWidth_ != getWidth() || cachedZoomFactor_ != zoomFactor_ || cachedZoomCenter_ != zoomCenter_) {
     buildWaveformCache();

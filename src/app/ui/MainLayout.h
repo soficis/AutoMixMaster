@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <filesystem>
 #include <memory>
@@ -100,6 +101,24 @@ inline const std::vector<ShortcutEntry>& shortcutTable() {
   return table;
 }
 
+/// Maximum output gain the engine accepts (the realtime audio callback clamps
+/// to this). The transport volume slider spans the full range so the UI can
+/// reach all of the headroom.
+inline constexpr double kEngineMaxVolume = 1.5;
+
+/// Clamps a UI volume value into the range the engine output gain accepts.
+/// Shared by the transport wiring and unit tests so the range lives in one place.
+inline double clampVolumeToEngineRange(double volume) {
+  return std::clamp(volume, 0.0, kEngineMaxVolume);
+}
+
+/// Whether clearing imported tracks may proceed: the user confirmed the
+/// confirmation dialog AND there is at least one track to clear. Kept pure so
+/// the decision is testable; the dialog itself is interaction.
+inline bool confirmClear(int numTracks, bool userConfirmed) {
+  return userConfirmed && numTracks > 0;
+}
+
 class HeaderBar;
 class HeroWaveform;
 class TransportBar;
@@ -159,6 +178,8 @@ private:
   void onSettings();
   void onUndo();
   void onRedo();
+  void onClearTracks();
+  void performClearTracks();
   void onHeaderProfileSelected(const juce::String& profileId);
   bool startAiSeparationBeforeAutoMixIfNeeded();
 
@@ -208,6 +229,10 @@ private:
   std::unique_ptr<TransportBar> transportBar_;
   std::unique_ptr<ControlDeck> controlDeck_;
   std::unique_ptr<TaskCenterPanel> taskCenter_;
+
+  // Destructive Clear lives outside the TransportBar (one click was too easy);
+  // owned here with a confirmation dialog, placed at the end of the transport row.
+  juce::TextButton clearTracksButton_{"Clear"};
 
   // ── Backend Objects ─────────────────────────────────────────────
   engine::TransportController transportController_;

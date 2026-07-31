@@ -14,7 +14,6 @@ TransportBar::TransportBar() {
   addAndMakeVisible(playPauseButton_);
   addAndMakeVisible(stopButton_);
   addAndMakeVisible(skipEndButton_);
-  addAndMakeVisible(clearTracksButton_);
   addAndMakeVisible(shortcutsButton_);
   addAndMakeVisible(timeLabel_);
   addAndMakeVisible(volumeSlider_);
@@ -25,7 +24,6 @@ TransportBar::TransportBar() {
   playPauseButton_.setTooltip("Play / Pause (Space)");
   stopButton_.setTooltip("Stop");
   skipEndButton_.setTooltip("Skip to End (End)");
-  clearTracksButton_.setTooltip("Clear Imported Tracks");
   shortcutsButton_.setTooltip("Keyboard Shortcuts (Ctrl+/)");
   loopToggle_.setTooltip("Toggle Loop (L)");
   volumeSlider_.setTooltip("Volume");
@@ -43,7 +41,9 @@ TransportBar::TransportBar() {
 
   volumeSlider_.setSliderStyle(juce::Slider::LinearHorizontal);
   volumeSlider_.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
-  volumeSlider_.setRange(0.0, 1.0, 0.01);
+  // Engine output gain accepts up to 1.5x (clamped in the audio callback);
+  // expose the full range so the UI can reach all of the headroom.
+  volumeSlider_.setRange(0.0, 1.5, 0.01);
   volumeSlider_.setValue(1.0, juce::dontSendNotification);
   volumeSlider_.addListener(this);
 
@@ -67,10 +67,6 @@ TransportBar::TransportBar() {
   skipEndButton_.onClick = [this] {
     if (onSkipToEnd)
       onSkipToEnd();
-  };
-  clearTracksButton_.onClick = [this] {
-    if (onClearTracks)
-      onClearTracks();
   };
   shortcutsButton_.onClick = [this] {
     if (onShowShortcuts)
@@ -103,7 +99,6 @@ void TransportBar::resized() {
   playPauseButton_.setBounds(leftArea.removeFromLeft(64).reduced(2));
   stopButton_.setBounds(leftArea.removeFromLeft(56).reduced(2));
   skipEndButton_.setBounds(leftArea.removeFromLeft(48).reduced(2));
-  clearTracksButton_.setBounds(leftArea.removeFromLeft(48).reduced(2));
 
   // Right: shortcuts + volume + loop
   auto rightArea = area.removeFromRight(236);
@@ -163,7 +158,7 @@ bool TransportBar::keyPressed(const juce::KeyPress& key) {
     return true;
   }
   if (key == juce::KeyPress::upKey) {
-    double newVol = std::min(1.0, volumeSlider_.getValue() + 0.05);
+    double newVol = std::min(1.5, volumeSlider_.getValue() + 0.05);
     volumeSlider_.setValue(newVol, juce::sendNotificationSync);
     return true;
   }

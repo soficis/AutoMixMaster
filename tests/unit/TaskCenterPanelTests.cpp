@@ -192,3 +192,43 @@ TEST_CASE("Shortcut table covers every command exactly once", "[ui][shortcuts]")
       }
   REQUIRE(seen == static_cast<int>(std::size(allCommands)));
 }
+
+// ── Volume engine-range clamp (TransportBar -> MainLayout -> audio callback) ──
+
+TEST_CASE("clampVolumeToEngineRange bounds UI volume to the engine range", "[ui][volume]") {
+  using automix::app::clampVolumeToEngineRange;
+
+  SECTION("values inside the range pass through unchanged") {
+    REQUIRE(clampVolumeToEngineRange(0.0) == 0.0);
+    REQUIRE(clampVolumeToEngineRange(1.0) == 1.0); // default volume
+    REQUIRE(clampVolumeToEngineRange(1.5) == 1.5); // engine max — headroom reachable
+  }
+
+  SECTION("values above the engine max are capped at 1.5") {
+    REQUIRE(clampVolumeToEngineRange(2.0) == 1.5);
+    REQUIRE(clampVolumeToEngineRange(1.51) == 1.5);
+  }
+
+  SECTION("negative values are floored at zero") {
+    REQUIRE(clampVolumeToEngineRange(-1.0) == 0.0);
+  }
+}
+
+// ── Clear-tracks confirmation predicate ────────────────────────────────────
+
+TEST_CASE("confirmClear gates destructive clear on dialog result and non-empty session", "[ui][clear]") {
+  using automix::app::confirmClear;
+
+  SECTION("confirmed with tracks present proceeds") {
+    REQUIRE(confirmClear(3, true));
+  }
+
+  SECTION("cancelled is a no-op — stems preserved") {
+    REQUIRE_FALSE(confirmClear(3, false));
+  }
+
+  SECTION("empty session never clears, even when confirmed") {
+    REQUIRE_FALSE(confirmClear(0, true));
+    REQUIRE_FALSE(confirmClear(0, false));
+  }
+}

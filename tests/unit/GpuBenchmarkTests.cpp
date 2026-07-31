@@ -41,6 +41,17 @@ void createDummyMetadata(const std::filesystem::path& modelPath) {
   })";
 }
 
+/// Create a metadata file that advertises a GPU provider ahead of CPU so the
+/// recovery path is exercisable in deterministic mode.
+void createDummyMetadataWithGpu(const std::filesystem::path& modelPath) {
+  std::ofstream meta(modelPath.string() + ".meta.json");
+  meta << R"({
+    "input_feature_count": 27,
+    "allowed_tasks": ["mix_parameters", "master_parameters"],
+    "execution_providers": ["cuda", "cpu"]
+  })";
+}
+
 double measureInferenceTime(OnnxModelInference& inference,
                             const InferenceRequest& request,
                             int iterations = 5) {
@@ -217,6 +228,167 @@ TEST_CASE("OnnxModelInference failed providers tracking", "[gpu][recovery]") {
   // After failed load, providers list should be available
   const auto providers = inference.detectAvailableProviders();
   CHECK_FALSE(providers.empty());
+}
+
+// ─── T3.4: OOM / device-lost -> CPU recovery (deterministic mode) ───────────
+
+TEST_CASE("OnnxModelInference OOM failure triggers recovery counters and CPU re-resolution", "[gpu][recovery]") {
+  OnnxModelInference inference;
+  const auto tempDir = std::filesystem::temp_directory_path() / "automix_gpu_oom_recovery_test";
+  std::filesystem::remove_all(tempDir);
+  std::filesystem::create_directories(tempDir);
+
+  const auto modelPath = createDummyModel(tempDir);
+  createDummyMetadataWithGpu(modelPath);
+  REQUIRE(inference.loadModel(modelPath));
+
+  // Setup proves the GPU provider is actually selectable before any failure:
+  // the recovery assertions are only meaningful if resolution picks "cuda".
+  REQUIRE(inference.activeExecutionProvider() == "cuda");
+  REQUIRE(inference.gpuRecoveryCount() == 0);
+  REQUIRE(inference.failedProviders().empty());
+
+  // When: a GPU OOM failure is simulated on the active provider.
+  inference.recordProviderFailure("cuda", ProviderFailureKind::Oom);
+
+  // Then: the recovery counter reflects the OOM.
+  CHECK(inference.gpuRecoveryCount() == 1);
+  CHECK(inference.backendDiagnostics().find("gpu_oom=1") != std::string::npos);
+
+  // And: the provider is recorded as failed.
+  const auto failed = inference.failedProviders();
+  REQUIRE(failed.size() == 1);
+  CHECK(failed[0] == "cuda");
+
+  // And: subsequent resolution skips the failed provider, landing on CPU.
+  CHECK(inference.activeExecutionProvider() == "cpu");
+
+  // And: the CPU (deterministic) fallback still serves inference.
+  InferenceRequest req;
+  req.task = "mix_parameters";
+  req.features.assign(27, 0.5);
+  const auto result = inference.run(req);
+  CHECK(result.usedModel);
+  CHECK(result.logMessage.find("provider='cpu'") != std::string::npos);
+
+  // And: the retry did not double-count the recovery.
+  CHECK(inference.gpuRecoveryCount() == 1);
+
+  std::filesystem::remove_all(tempDir);
+}
+
+TEST_CASE("OnnxModelInference device-lost failure triggers recovery counters and CPU re-resolution", "[gpu][recovery]") {
+  OnnxModelInference inference;
+  const auto tempDir = std::filesystem::temp_directory_path() / "automix_gpu_device_lost_test";
+  std::filesystem::remove_all(tempDir);
+  std::filesystem::create_directories(tempDir);
+
+  const auto modelPath = createDummyModel(tempDir);
+  createDummyMetadataWithGpu(modelPath);
+  REQUIRE(inference.loadModel(modelPath));
+  REQUIRE(inference.activeExecutionProvider() == "cuda");
+
+  // When: a GPU device-lost failure is simulated on the active provider.
+  inference.recordProviderFailure("cuda", ProviderFailureKind::DeviceLost);
+
+  // Then: the recovery counter reflects the device-lost event.
+  CHECK(inference.gpuRecoveryCount() == 1);
+  CHECK(inference.backendDiagnostics().find("gpu_device_lost=1") != std::string::npos);
+
+  // And: the provider is recorded as failed and resolution lands on CPU.
+  const auto failed = inference.failedProviders();
+  REQUIRE(failed.size() == 1);
+  CHECK(failed[0] == "cuda");
+  CHECK(inference.activeExecutionProvider() == "cpu");
+
+  // And: a subsequent inference still succeeds via the CPU fallback.
+  InferenceRequest req;
+  req.task = "mix_parameters";
+  req.features.assign(27, 0.5);
+  const auto result = inference.run(req);
+  CHECK(result.usedModel);
+
+  std::filesystem::remove_all(tempDir);
+}
+
+TEST_CASE("OnnxModelInference resolution skips failed provider on later re-resolution", "[gpu][recovery]") {
+  OnnxModelInference inference;
+  const auto tempDir = std::filesystem::temp_directory_path() / "automix_gpu_resolve_skip_test";
+  std::filesystem::remove_all(tempDir);
+  std::filesystem::create_directories(tempDir);
+
+  const auto modelPath = createDummyModel(tempDir);
+  createDummyMetadataWithGpu(modelPath);
+  REQUIRE(inference.loadModel(modelPath));
+  REQUIRE(inference.activeExecutionProvider() == "cuda");
+
+  // Given: the GPU provider has failed once and resolution fell back to CPU.
+  inference.recordProviderFailure("cuda", ProviderFailureKind::Oom);
+  CHECK(inference.activeExecutionProvider() == "cpu");
+
+  // When: execution-provider resolution is re-run through the public surface.
+  inference.setExecutionProviderPreference("auto");
+
+  // Then: the failed provider stays skipped; CPU remains the active provider.
+  CHECK(inference.activeExecutionProvider() == "cpu");
+  const auto failed = inference.failedProviders();
+  REQUIRE(failed.size() == 1);
+  CHECK(failed[0] == "cuda");
+
+  std::filesystem::remove_all(tempDir);
+}
+
+TEST_CASE("OnnxModelInference repeated failure counts each recovery but records provider once", "[gpu][recovery]") {
+  OnnxModelInference inference;
+  const auto tempDir = std::filesystem::temp_directory_path() / "automix_gpu_repeat_failure_test";
+  std::filesystem::remove_all(tempDir);
+  std::filesystem::create_directories(tempDir);
+
+  const auto modelPath = createDummyModel(tempDir);
+  createDummyMetadataWithGpu(modelPath);
+  REQUIRE(inference.loadModel(modelPath));
+  REQUIRE(inference.activeExecutionProvider() == "cuda");
+
+  // When: the same provider fails twice.
+  inference.recordProviderFailure("cuda", ProviderFailureKind::Oom);
+  inference.recordProviderFailure("cuda", ProviderFailureKind::Oom);
+
+  // Then: each failure is a distinct recovery event...
+  CHECK(inference.gpuRecoveryCount() == 2);
+  CHECK(inference.backendDiagnostics().find("gpu_oom=2") != std::string::npos);
+
+  // ...but the provider is recorded exactly once (deduplicated).
+  const auto failed = inference.failedProviders();
+  REQUIRE(failed.size() == 1);
+  CHECK(failed[0] == "cuda");
+  CHECK(inference.activeExecutionProvider() == "cpu");
+
+  std::filesystem::remove_all(tempDir);
+}
+
+TEST_CASE("OnnxModelInference non-recoverable failure marks provider failed without recovery counter", "[gpu][recovery]") {
+  OnnxModelInference inference;
+  const auto tempDir = std::filesystem::temp_directory_path() / "automix_gpu_unknown_failure_test";
+  std::filesystem::remove_all(tempDir);
+  std::filesystem::create_directories(tempDir);
+
+  const auto modelPath = createDummyModel(tempDir);
+  createDummyMetadataWithGpu(modelPath);
+  REQUIRE(inference.loadModel(modelPath));
+  REQUIRE(inference.activeExecutionProvider() == "cuda");
+
+  // When: a non-OOM / non-device-lost failure is simulated.
+  inference.recordProviderFailure("cuda", ProviderFailureKind::Unknown);
+
+  // Then: the provider is still marked failed and resolution falls back to CPU,
+  // but the GPU recovery counter is not inflated.
+  CHECK(inference.gpuRecoveryCount() == 0);
+  const auto failed = inference.failedProviders();
+  REQUIRE(failed.size() == 1);
+  CHECK(failed[0] == "cuda");
+  CHECK(inference.activeExecutionProvider() == "cpu");
+
+  std::filesystem::remove_all(tempDir);
 }
 
 // ─── T3.7: GPU vs CPU benchmarks ────────────────────────────────────────────

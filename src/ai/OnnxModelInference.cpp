@@ -880,6 +880,34 @@ void OnnxModelInference::setExecutionProviderPreference(std::string provider) {
   }
 }
 
+void OnnxModelInference::recordProviderFailure(const std::string& provider,
+                                               const ProviderFailureKind kind) {
+  const auto canonical = canonicalProviderName(provider);
+  providerFallbacks_.fetch_add(1);
+  switch (kind) {
+    case ProviderFailureKind::Oom:
+      gpuOomCount_.fetch_add(1);
+      gpuRecoveryCount_.fetch_add(1);
+      break;
+    case ProviderFailureKind::DeviceLost:
+      gpuDeviceLostCount_.fetch_add(1);
+      gpuRecoveryCount_.fetch_add(1);
+      break;
+    case ProviderFailureKind::Unknown:
+      break;
+  }
+  {
+    std::scoped_lock lock(failedProvidersMutex_);
+    if (std::find(failedProviders_.begin(), failedProviders_.end(), canonical) ==
+        failedProviders_.end()) {
+      failedProviders_.push_back(canonical);
+    }
+  }
+  if (loaded_) {
+    activeExecutionProvider_ = resolveExecutionProvider();
+  }
+}
+
 void OnnxModelInference::setGraphOptimizationEnabled(const bool enabled) { graphOptimizationEnabled_ = enabled; }
 
 void OnnxModelInference::setWarmupEnabled(const bool enabled) { warmupEnabled_ = enabled; }

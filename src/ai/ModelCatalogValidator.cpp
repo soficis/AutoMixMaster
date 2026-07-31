@@ -7,6 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "ai/ItoMasterAdapter.h"
 #include "util/StringUtils.h"
 
 namespace automix::ai {
@@ -213,6 +214,7 @@ bool writeTurnkeyModelPackManifest(const std::filesystem::path& installPath,
       {"engine", compatibility.engine.empty() ? "unknown" : compatibility.engine},
       {"version", installResult.revision.empty() ? "0.0.0" : installResult.revision},
       {"model_file", modelFileName},
+      {"auxiliary_files", installResult.auxiliaryFiles},
       {"license", model.license.empty() ? "unknown" : model.license},
       {"source", model.sourceUrl.empty() ? model.source : model.sourceUrl},
       {"feature_schema_version", "1.0.0"},
@@ -220,6 +222,12 @@ bool writeTurnkeyModelPackManifest(const std::filesystem::path& installPath,
       {"input_names", nlohmann::json::array()},
       {"output_names", nlohmann::json::array()},
   };
+
+  if (model.repoId == kItoMasterRepoId) {
+    manifest["intended_use"] =
+        std::string("Experimental ITO-Master AI mastering route (non-default, off by default). ") +
+        "License: " + kItoMasterLicense + ". Attribution: " + kItoMasterAttribution;
+  }
 
   const auto manifestPath = installPath / "model.json";
   std::ofstream out(manifestPath);

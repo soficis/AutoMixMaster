@@ -115,6 +115,7 @@ std::optional<ModelPack> ModelPackLoader::load(const std::filesystem::path& dire
   pack.intendedUse = json.value("intended_use", json.value("intendedUse", ""));
   pack.featureSchemaVersion = json.value("feature_schema_version", json.value("featureSchemaVersion", ""));
   pack.modelFile = json.value("modelFile", json.value("model_file", "model.onnx"));
+  pack.auxiliaryFiles = readStringArray(json, "auxiliaryFiles", "auxiliary_files");
   pack.checksum = json.value("checksum", "");
   if (json.contains("inputFeatureCount")) {
     pack.inputFeatureCount = json.at("inputFeatureCount").get<size_t>();
@@ -182,6 +183,11 @@ std::optional<ModelPack> ModelPackLoader::load(const std::filesystem::path& dire
   if (requiresOnnxModelForScope(pack.taskScope) &&
       util::toLower(modelPath.extension().string()) != ".onnx") {
     return std::nullopt;
+  }
+  for (const auto& auxiliaryFile : pack.auxiliaryFiles) {
+    if (auxiliaryFile.empty() || !std::filesystem::exists(directory / auxiliaryFile)) {
+      return std::nullopt;
+    }
   }
 
   const std::string computedChecksum = computeChecksum(modelPath);

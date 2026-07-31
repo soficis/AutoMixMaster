@@ -30,6 +30,76 @@
 
 namespace automix::app {
 
+// ── Keyboard shortcut table (single source of truth) ────────────────────
+// Command ids start at 1000 (0 is reserved as "no command" by JUCE).
+
+enum class ShortcutCommand : juce::CommandID {
+  saveSession = 1000,
+  loadSession = 1001,
+  import = 1002,
+  autoMix = 1003,
+  autoMaster = 1004,
+  autoMixMaster = 1005,
+  exportProject = 1006,
+  modelsDialog = 1007,
+  undo = 1008,
+  redo = 1009,
+  playPause = 1010,
+  shortcutsDialog = 1011,
+};
+
+/// One row of the shortcut table: command id, display name, default key.
+struct ShortcutEntry {
+  ShortcutCommand command;
+  const char* name;
+  juce::KeyPress defaultKey;
+};
+
+/// Every application command and its default key binding.
+///
+/// Header-only so MainLayout (command registration + cheatsheet dialog) and the
+/// unit tests (no-duplicate-keybindings, conflict-resolution invariants) share
+/// one table. A command may appear more than once (e.g. Redo has both Ctrl+Y
+/// and Ctrl+Shift+Z); the keybindings themselves are unique across the table.
+///
+/// Conflict resolution (documented in the cheatsheet): Ctrl+Shift+M = Mix +
+/// Master (the README-documented one-click pipeline), Ctrl+Shift+A = Auto
+/// Master.
+inline const std::vector<ShortcutEntry>& shortcutTable() {
+  static const std::vector<ShortcutEntry> table = {
+      {ShortcutCommand::saveSession, "Save Session",
+       juce::KeyPress('s', juce::ModifierKeys::ctrlModifier, 0)},
+      {ShortcutCommand::loadSession, "Load Session",
+       juce::KeyPress('o', juce::ModifierKeys::ctrlModifier, 0)},
+      {ShortcutCommand::import, "Import",
+       juce::KeyPress('i', juce::ModifierKeys::ctrlModifier, 0)},
+      {ShortcutCommand::autoMix, "Auto Mix",
+       juce::KeyPress('m', juce::ModifierKeys::ctrlModifier, 0)},
+      {ShortcutCommand::autoMaster, "Auto Master",
+       juce::KeyPress('a',
+                      juce::ModifierKeys::ctrlModifier | juce::ModifierKeys::shiftModifier, 0)},
+      {ShortcutCommand::autoMixMaster, "Mix + Master",
+       juce::KeyPress('m',
+                      juce::ModifierKeys::ctrlModifier | juce::ModifierKeys::shiftModifier, 0)},
+      {ShortcutCommand::exportProject, "Export",
+       juce::KeyPress('e', juce::ModifierKeys::ctrlModifier, 0)},
+      {ShortcutCommand::modelsDialog, "Models",
+       juce::KeyPress('k', juce::ModifierKeys::ctrlModifier, 0)},
+      {ShortcutCommand::undo, "Undo",
+       juce::KeyPress('z', juce::ModifierKeys::ctrlModifier, 0)},
+      {ShortcutCommand::redo, "Redo",
+       juce::KeyPress('y', juce::ModifierKeys::ctrlModifier, 0)},
+      {ShortcutCommand::redo, "Redo",
+       juce::KeyPress('z',
+                      juce::ModifierKeys::ctrlModifier | juce::ModifierKeys::shiftModifier, 0)},
+      {ShortcutCommand::playPause, "Play / Pause",
+       juce::KeyPress(juce::KeyPress::spaceKey, juce::ModifierKeys::noModifiers, 0)},
+      {ShortcutCommand::shortcutsDialog, "Keyboard Shortcuts",
+       juce::KeyPress('/', juce::ModifierKeys::ctrlModifier, 0)},
+  };
+  return table;
+}
+
 class HeaderBar;
 class HeroWaveform;
 class TransportBar;
@@ -44,7 +114,8 @@ class ModelBrowserPanel;
 class MainLayout final : public juce::Component,
                          private juce::Timer,
                          private juce::ChangeListener,
-                         private juce::AudioIODeviceCallback {
+                         private juce::AudioIODeviceCallback,
+                         private juce::ApplicationCommandTarget {
 public:
   MainLayout();
   ~MainLayout() override;
@@ -90,6 +161,16 @@ private:
   void onRedo();
   void onHeaderProfileSelected(const juce::String& profileId);
   bool startAiSeparationBeforeAutoMixIfNeeded();
+
+  // Shortcut helpers (wired through the command manager)
+  void onTogglePlayPause();
+  void showShortcutsDialog();
+
+  // ── ApplicationCommandTarget (keyboard shortcuts) ──────────────
+  juce::ApplicationCommandTarget* getNextCommandTarget() override;
+  void getAllCommands(juce::Array<juce::CommandID>& commands) override;
+  void getCommandInfo(juce::CommandID commandID, juce::ApplicationCommandInfo& result) override;
+  bool perform(const juce::ApplicationCommandTarget::InvocationInfo& info) override;
 
   // Import helper shared by button and drag/drop
   void importFiles(std::vector<juce::File> files);
@@ -183,6 +264,9 @@ private:
   std::unique_ptr<ExportController> exportController_;
   std::unique_ptr<ProcessingController> processingController_;
   std::unique_ptr<SessionController> sessionController_;
+
+  // Keyboard shortcut dispatch (owns the command/key-mapping registry)
+  juce::ApplicationCommandManager commandManager_;
 
   // Layout constants
   static constexpr int kHeaderHeight = 48;

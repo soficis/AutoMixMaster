@@ -15,6 +15,7 @@ TransportBar::TransportBar() {
   addAndMakeVisible(stopButton_);
   addAndMakeVisible(skipEndButton_);
   addAndMakeVisible(clearTracksButton_);
+  addAndMakeVisible(shortcutsButton_);
   addAndMakeVisible(timeLabel_);
   addAndMakeVisible(volumeSlider_);
   addAndMakeVisible(loopToggle_);
@@ -25,6 +26,7 @@ TransportBar::TransportBar() {
   stopButton_.setTooltip("Stop");
   skipEndButton_.setTooltip("Skip to End (End)");
   clearTracksButton_.setTooltip("Clear Imported Tracks");
+  shortcutsButton_.setTooltip("Keyboard Shortcuts (Ctrl+/)");
   loopToggle_.setTooltip("Toggle Loop (L)");
   volumeSlider_.setTooltip("Volume");
 
@@ -70,6 +72,10 @@ TransportBar::TransportBar() {
     if (onClearTracks)
       onClearTracks();
   };
+  shortcutsButton_.onClick = [this] {
+    if (onShowShortcuts)
+      onShowShortcuts();
+  };
   loopToggle_.onClick = [this] {
     if (onLoopToggle)
       onLoopToggle();
@@ -99,8 +105,9 @@ void TransportBar::resized() {
   skipEndButton_.setBounds(leftArea.removeFromLeft(48).reduced(2));
   clearTracksButton_.setBounds(leftArea.removeFromLeft(48).reduced(2));
 
-  // Right: volume + loop
-  auto rightArea = area.removeFromRight(200);
+  // Right: shortcuts + volume + loop
+  auto rightArea = area.removeFromRight(236);
+  shortcutsButton_.setBounds(rightArea.removeFromRight(36).reduced(2));
   loopToggle_.setBounds(rightArea.removeFromRight(72).reduced(2));
   volumeSlider_.setBounds(rightArea.reduced(2));
 
@@ -147,14 +154,6 @@ juce::String TransportBar::formatTime(double seconds) {
 }
 
 bool TransportBar::keyPressed(const juce::KeyPress& key) {
-  if (key == juce::KeyPress::spaceKey) {
-    if (isPlaying_) {
-      if (onPause) onPause();
-    } else {
-      if (onPlay) onPlay();
-    }
-    return true;
-  }
   if (key == juce::KeyPress::leftKey) {
     if (onSeekRelative) onSeekRelative(-5.0);
     return true;

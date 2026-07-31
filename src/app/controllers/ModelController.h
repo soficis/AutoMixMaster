@@ -51,6 +51,15 @@ class ModelController {
   void checkUpdates(std::atomic_bool& cancelFlag);
   void verifyIntegrity();
 
+  // Non-commercial (CC BY-NC) models require an explicit, persisted per-model
+  // user opt-in before they can be downloaded or activated. Calling
+  // acknowledgeModelLicenseConsent records that opt-in for the given model id
+  // (e.g. "huggingface:kramp/ito-master-onnx"); installModel and
+  // activateInstalledModelForTask refuse to proceed until it is recorded.
+  bool acknowledgeModelLicenseConsent(const std::string& modelId);
+  bool hasModelLicenseConsent(const std::string& modelId) const;
+  static bool modelRequiresLicenseConsent(const std::string& repoId);
+
   const std::vector<ai::HubModelInfo>& discoveredModels() const;
   std::set<std::string> installedModelIds() const;
   void setModelHubRoot(const std::filesystem::path& root);

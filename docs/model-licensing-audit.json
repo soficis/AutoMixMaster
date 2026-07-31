@@ -103,7 +103,13 @@
       "commercialUsable": false,
       "attributionRequired": true,
       "flagged": true,
-      "notes": "ITO-Master ONNX; CC BY-NC 4.0 confirmed on HF card (checked 2026-07-31). User opt-in download only, never bundled in a commercial installer."
+      "assets": [
+        "fxencoder.onnx",
+        "mastering_tcn.onnx",
+        "config.json"
+      ],
+      "attribution": "ITO-Master, Koo et al., Sony Research (github.com/SonyResearch/ITO-Master); ONNX export by kramp (huggingface.co/kramp/ito-master-onnx)",
+      "notes": "ITO-Master ONNX; CC BY-NC 4.0 confirmed on HF card (checked 2026-07-31). Multi-file pack (fxencoder.onnx + mastering_tcn.onnx + config.json) consumed by the mastering-assistant route. User opt-in download only, never bundled in a commercial installer/redistribution; runtime hub download under the user's license keeps it legal."
     }
   ]
 }

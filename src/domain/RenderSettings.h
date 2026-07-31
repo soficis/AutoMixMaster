@@ -20,6 +20,7 @@ struct RenderSettings {
   bool mp3UseVbr = false;
   int mp3VbrQuality = 4;
   int processingThreads = 0;
+  int renderParallelism = 0;
   bool preferHardwareAcceleration = true;
   std::string metadataPolicy = "copy_all";
   std::map<std::string, std::string> metadataTemplate;

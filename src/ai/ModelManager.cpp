@@ -234,4 +234,21 @@ std::string ModelManager::activePackId(const std::string& task) const {
   return it != activePackByTask_.end() ? it->second : "";
 }
 
+bool ModelManager::uninstallPack(const std::string& packId) {
+  auto it = std::find_if(availablePacks_.begin(), availablePacks_.end(),
+                         [&](const ModelPack& pack) { return pack.id == packId; });
+  if (it == availablePacks_.end()) {
+    return false;
+  }
+
+  std::error_code error;
+  std::filesystem::remove_all(it->rootPath, error);
+  if (error) {
+    return false;
+  }
+
+  availablePacks_.erase(it);
+  return true;
+}
+
 } // namespace automix::ai

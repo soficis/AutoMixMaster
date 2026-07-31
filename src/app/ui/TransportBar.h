@@ -30,6 +30,7 @@ public:
   std::function<void(double)> onVolumeChanged;
   std::function<void()> onLoopToggle;
   std::function<void(double)> onSeekRelative; // seconds offset (+/- 5s)
+  std::function<void()> onClearTracks;
 
 private:
   void sliderValueChanged(juce::Slider* slider) override;
@@ -39,6 +40,7 @@ private:
   juce::TextButton playPauseButton_{"Play"};
   juce::TextButton stopButton_{"Stop"};
   juce::TextButton skipEndButton_{">|"};
+  juce::TextButton clearTracksButton_{"Clear"};
   juce::Label timeLabel_;
   juce::Slider volumeSlider_;
   juce::ToggleButton loopToggle_{"Loop"};

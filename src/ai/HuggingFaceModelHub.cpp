@@ -311,6 +311,8 @@ std::vector<std::string> curatedModelIds() {
       "laion/clap-htsat-unfused",
       "pranjal-pravesh/PANNs_CNN14_ONNX",
       "SonyCSLParis/music2latent",
+      "StemSplitio/htdemucs-ft-onnx",
+      "StemSplitio/htdemucs-6s-onnx",
   };
 }
 
@@ -325,6 +327,7 @@ std::string inferUseCase(const std::string& repoId,
   joined += "|" + toLower(fallbackQuery);
 
   if (joined.find("demucs") != std::string::npos ||
+      joined.find("htdemucs") != std::string::npos ||
       joined.find("mdx") != std::string::npos ||
       joined.find("roformer") != std::string::npos ||
       joined.find("unmix") != std::string::npos ||
@@ -692,7 +695,7 @@ std::vector<HubModelInfo> HuggingFaceModelHub::discoverRecommended(const HubMode
       if (!options.includeGated && info->gated) {
         continue;
       }
-      if (info->privateRepo || info->disabled || info->primaryFile.empty() || !info->compatible) {
+      if (info->privateRepo || info->disabled || info->primaryFile.empty()) {
         continue;
       }
       if (!seen.insert(info->repoId).second) {

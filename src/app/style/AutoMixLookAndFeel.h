@@ -2,6 +2,8 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "Theme.h"
+
 namespace automix::app {
 
 /// Custom LookAndFeel for AutoMixMaster.

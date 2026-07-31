@@ -1,0 +1,19 @@
+{
+  "engine": "onnxruntime",
+  "feature_schema_version": "1.0.0",
+  "id": "github-smartdaze-otowake-oto-htdemucs_6s-onnx",
+  "input_names": [],
+  "license": "unknown",
+  "model_file": "htdemucs_6s.onnx",
+  "name": "OtoWake Demucs 6s ONNX",
+  "output_names": [],
+  "output_schema": {
+    "confidence": "float",
+    "separation_quality": "float"
+  },
+  "schema_version": 1,
+  "source": "https://github.com/smartdaze/otowake-oto/releases/tag/models-v1",
+  "task_scope": "separation",
+  "type": "separation_model",
+  "version": "models-v1"
+}

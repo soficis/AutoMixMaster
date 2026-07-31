@@ -403,20 +403,28 @@ void ProcessingController::runAutoMaster(const domain::Session& session,
 
 void ProcessingController::runBatch(const std::filesystem::path& inputFolder,
                                     const domain::RenderSettings& baseSettings,
-                                    std::atomic_bool& cancelFlag) {
+                                    std::atomic_bool& cancelFlag,
+                                    std::optional<ai::ModelPack> mixPack,
+                                    std::optional<ai::ModelPack> masterPack) {
   struct BatchJob final : juce::ThreadPoolJob {
     std::filesystem::path inputFolder;
     domain::RenderSettings baseSettings;
     std::atomic_bool* cancelFlag;
     Callbacks callbacks;
+    std::optional<ai::ModelPack> mixPack;
+    std::optional<ai::ModelPack> masterPack;
 
     BatchJob(std::filesystem::path folder, domain::RenderSettings sett,
-             std::atomic_bool* cancel, Callbacks cb)
+             std::atomic_bool* cancel, Callbacks cb,
+             std::optional<ai::ModelPack> mixPack_,
+             std::optional<ai::ModelPack> masterPack_)
         : juce::ThreadPoolJob("BatchJob"),
           inputFolder(std::move(folder)),
           baseSettings(std::move(sett)),
           cancelFlag(cancel),
-          callbacks(std::move(cb)) {}
+          callbacks(std::move(cb)),
+          mixPack(std::move(mixPack_)),
+          masterPack(std::move(masterPack_)) {}
 
     JobStatus runJob() override {
       const std::filesystem::path outputFolder = inputFolder / "automix_batch_exports";
@@ -457,6 +465,76 @@ void ProcessingController::runBatch(const std::filesystem::path& inputFolder,
 
       if (callbacks.onStatus) {
         callbacks.onStatus(recursiveScan ? "Batch started (recursive scan enabled)" : "Batch started");
+      }
+
+      if (mixPack.has_value() || masterPack.has_value()) {
+        if (callbacks.onStatus) {
+          callbacks.onStatus("Batch: applying AI model overrides...");
+        }
+        for (auto& item : items) {
+          if (cancelFlag != nullptr && cancelFlag->load()) {
+            break;
+          }
+          if (item.session.stems.empty()) {
+            continue;
+          }
+          try {
+            analysis::StemAnalyzer analyzer;
+            const auto analysisEntries = analyzer.analyzeSession(item.session);
+
+            if (mixPack.has_value()) {
+              std::string backendDiag;
+              auto inference = createInferenceBackend(&mixPack.value(), baseSettings.gpuExecutionProvider, &backendDiag);
+              if (inference != nullptr) {
+                automix::HeuristicAutoMixStrategy heuristicMix;
+                auto heuristicPlan = heuristicMix.buildPlan(item.session, analysisEntries, 1.0);
+                ai::AutoMixStrategyAI aiMix;
+                auto aiPlan = aiMix.buildPlan(item.session, analysisEntries, heuristicPlan, inference.get());
+                aiPlan.decisionLog.push_back("AI pack: " + mixPack->id);
+                if (!backendDiag.empty()) {
+                  aiPlan.decisionLog.push_back("Inference backend: " + backendDiag);
+                }
+                item.session.mixPlan = std::move(aiPlan);
+              } else {
+                automix::HeuristicAutoMixStrategy heuristicMix;
+                item.session.mixPlan = heuristicMix.buildPlan(item.session, analysisEntries, 1.0);
+              }
+            } else {
+              automix::HeuristicAutoMixStrategy heuristicMix;
+              item.session.mixPlan = heuristicMix.buildPlan(item.session, analysisEntries, 1.0);
+            }
+
+            if (masterPack.has_value() && item.session.mixPlan.has_value()) {
+              engine::OfflineRenderPipeline pipeline;
+              const auto rawMix = pipeline.renderRawMix(item.session, baseSettings, {}, nullptr);
+              if (!rawMix.cancelled && rawMix.mixBuffer.getNumSamples() > 0) {
+                std::string backendDiag;
+                auto inference = createInferenceBackend(&masterPack.value(), baseSettings.gpuExecutionProvider, &backendDiag);
+                if (inference != nullptr) {
+                  analysis::StemAnalyzer masterAnalyzer;
+                  const auto mixMetrics = masterAnalyzer.analyzeBuffer(rawMix.mixBuffer);
+                  automaster::HeuristicAutoMasterStrategy heuristicMaster;
+                  auto masterPlan = heuristicMaster.buildPlan(domain::MasterPreset::DefaultStreaming, rawMix.mixBuffer);
+                  ai::AutoMasterStrategyAI aiMaster;
+                  masterPlan = aiMaster.buildPlan(mixMetrics, masterPlan, inference.get());
+                  masterPlan.decisionLog.push_back("AI pack: " + masterPack->id);
+                  if (!backendDiag.empty()) {
+                    masterPlan.decisionLog.push_back("Inference backend: " + backendDiag);
+                  }
+                  item.session.masterPlan = std::move(masterPlan);
+                }
+              }
+            }
+          } catch (const std::exception&) {
+            // AI override failed; heuristic plan from process() will be used as fallback.
+          }
+        }
+        // Mark items with pre-computed plans so BatchQueueRunner::process() skips analysis.
+        for (auto& item : items) {
+          if (item.status == domain::BatchItemStatus::Pending) {
+            item.status = domain::BatchItemStatus::Analyzing;
+          }
+        }
       }
 
       domain::BatchJob job;
@@ -620,7 +698,7 @@ void ProcessingController::runBatch(const std::filesystem::path& inputFolder,
   };
 
   threadPool_.addJob(
-      new BatchJob(inputFolder, baseSettings, &cancelFlag, callbacks_),
+      new BatchJob(inputFolder, baseSettings, &cancelFlag, callbacks_, mixPack, masterPack),
       true);
 }
 

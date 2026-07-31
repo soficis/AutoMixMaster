@@ -1,0 +1,23 @@
+{
+  "availableFiles": [
+    "denoiser_fp16.onnx"
+  ],
+  "downloads": 11,
+  "installedAtUtc": "2026-02-22T14:32:59.010-06:00",
+  "license": "unknown",
+  "likes": 0,
+  "modelId": "github:instant-high/Resemble-Denoiser-ONNX@denoiser_fp16.onnx",
+  "name": "Resemble Denoiser FP16 ONNX",
+  "primaryFile": "denoiser_fp16.onnx",
+  "repoId": "instant-high/Resemble-Denoiser-ONNX",
+  "revision": "denoiser_onnx",
+  "schemaVersion": 1,
+  "source": "github",
+  "sourceUrl": "https://github.com/instant-high/Resemble-Denoiser-ONNX/releases/tag/denoiser_onnx",
+  "tags": [
+    "github-release",
+    "curated"
+  ],
+  "taskScope": "analysis",
+  "useCase": "analysis-denoise"
+}

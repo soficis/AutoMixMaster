@@ -1,7 +1,6 @@
 #pragma once
 
 #include <atomic>
-#include <functional>
 #include <string>
 #include <vector>
 
@@ -16,12 +15,5 @@ RenderResult renderWithPipeline(const domain::Session& session,
                                 const domain::RenderSettings& settings,
                                 const IRenderer::ProgressCallback& onProgress,
                                 std::atomic_bool* cancelFlag);
-
-int effectiveParallelism(const domain::RenderSettings& settings,
-                         int taskCount);
-
-void parallelFor(int taskCount,
-                 int parallelism,
-                 const std::function<void(int index)>& func);
 
 } // namespace automix::renderers

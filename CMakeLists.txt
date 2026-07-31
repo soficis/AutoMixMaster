@@ -27,7 +27,6 @@ endif()
 option(ENABLE_PHASELIMITER "Enable optional PhaseLimiter renderer" OFF)
 option(ENABLE_ONNX "Enable optional ONNX model inference adapter" OFF)
 option(ENABLE_RTNEURAL "Enable optional RTNeural model inference adapter" OFF)
-option(ENABLE_ANIRA "Enable optional anira real-time inference backend" OFF)
 option(RTNEURAL_XSIMD "Enable RTNeural XSIMD backend (if available)" ON)
 option(RTNEURAL_USE_AVX "Enable RTNeural AVX backend on x86_64 (if available)" ON)
 option(ENABLE_LIBEBUR128 "Enable libebur128 standards loudness metering" ON)
@@ -72,31 +71,6 @@ if(ENABLE_LIBEBUR128)
   endif()
 endif()
 
-set(AUTOMIX_HAS_ANIRA OFF)
-if(ENABLE_ANIRA)
-  set(ANIRA_WITH_LIBTORCH OFF CACHE BOOL "" FORCE)
-  set(ANIRA_WITH_ONNXRUNTIME ON CACHE BOOL "" FORCE)
-  set(ANIRA_WITH_LITERT OFF CACHE BOOL "" FORCE)
-  set(ANIRA_WITH_TFLITE OFF CACHE BOOL "" FORCE)
-  set(ANIRA_WITH_EXECUTORCH OFF CACHE BOOL "" FORCE)
-  set(ANIRA_WITH_BENCHMARK OFF CACHE BOOL "" FORCE)
-  set(ANIRA_WITH_EXAMPLES OFF CACHE BOOL "" FORCE)
-  set(ANIRA_WITH_TESTS OFF CACHE BOOL "" FORCE)
-  set(ANIRA_WITH_INSTALL OFF CACHE BOOL "" FORCE)
-  set(ANIRA_WITH_DOCS OFF CACHE BOOL "" FORCE)
-  set(ANIRA_WITH_LOGGING OFF CACHE BOOL "" FORCE)
-
-  FetchContent_Declare(
-    anira
-    GIT_REPOSITORY https://github.com/anira-project/anira.git
-    GIT_TAG v2.2.1
-  )
-  FetchContent_MakeAvailable(anira)
-  if(TARGET anira::anira)
-    set(AUTOMIX_HAS_ANIRA ON)
-  endif()
-endif()
-
 add_library(automix_core
   src/domain/Bus.cpp
   src/domain/BatchTypes.cpp
@@ -109,15 +83,12 @@ add_library(automix_core
   src/domain/Stem.cpp
   src/domain/StemOrigin.cpp
   src/engine/AudioBuffer.cpp
-  src/engine/AudioBufferPool.cpp
-  src/engine/BatchStreamer.cpp
   src/engine/AudioFileIO.cpp
   src/engine/AudioPreviewEngine.cpp
   src/engine/LoudnessMeter.cpp
   src/engine/AudioResampler.cpp
   src/engine/TransportController.cpp
   src/engine/BatchQueueRunner.cpp
-  src/engine/ProgressTracker.cpp
   src/engine/OfflineRenderPipeline.cpp
   src/engine/ResidualBlendProcessor.cpp
   src/engine/SessionRepository.cpp
@@ -146,7 +117,6 @@ add_library(automix_core
   src/renderers/PostRendererFactory.cpp
   src/renderers/RendererFactory.cpp
   src/renderers/RendererPipeline.cpp
-  src/renderers/ParallelRenderPipeline.cpp
   src/renderers/RsgainDiscovery.cpp
   src/renderers/RsgainRenderer.cpp
   src/renderers/SoxDiscovery.cpp
@@ -163,9 +133,6 @@ add_library(automix_core
   src/ai/FeatureSchema.cpp
   src/ai/MasteringCompliance.cpp
   src/ai/OnnxModelInference.cpp
-  src/ai/RtNeuralInference.cpp
-  src/ai/AniraInference.cpp
-  src/ai/FallbackInference.cpp
   src/ai/GpuCapabilityDetector.cpp
   src/ai/StemSeparator.cpp
   src/ai/StemRoleClassifierAI.cpp
@@ -200,10 +167,6 @@ target_link_libraries(automix_core
     juce::juce_audio_formats
     juce::juce_dsp
 )
-
-if(ENABLE_ANIRA AND TARGET anira::anira)
-  target_link_libraries(automix_core PUBLIC anira::anira)
-endif()
 
 set(LIBEBUR128_BACKEND_AVAILABLE OFF)
 if(ENABLE_LIBEBUR128)
@@ -241,7 +204,6 @@ target_compile_definitions(automix_core
     $<$<BOOL:${RTNEURAL_XSIMD}>:RTNEURAL_XSIMD=1>
     $<$<BOOL:${RTNEURAL_USE_AVX}>:RTNEURAL_USE_AVX=1>
     $<$<BOOL:${AUTOMIX_HAS_NATIVE_ORT}>:AUTOMIX_HAS_NATIVE_ORT=1>
-    $<$<BOOL:${AUTOMIX_HAS_ANIRA}>:AUTOMIX_HAS_ANIRA=1>
 )
 
 if(ENABLE_CLANG_TIDY)
@@ -300,8 +262,6 @@ target_sources(AutoMixMasterApp PRIVATE
   src/app/ui/AudioPreviewManager.cpp
   src/app/ui/SessionManager.cpp
   src/app/ui/ModelBrowserPanel.cpp
-  src/app/ui/BatchProgressPanel.cpp
-  src/app/ui/ProfileQuickSwitch.cpp
 )
 
 target_include_directories(AutoMixMasterApp PRIVATE src)

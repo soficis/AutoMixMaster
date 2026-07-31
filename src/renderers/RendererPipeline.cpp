@@ -5,7 +5,6 @@
 #include <filesystem>
 #include <set>
 #include <string>
-#include <thread>
 #include <unordered_set>
 #include <utility>
 
@@ -216,53 +215,6 @@ RenderResult runSingleRenderer(const std::string& rendererId,
 }
 
 } // namespace
-
-int effectiveParallelism(const domain::RenderSettings& settings, const int taskCount) {
-  if (taskCount <= 1) {
-    return 1;
-  }
-  int requested = settings.renderParallelism;
-  if (requested <= 0) {
-    requested = settings.processingThreads;
-  }
-  if (requested <= 0) {
-    requested = static_cast<int>(std::thread::hardware_concurrency());
-  }
-  return std::clamp(requested, 1, taskCount);
-}
-
-void parallelFor(const int taskCount,
-                 const int parallelism,
-                 const std::function<void(int index)>& func) {
-  if (taskCount <= 1 || parallelism <= 1) {
-    for (int i = 0; i < taskCount; ++i) {
-      func(i);
-    }
-    return;
-  }
-
-  const auto numWorkers = std::min(parallelism, taskCount);
-
-  auto worker = [&](const int start, const int end) {
-    for (int i = start; i < end; ++i) {
-      func(i);
-    }
-  };
-
-  const int chunkSize = (taskCount + numWorkers - 1) / numWorkers;
-  {
-    std::vector<std::jthread> workers;
-    workers.reserve(static_cast<size_t>(numWorkers));
-    for (int w = 0; w < numWorkers; ++w) {
-      const int start = w * chunkSize;
-      const int end = std::min(start + chunkSize, taskCount);
-      if (start >= end) {
-        break;
-      }
-      workers.emplace_back(worker, start, end);
-    }
-  }
-}
 
 std::vector<std::string> resolveRendererChain(const domain::RenderSettings& settings) {
   if (!settings.rendererChainEnabled) {

@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <vector>
 
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -17,7 +16,7 @@
 namespace automix::app {
 
 /// Manages preview audio buffer lifecycle: rebuild requests,
-/// thread-safe buffer access for the audio callback, and generation tracking.
+/// lock-free buffer publication for the audio callback, and generation tracking.
 class AudioPreviewManager {
  public:
   AudioPreviewManager(juce::ThreadPool& pool, juce::Component* owner);
@@ -26,12 +25,15 @@ class AudioPreviewManager {
                       const std::vector<StemPanel::StemDisplay>& displays,
                       double currentProgress);
 
-  /// Direct buffer update (e.g. from auto-master results).
-  void setBuffer(const engine::AudioBuffer& buffer);
+  /// Publishes a new preview buffer (message thread). The buffer is moved in;
+  /// no copy of the audio data is made.
+  void setBuffer(engine::AudioBuffer buffer);
 
-  /// Buffer access for audio callback. Caller must lock bufferMutex() first.
-  std::mutex& bufferMutex();
-  const engine::AudioBuffer& buffer() const;
+  /// Realtime-safe read for the audio callback: never blocks and never
+  /// allocates. Returns the current preview buffer, or nullptr before the
+  /// first publish. The returned shared_ptr keeps the buffer alive even if the
+  /// message thread replaces it mid-block.
+  std::shared_ptr<const engine::AudioBuffer> currentBuffer() const;
 
   /// Called on message thread when a new preview buffer is ready.
   std::function<void(const engine::AudioBuffer& buffer, double previousProgress)> onPreviewReady;
@@ -41,8 +43,7 @@ class AudioPreviewManager {
  private:
   juce::Component::SafePointer<juce::Component> owner_;
   std::unique_ptr<PreviewController> previewController_;
-  std::mutex bufferMutex_;
-  engine::AudioBuffer buffer_;
+  std::atomic<std::shared_ptr<const engine::AudioBuffer>> buffer_{nullptr};
   std::atomic_uint64_t generation_{0};
 };
 

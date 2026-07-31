@@ -18,10 +18,27 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
+#include <algorithm>
+#include <cmath>
+
 namespace automix::app {
 
 using namespace automix::app::detail;
 using namespace automix::app::theme;
+
+namespace {
+
+constexpr float kMeterMinDb = -60.0f;
+constexpr float kMeterMaxDb = 6.0f;
+
+/// Linear amplitude to dB on the GlowMeters scale ([-60, +6] dBFS).
+float linearToMeterDb(const float linear) {
+  if (linear <= 1.0e-6f)
+    return kMeterMinDb;
+  return std::clamp(20.0f * std::log10(linear), kMeterMinDb, kMeterMaxDb);
+}
+
+} // namespace
 
 // ── Updated StemPanel from session (needs StemPanel full type) ─
 
@@ -100,7 +117,7 @@ MainLayout::MainLayout() {
   audioDeviceManager_.initialise(0, 2, nullptr, true);
   audioDeviceManager_.addAudioCallback(this);
   transportController_.addChangeListener(this);
-  startTimerHz(20);
+  startTimerHz(30);
   updateTransportDisplay();
 }
 
@@ -343,9 +360,9 @@ void MainLayout::initControllers() {
         safe->taskOrchestrator_->appendHistory(result.reportAppend);
         safe->updateMeterPanel(result.previewReport);
 
-        safe->previewManager_->setBuffer(result.previewMaster);
-        safe->heroWaveform_->setBuffer(result.previewMaster);
         safe->updateTransportFromBuffer(result.previewMaster);
+        safe->heroWaveform_->setBuffer(result.previewMaster);
+        safe->previewManager_->setBuffer(std::move(result.previewMaster));
 
         safe->taskOrchestrator_->finishTaskCompleted(ActiveTask::AutoMaster, "Auto Master complete");
 
@@ -559,6 +576,21 @@ bool MainLayout::keyPressed(const juce::KeyPress& key) {
 
 void MainLayout::timerCallback() {
   updateTransportDisplay();
+
+  // Reconcile the transport bar with the atomic play state (covers end-of-track
+  // auto-stop, which is realtime-only and posts no change message).
+  const bool playing = transportController_.isPlaying();
+  if (playing != transportBarPlaying_) {
+    transportBarPlaying_ = playing;
+    transportBar_->setPlaying(playing);
+  }
+
+  // Live meters: copy the audio-thread targets into GlowMeters (message thread).
+  auto& meters = controlDeck_->getGlowMeters();
+  meters.setLevels(liveMeterLeftLevel_.load(std::memory_order_relaxed),
+                   liveMeterRightLevel_.load(std::memory_order_relaxed));
+  meters.setPeaks(liveMeterLeftPeak_.load(std::memory_order_relaxed),
+                  liveMeterRightPeak_.load(std::memory_order_relaxed));
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -567,7 +599,8 @@ void MainLayout::timerCallback() {
 
 void MainLayout::changeListenerCallback(juce::ChangeBroadcaster* source) {
   if (source == &transportController_) {
-    transportBar_->setPlaying(transportController_.isPlaying());
+    transportBarPlaying_ = transportController_.isPlaying();
+    transportBar_->setPlaying(transportBarPlaying_);
   }
 }
 
@@ -580,40 +613,68 @@ void MainLayout::audioDeviceIOCallbackWithContext(const float* const* /*inputCha
                                                   float* const* outputChannelData, int numOutputChannels,
                                                   int numSamples,
                                                   const juce::AudioIODeviceCallbackContext& /*context*/) {
-  std::lock_guard<std::mutex> lock(previewManager_->bufferMutex());
-  const auto& buf = previewManager_->buffer();
+  // Realtime-safe path: the preview buffer and transport state are published via
+  // atomics, so this callback performs no locking, no heap allocation and no
+  // message posting regardless of what the message thread is doing.
+  const auto buffer = previewManager_->currentBuffer();
   const float outputGain = std::clamp(outputVolume_.load(std::memory_order_relaxed), 0.0f, 1.5f);
 
-  if (!transportController_.isPlaying() || buf.getNumSamples() == 0) {
+  if (buffer == nullptr || !transportController_.isPlaying() || buffer->getNumSamples() == 0) {
     for (int ch = 0; ch < numOutputChannels; ++ch)
       if (outputChannelData[ch])
         std::fill_n(outputChannelData[ch], numSamples, 0.0f);
     return;
   }
 
-  auto pos = transportController_.positionSamples();
-  int totalSamples = buf.getNumSamples();
-  int bufChannels = buf.getNumChannels();
+  const int totalSamples = buffer->getNumSamples();
+  const int bufChannels = buffer->getNumChannels();
+  int64_t pos = transportController_.positionSamples();
 
-  for (int i = 0; i < numSamples; ++i) {
-    if (pos >= totalSamples) {
-      transportController_.stop();
-      for (int ch = 0; ch < numOutputChannels; ++ch)
-        if (outputChannelData[ch])
-          std::fill_n(outputChannelData[ch] + i, numSamples - i, 0.0f);
+  // Live meter accumulation (RMS + peak per output channel, post-gain).
+  float peakL = 0.0f;
+  float peakR = 0.0f;
+  double sumSqL = 0.0;
+  double sumSqR = 0.0;
+
+  int i = 0;
+  for (; i < numSamples; ++i) {
+    if (pos >= totalSamples)
       break;
-    }
 
     for (int ch = 0; ch < numOutputChannels; ++ch) {
-      if (outputChannelData[ch]) {
-        int srcCh = std::min(ch, bufChannels - 1);
-        outputChannelData[ch][i] = buf.getSample(srcCh, static_cast<int>(pos)) * outputGain;
+      if (outputChannelData[ch] == nullptr)
+        continue;
+      const int srcCh = std::min(ch, bufChannels - 1);
+      const float sample = buffer->getSample(srcCh, static_cast<int>(pos)) * outputGain;
+      outputChannelData[ch][i] = sample;
+      if (ch == 0) {
+        peakL = std::max(peakL, std::abs(sample));
+        sumSqL += static_cast<double>(sample) * sample;
+      } else if (ch == 1) {
+        peakR = std::max(peakR, std::abs(sample));
+        sumSqR += static_cast<double>(sample) * sample;
       }
     }
     ++pos;
   }
 
-  transportController_.seekToSample(pos);
+  if (i < numSamples) {
+    for (int ch = 0; ch < numOutputChannels; ++ch)
+      if (outputChannelData[ch])
+        std::fill_n(outputChannelData[ch] + i, numSamples - i, 0.0f);
+    transportController_.stopFromAudioThread();
+  }
+
+  transportController_.setPositionRealtime(pos);
+
+  // Publish live meter targets (relaxed atomic stores; consumed by the UI timer).
+  const int meterSamples = std::max(i, 1);
+  liveMeterLeftLevel_.store(
+      linearToMeterDb(static_cast<float>(std::sqrt(sumSqL / meterSamples))), std::memory_order_relaxed);
+  liveMeterRightLevel_.store(
+      linearToMeterDb(static_cast<float>(std::sqrt(sumSqR / meterSamples))), std::memory_order_relaxed);
+  liveMeterLeftPeak_.store(linearToMeterDb(peakL), std::memory_order_relaxed);
+  liveMeterRightPeak_.store(linearToMeterDb(peakR), std::memory_order_relaxed);
 }
 
 void MainLayout::audioDeviceAboutToStart(juce::AudioIODevice* /*device*/) {}

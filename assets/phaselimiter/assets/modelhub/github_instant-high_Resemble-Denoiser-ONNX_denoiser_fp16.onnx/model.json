@@ -1,0 +1,18 @@
+{
+  "engine": "onnxruntime",
+  "feature_schema_version": "1.0.0",
+  "id": "github-instant-high-resemble-denoiser-onnx-denoiser_fp16-onnx",
+  "input_names": [],
+  "license": "unknown",
+  "model_file": "denoiser_fp16.onnx",
+  "name": "Resemble Denoiser FP16 ONNX",
+  "output_names": [],
+  "output_schema": {
+    "confidence": "float"
+  },
+  "schema_version": 1,
+  "source": "https://github.com/instant-high/Resemble-Denoiser-ONNX/releases/tag/denoiser_onnx",
+  "task_scope": "analysis",
+  "type": "analysis_model",
+  "version": "denoiser_onnx"
+}

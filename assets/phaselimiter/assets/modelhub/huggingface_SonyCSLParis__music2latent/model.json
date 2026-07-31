@@ -1,0 +1,18 @@
+{
+  "engine": "unknown",
+  "feature_schema_version": "1.0.0",
+  "id": "huggingface-sonycslparis-music2latent",
+  "input_names": [],
+  "license": "cc-by-nc-4.0",
+  "model_file": "music2latent.pt",
+  "name": "SonyCSLParis/music2latent",
+  "output_names": [],
+  "output_schema": {
+    "confidence": "float"
+  },
+  "schema_version": 1,
+  "source": "https://huggingface.co/SonyCSLParis/music2latent",
+  "task_scope": "analysis",
+  "type": "analysis_model",
+  "version": "faab47a447a2b663c77df2969e984e411e1d0c8d"
+}

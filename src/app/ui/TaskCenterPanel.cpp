@@ -46,12 +46,30 @@ TaskCenterPanel::TaskCenterPanel() : progressBar_(progressValue_) {
       onCancel();
   };
 
+  queueHeaderLabel_.setText("Batch Queue", juce::dontSendNotification);
+  queueHeaderLabel_.setFont(typography::caption());
+  queueHeaderLabel_.setColour(juce::Label::textColourId, colour(colours::textMuted));
+  queueHeaderLabel_.setJustificationType(juce::Justification::centredLeft);
+
+  queueEtaLabel_.setText("ETA: --", juce::dontSendNotification);
+  queueEtaLabel_.setFont(typography::caption());
+  queueEtaLabel_.setColour(juce::Label::textColourId, colour(colours::textMuted));
+  queueEtaLabel_.setJustificationType(juce::Justification::centredRight);
+
+  queueThroughputLabel_.setText("--/s", juce::dontSendNotification);
+  queueThroughputLabel_.setFont(typography::caption());
+  queueThroughputLabel_.setColour(juce::Label::textColourId, colour(colours::textMuted));
+  queueThroughputLabel_.setJustificationType(juce::Justification::centredRight);
+
   addAndMakeVisible(taskLabel_);
   addAndMakeVisible(stateBadge_);
   addAndMakeVisible(progressBar_);
   addAndMakeVisible(progressLabel_);
   addAndMakeVisible(copyLogButton_);
   addAndMakeVisible(cancelButton_);
+  addAndMakeVisible(queueHeaderLabel_);
+  addAndMakeVisible(queueEtaLabel_);
+  addAndMakeVisible(queueThroughputLabel_);
   addAndMakeVisible(historyEditor_);
 }
 
@@ -61,6 +79,50 @@ void TaskCenterPanel::paint(juce::Graphics& g) {
   // Top border
   g.setColour(colour(colours::surfaceBorder));
   g.fillRect(0, 0, getWidth(), 1);
+
+  if (!queueItems_.empty()) {
+    auto area = getLocalBounds().reduced(static_cast<int>(metrics::paddingMedium));
+    auto topRow = area.removeFromTop(24);
+    auto queueArea = area.removeFromTop(static_cast<int>(queueItems_.size()) * kQueueItemHeight + 4);
+
+    queueArea.removeFromTop(topRow.getHeight() + 24 + 4 + 24 + 4);
+
+    g.setColour(colour(colours::surfaceBorder).withAlpha(0.3f));
+    g.fillRoundedRectangle(queueArea.toFloat(), 4.0f);
+
+    for (size_t i = 0; i < queueItems_.size() && i < static_cast<size_t>(kMaxVisibleQueueItems); ++i) {
+      auto itemBounds = juce::Rectangle<float>(
+          static_cast<float>(queueArea.getX()),
+          static_cast<float>(queueArea.getY() + static_cast<int>(i) * kQueueItemHeight),
+          static_cast<float>(queueArea.getWidth()),
+          static_cast<float>(kQueueItemHeight));
+      drawQueueItem(g, itemBounds, queueItems_[i], static_cast<int>(i));
+    }
+  }
+}
+
+void TaskCenterPanel::drawQueueItem(juce::Graphics& g, juce::Rectangle<float> bounds, const BatchQueueItem& item, int /*index*/) {
+  g.setColour(colour(colours::surfaceBorder).withAlpha(0.1f));
+  g.fillRect(bounds);
+
+  if (item.progress > 0.0) {
+    auto fillBounds = bounds.withWidth(bounds.getWidth() * static_cast<float>(item.progress));
+    g.setColour(stateColour(item.state).withAlpha(0.2f));
+    g.fillRect(fillBounds);
+  }
+
+  auto dotBounds = bounds.removeFromLeft(12).withSizeKeepingCentre(6.0f, 6.0f);
+  g.setColour(stateColour(item.state));
+  g.fillEllipse(dotBounds);
+
+  bounds.removeFromLeft(4);
+  g.setFont(typography::caption());
+  g.setColour(colour(colours::text));
+  g.drawText(item.fileName, bounds.removeFromLeft(bounds.getWidth() - 48.0f), juce::Justification::centredLeft);
+
+  g.setColour(colour(colours::textMuted));
+  g.drawText(juce::String(static_cast<int>(item.progress * 100.0f)) + "%",
+             bounds, juce::Justification::centredRight);
 }
 
 void TaskCenterPanel::resized() {
@@ -76,9 +138,58 @@ void TaskCenterPanel::resized() {
   stateBadge_.setBounds(topRow.removeFromLeft(80).reduced(1));
   taskLabel_.setBounds(topRow);
 
+  // Batch queue header row
+  auto queueHeaderRow = area.removeFromTop(18);
+  queueEtaLabel_.setBounds(queueHeaderRow.removeFromRight(100).reduced(1));
+  queueThroughputLabel_.setBounds(queueHeaderRow.removeFromRight(80).reduced(1));
+  queueHeaderLabel_.setBounds(queueHeaderRow.reduced(1));
+
+  // Queue items
+  if (!queueItems_.empty()) {
+    int queueHeight = std::min(static_cast<int>(queueItems_.size()), kMaxVisibleQueueItems) * kQueueItemHeight;
+    area.removeFromTop(queueHeight + 4);
+  }
+
   // Remaining: history editor
   area.removeFromTop(4);
   historyEditor_.setBounds(area);
+}
+
+void TaskCenterPanel::setQueueItems(const std::vector<BatchQueueItem>& items) {
+  queueItems_ = items;
+  resized();
+  repaint();
+}
+
+void TaskCenterPanel::setQueueEta(const juce::String& eta) {
+  queueEtaLabel_.setText("ETA: " + eta, juce::dontSendNotification);
+}
+
+void TaskCenterPanel::setQueueThroughput(const juce::String& throughput) {
+  queueThroughputLabel_.setText(throughput + "/s", juce::dontSendNotification);
+}
+
+void TaskCenterPanel::moveQueueItem(int fromIndex, int toIndex) {
+  if (fromIndex < 0 || fromIndex >= static_cast<int>(queueItems_.size()) ||
+      toIndex < 0 || toIndex >= static_cast<int>(queueItems_.size()))
+    return;
+  auto item = std::move(queueItems_[static_cast<size_t>(fromIndex)]);
+  queueItems_.erase(queueItems_.begin() + fromIndex);
+  queueItems_.insert(queueItems_.begin() + toIndex, std::move(item));
+  for (size_t i = 0; i < queueItems_.size(); ++i)
+    queueItems_[i].orderIndex = static_cast<int>(i);
+  resized();
+  repaint();
+  if (onQueueItemMoved) onQueueItemMoved(fromIndex, toIndex);
+}
+
+void TaskCenterPanel::removeQueueItem(int index) {
+  if (index < 0 || index >= static_cast<int>(queueItems_.size()))
+    return;
+  queueItems_.erase(queueItems_.begin() + index);
+  resized();
+  repaint();
+  if (onQueueItemRemoved) onQueueItemRemoved(index);
 }
 
 void TaskCenterPanel::setCurrentTask(const juce::String& name, const juce::String& status) {

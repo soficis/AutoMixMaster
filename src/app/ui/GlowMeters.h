@@ -19,10 +19,12 @@ public:
   void setPeaks(float leftPeakDb, float rightPeakDb);
   void setLufs(double integrated, double shortTerm);
   void setTruePeak(double truePeakDbtp);
+  void setMomentaryLufs(double momentary);
 
 private:
   void timerCallback() override;
   void drawMeter(juce::Graphics& g, juce::Rectangle<float> bounds, float levelDb, float peakDb) const;
+  void drawLufsBar(juce::Graphics& g, juce::Rectangle<float> bounds) const;
   static float dbToNormalized(float db);
 
   // Current smoothed display values
@@ -42,6 +44,7 @@ private:
   double integratedLufs_ = -70.0;
   double shortTermLufs_ = -70.0;
   double truePeakDbtp_ = -70.0;
+  double momentaryLufs_ = -70.0;
 
   // Previous rendered values for dirty-checking
   float lastRenderedLeft_ = -60.0f;
@@ -51,10 +54,13 @@ private:
   juce::String lufsText_;
   juce::String stText_;
   juce::String tpText_;
+  juce::String momentText_;
 
   juce::Label lufsLabel_;
   juce::Label shortTermLabel_;
   juce::Label truePeakLabel_;
+  juce::Label momentaryLabel_;
+  juce::Label lufsBarLabel_;
 
   static constexpr float kMinDb = -60.0f;
   static constexpr float kMaxDb = 6.0f;

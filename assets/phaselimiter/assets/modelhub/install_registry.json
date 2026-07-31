@@ -1,0 +1,47 @@
+[
+  {
+    "downloads": 11,
+    "installPath": "assets\\modelhub\\github_instant-high_Resemble-Denoiser-ONNX_denoiser_fp16.onnx",
+    "installedAtUtc": "2026-02-22T14:32:59.011-06:00",
+    "license": "unknown",
+    "likes": 0,
+    "modelId": "github:instant-high/Resemble-Denoiser-ONNX@denoiser_fp16.onnx",
+    "primaryFile": "denoiser_fp16.onnx",
+    "repoId": "instant-high/Resemble-Denoiser-ONNX",
+    "revision": "denoiser_onnx",
+    "source": "github",
+    "sourceUrl": "https://github.com/instant-high/Resemble-Denoiser-ONNX/releases/tag/denoiser_onnx",
+    "taskScope": "analysis",
+    "useCase": "analysis-denoise"
+  },
+  {
+    "downloads": 10,
+    "installPath": "assets\\modelhub\\github_smartdaze_otowake-oto_htdemucs_6s.onnx",
+    "installedAtUtc": "2026-02-22T14:31:46.615-06:00",
+    "license": "unknown",
+    "likes": 0,
+    "modelId": "github:smartdaze/otowake-oto@htdemucs_6s.onnx",
+    "primaryFile": "htdemucs_6s.onnx",
+    "repoId": "smartdaze/otowake-oto",
+    "revision": "models-v1",
+    "source": "github",
+    "sourceUrl": "https://github.com/smartdaze/otowake-oto/releases/tag/models-v1",
+    "taskScope": "separation",
+    "useCase": "stem-separation"
+  },
+  {
+    "downloads": 0,
+    "installPath": "assets\\modelhub\\huggingface_SonyCSLParis__music2latent",
+    "installedAtUtc": "2026-02-22T14:33:23.316-06:00",
+    "license": "cc-by-nc-4.0",
+    "likes": 14,
+    "modelId": "huggingface:SonyCSLParis/music2latent",
+    "primaryFile": "music2latent.pt",
+    "repoId": "SonyCSLParis/music2latent",
+    "revision": "faab47a447a2b663c77df2969e984e411e1d0c8d",
+    "source": "huggingface",
+    "sourceUrl": "https://huggingface.co/SonyCSLParis/music2latent",
+    "taskScope": "analysis",
+    "useCase": "general-audio-model"
+  }
+]

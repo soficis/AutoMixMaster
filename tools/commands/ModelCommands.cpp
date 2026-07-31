@@ -10,7 +10,6 @@
 #include "ai/HuggingFaceModelHub.h"
 #include "ai/ModelPackLoader.h"
 #include "ai/OnnxModelInference.h"
-#include "ai/RtNeuralInference.h"
 #include "renderers/ExternalLimiterRenderer.h"
 #include "util/LameDownloader.h"
 
@@ -185,11 +184,6 @@ int commandValidateModelPack(const CommandArgs& args) {
   std::unique_ptr<automix::ai::IModelInference> inference = std::make_unique<automix::ai::NullModelInference>();
   if (pack.engine == "onnxruntime") {
     inference = std::make_unique<automix::ai::OnnxModelInference>();
-  } else if (pack.engine == "rtneural") {
-    inference = std::make_unique<automix::ai::RtNeuralInference>();
-    if (!inference->isAvailable()) {
-      std::cout << "Warning: RTNeural backend not enabled in this build. Schema-only validation performed.\n";
-    }
   }
 
   const auto modelPath = pack.rootPath / pack.modelFile;

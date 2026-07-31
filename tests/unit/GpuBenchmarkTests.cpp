@@ -9,7 +9,6 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "ai/GpuProvider.h"
-#include "ai/AniraInference.h"
 #include "ai/OnnxModelInference.h"
 
 namespace automix { namespace ai { namespace test {
@@ -19,15 +18,6 @@ using namespace automix::ai;
 /// Returns true if we are running on a real ONNX Runtime (not the deterministic fallback).
 bool hasNativeOnnx() {
 #ifdef AUTOMIX_HAS_NATIVE_ORT
-  return true;
-#else
-  return false;
-#endif
-}
-
-/// Returns true if anira is available.
-bool hasAnira() {
-#ifdef AUTOMIX_HAS_ANIRA
   return true;
 #else
   return false;
@@ -154,15 +144,6 @@ TEST_CASE("OnnxModelInference detectAvailableProviders", "[gpu][detect]") {
       CHECK(cpuIt != providers.begin());
     }
   }
-}
-
-TEST_CASE("AniraInference detectAvailableProviders", "[gpu][detect][anira]") {
-  AniraInference inference;
-  const auto providers = inference.detectAvailableProviders();
-
-  // CPU should always be in the list
-  REQUIRE_FALSE(providers.empty());
-  CHECK(std::find(providers.begin(), providers.end(), "cpu") != providers.end());
 }
 
 // ─── T3.5: Fallback chain ────────────────────────────────────────────────────
@@ -300,57 +281,4 @@ TEST_CASE("Multiple task type benchmark", "[gpu][benchmark][onnx]") {
   }
 
   std::filesystem::remove_all(tempDir);
-}
-
-TEST_CASE("AniraInference CPU benchmark", "[gpu][benchmark][anira]") {
-  if (!hasAnira()) {
-    SUCCEED("anira not linked; AniraInference benchmark skipped.");
-    return;
-  }
-
-  AniraInference inference;
-  const auto tempDir = std::filesystem::temp_directory_path() / "automix_anira_benchmark";
-  std::filesystem::remove_all(tempDir);
-  std::filesystem::create_directories(tempDir);
-
-  const auto modelPath = createDummyModel(tempDir);
-  REQUIRE(inference.loadModel(modelPath));
-
-  InferenceRequest req;
-  req.task = "mix_parameters";
-  req.features.assign(27, 0.5);
-
-  const auto start = std::chrono::high_resolution_clock::now();
-  const auto result = inference.run(req);
-  const auto end = std::chrono::high_resolution_clock::now();
-
-  const double elapsedMs =
-      std::chrono::duration<double, std::milli>(end - start).count();
-  CHECK(elapsedMs >= 0.0);
-
-  std::filesystem::remove_all(tempDir);
-}
-
-// ─── T3.0: verify detection infrastructure ───────────────────────────────────
-
-TEST_CASE("AniraInference provider preference", "[gpu][anira]") {
-  AniraInference inference;
-
-  // Default provider should be "auto"
-  CHECK(inference.activeExecutionProvider() == "cpu");
-
-  // Set a specific preference
-  inference.setExecutionProviderPreference("cuda");
-  CHECK(inference.activeExecutionProvider() == "cuda");
-
-  inference.setExecutionProviderPreference("auto");
-}
-
-TEST_CASE("AniraInference max inference time", "[gpu][anira]") {
-  AniraInference inference;
-
-  inference.setMaxInferenceTimeMs(15.0f);
-  inference.setMaxInferenceTimeMs(0.5f); // Should clamp to minimum
-
-  inference.setNumParallelProcessors(2);
 }

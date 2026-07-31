@@ -15,7 +15,6 @@
 #include "ai/AutoMixStrategyAI.h"
 #include "ai/IModelInference.h"
 #include "ai/OnnxModelInference.h"
-#include "ai/RtNeuralInference.h"
 #include "automaster/OriginalMixReference.h"
 #include "automix/HeuristicAutoMixStrategy.h"
 #include "domain/BatchTypes.h"
@@ -89,11 +88,9 @@ std::unique_ptr<ai::IModelInference> createInferenceBackend(const ai::ModelPack*
     onnx->setProfilingEnabled(pack->enableProfiling);
     backend = std::move(onnx);
   }
-  if (!backend && engine.find("rtneural") != std::string::npos) {
-    backend = std::make_unique<ai::RtNeuralInference>();
-  }
   if (!backend) {
-    backend = std::make_unique<ai::RtNeuralInference>();
+    // No inference backend for this engine; strategies fall back to honest heuristics.
+    return nullptr;
   }
 
   const auto modelPath = pack->rootPath / pack->modelFile;

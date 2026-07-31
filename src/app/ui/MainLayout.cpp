@@ -119,6 +119,10 @@ MainLayout::MainLayout() {
   transportController_.addChangeListener(this);
   startTimerHz(30);
   updateTransportDisplay();
+
+  // 6. Application command manager: keyboard shortcuts are dispatched here
+  commandManager_.setFirstCommandTarget(this);
+  commandManager_.registerAllCommandsForTarget(this);
 }
 
 // ── Controllers factory ────────────────────────────────────────
@@ -540,34 +544,198 @@ void MainLayout::resized() {
 // Keyboard Shortcuts
 // ─────────────────────────────────────────────────────────────────
 
-bool MainLayout::keyPressed(const juce::KeyPress& key) {
-  auto ctrl = juce::ModifierKeys::ctrlModifier;
-  auto ctrlShift = ctrl | juce::ModifierKeys::shiftModifier;
-  auto ctrlAlt = ctrl | juce::ModifierKeys::altModifier;
+namespace {
 
-  if (key == juce::KeyPress('s', ctrl, 0))            { onSaveSession(); return true; }
-  if (key == juce::KeyPress('o', ctrl, 0))            { onLoadSession(); return true; }
-  if (key == juce::KeyPress('i', ctrl, 0))            { onImport(); return true; }
-  if (key == juce::KeyPress('m', ctrl, 0))            { onAutoMix(); return true; }
-  if (key == juce::KeyPress('m', ctrlShift, 0))       { onAutoMixMaster(); return true; }
-  if (key == juce::KeyPress('e', ctrl, 0))            { onExport(); return true; }
-  if (key == juce::KeyPress('k', ctrl, 0))            { onModelsDialog(); return true; }
-  if (key == juce::KeyPress('a', ctrlShift, 0))       { onAutoMaster(); return true; }
-  if (key == juce::KeyPress('z', ctrl, 0))            { onUndo(); return true; }
-  if (key == juce::KeyPress('y', ctrl, 0))            { onRedo(); return true; }
-  if (key == juce::KeyPress('z', ctrlShift, 0))       { onRedo(); return true; }
+/// Formats a KeyPress for display in the cheatsheet (e.g. "Ctrl+Shift+M").
+juce::String describeShortcutKey(const juce::KeyPress& key) {
+  const auto& mods = key.getModifiers();
+  juce::String text;
+  if (mods.isCtrlDown())
+    text << "Ctrl+";
+  if (mods.isShiftDown())
+    text << "Shift+";
+  if (mods.isAltDown())
+    text << "Alt+";
+  if (key.getKeyCode() == juce::KeyPress::spaceKey)
+    text << "Space";
+  else if (key.getKeyCode() >= 33 && key.getKeyCode() < 176)
+    text << juce::String::charToString(
+        static_cast<juce::juce_wchar>(juce::CharacterFunctions::toUpperCase(key.getKeyCode())));
+  else
+    text << key.getTextDescription();
+  return text;
+}
 
-  if (key == juce::KeyPress::spaceKey) {
-    if (transportController_.isPlaying()) {
-      transportController_.pause();
-      transportBar_->setPlaying(false);
-    } else {
-      transportController_.play();
-      transportBar_->setPlaying(true);
+/// Modal cheatsheet listing every command and its key binding(s).
+class ShortcutsDialog final : public juce::Component {
+public:
+  explicit ShortcutsDialog(const std::vector<ShortcutEntry>& entries) {
+    setWantsKeyboardFocus(true);
+    setSize(kDialogWidth, kDialogHeight);
+
+    titleLabel_.setText("Keyboard Shortcuts", juce::dontSendNotification);
+    titleLabel_.setFont(typography::subhead());
+    titleLabel_.setColour(juce::Label::textColourId, colour(colours::text));
+    titleLabel_.setJustificationType(juce::Justification::centred);
+    addAndMakeVisible(titleLabel_);
+
+    for (const auto& entry : entries) {
+      auto& row = rows_.emplace_back();
+      row.name = entry.name;
+      row.keys = describeShortcutKey(entry.defaultKey);
     }
-    return true;
+    // Merge duplicate command rows (Redo has two bindings) into one row.
+    for (size_t i = 0; i < rows_.size();) {
+      const juce::String name(rows_[i].name);
+      bool merged = false;
+      for (size_t j = i + 1; j < rows_.size();) {
+        if (rows_[j].name == name) {
+          rows_[i].keys << ", " << rows_[j].keys;
+          rows_.erase(rows_.begin() + static_cast<std::ptrdiff_t>(j));
+          merged = true;
+        } else {
+          ++j;
+        }
+      }
+      if (!merged)
+        ++i;
+    }
+    for (const auto& row : rows_) {
+      auto nameLabel = std::make_unique<juce::Label>();
+      nameLabel->setText(row.name, juce::dontSendNotification);
+      nameLabel->setFont(typography::body());
+      nameLabel->setColour(juce::Label::textColourId, colour(colours::text));
+      nameLabel->setJustificationType(juce::Justification::centredLeft);
+      auto keyLabel = std::make_unique<juce::Label>();
+      keyLabel->setText(row.keys, juce::dontSendNotification);
+      keyLabel->setFont(typography::body());
+      keyLabel->setColour(juce::Label::textColourId, colour(colours::secondary));
+      keyLabel->setJustificationType(juce::Justification::centredRight);
+      addAndMakeVisible(*nameLabel);
+      addAndMakeVisible(*keyLabel);
+      nameLabels_.push_back(std::move(nameLabel));
+      keyLabels_.push_back(std::move(keyLabel));
+    }
+
+    closeButton_.setButtonText("Close");
+    closeButton_.onClick = [this] { exitModalState(0); };
+    addAndMakeVisible(closeButton_);
   }
-  return false;
+
+  void paint(juce::Graphics& g) override {
+    g.fillAll(colour(colours::surface));
+    g.setColour(colour(colours::surfaceBorder));
+    g.drawRect(getLocalBounds(), metrics::borderWidth);
+  }
+
+  void resized() override {
+    auto area = getLocalBounds().reduced(spacing::marginLarge);
+    titleLabel_.setBounds(area.removeFromTop(28));
+    area.removeFromTop(spacing::gapMedium);
+    constexpr int rowHeight = 26;
+    for (size_t i = 0; i < nameLabels_.size(); ++i) {
+      auto row = area.removeFromTop(rowHeight);
+      nameLabels_[i]->setBounds(row.removeFromLeft(row.getWidth() * 3 / 5));
+      keyLabels_[i]->setBounds(row);
+    }
+    area.removeFromTop(spacing::gapLarge);
+    closeButton_.setBounds(area.removeFromTop(32).withSizeKeepingCentre(120, 32));
+  }
+
+  bool keyPressed(const juce::KeyPress& key) override {
+    if (key == juce::KeyPress::escapeKey) {
+      exitModalState(0);
+      return true;
+    }
+    return juce::Component::keyPressed(key);
+  }
+
+private:
+  static constexpr int kDialogWidth = 460;
+  static constexpr int kDialogHeight = 560;
+
+  juce::Label titleLabel_;
+  juce::TextButton closeButton_{"Close"};
+  struct DisplayRow {
+    juce::String name;
+    juce::String keys;
+  };
+  std::vector<DisplayRow> rows_;
+  std::vector<std::unique_ptr<juce::Label>> nameLabels_;
+  std::vector<std::unique_ptr<juce::Label>> keyLabels_;
+
+  JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ShortcutsDialog)
+};
+
+} // namespace
+
+bool MainLayout::keyPressed(const juce::KeyPress& key) {
+  auto* mappings = commandManager_.getKeyMappings();
+  const juce::CommandID commandId = mappings->findCommandForKeyPress(key);
+  if (commandId == 0)
+    return false;
+  return commandManager_.invokeDirectly(commandId, false);
+}
+
+juce::ApplicationCommandTarget* MainLayout::getNextCommandTarget() {
+  return nullptr;
+}
+
+void MainLayout::getAllCommands(juce::Array<juce::CommandID>& commands) {
+  for (const auto& entry : shortcutTable()) {
+    const auto commandId = static_cast<juce::CommandID>(entry.command);
+    if (!commands.contains(commandId))
+      commands.add(commandId);
+  }
+}
+
+void MainLayout::getCommandInfo(juce::CommandID commandID, juce::ApplicationCommandInfo& result) {
+  bool found = false;
+  for (const auto& entry : shortcutTable()) {
+    if (static_cast<juce::CommandID>(entry.command) == commandID) {
+      if (!found) {
+        result.setInfo(juce::String(entry.name), juce::String(entry.name), "General", 0);
+        found = true;
+      }
+      result.addDefaultKeypress(entry.defaultKey.getKeyCode(), entry.defaultKey.getModifiers());
+    }
+  }
+}
+
+bool MainLayout::perform(const juce::ApplicationCommandTarget::InvocationInfo& info) {
+  switch (static_cast<ShortcutCommand>(info.commandID)) {
+    case ShortcutCommand::saveSession:     onSaveSession();     break;
+    case ShortcutCommand::loadSession:     onLoadSession();     break;
+    case ShortcutCommand::import:          onImport();          break;
+    case ShortcutCommand::autoMix:         onAutoMix();         break;
+    case ShortcutCommand::autoMaster:      onAutoMaster();      break;
+    case ShortcutCommand::autoMixMaster:   onAutoMixMaster();   break;
+    case ShortcutCommand::exportProject:   onExport();          break;
+    case ShortcutCommand::modelsDialog:    onModelsDialog();    break;
+    case ShortcutCommand::undo:            onUndo();            break;
+    case ShortcutCommand::redo:            onRedo();            break;
+    case ShortcutCommand::playPause:       onTogglePlayPause(); break;
+    case ShortcutCommand::shortcutsDialog: showShortcutsDialog(); break;
+  }
+  return true;
+}
+
+void MainLayout::onTogglePlayPause() {
+  if (transportController_.isPlaying()) {
+    transportController_.pause();
+    transportBar_->setPlaying(false);
+  } else {
+    transportController_.play();
+    transportBar_->setPlaying(true);
+  }
+}
+
+void MainLayout::showShortcutsDialog() {
+  auto* dialog = new ShortcutsDialog(shortcutTable());
+  dialog->setAlwaysOnTop(true);
+  dialog->centreWithSize(dialog->getWidth(), dialog->getHeight());
+  dialog->setVisible(true);
+  dialog->enterModalState(true, nullptr, true); // modal manager owns + deletes it
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -743,6 +911,7 @@ void MainLayout::wireTransportCallbacks() {
     sessionManager_.session().stems.clear();
     detail::updateStemPanelFromSession(controlDeck_->getStemPanel(), sessionManager_.session());
   };
+  transportBar_->onShowShortcuts = [this] { showShortcutsDialog(); };
 }
 
 // ─────────────────────────────────────────────────────────────────

@@ -70,8 +70,17 @@ class HuggingFaceModelHub {
   std::optional<HubModelInfo> modelInfo(const std::string& modelIdOrRepoId, const std::string& token = "") const;
   HubInstallResult installModel(const std::string& modelIdOrRepoId, const HubInstallOptions& options = {}) const;
 
+  // Single filter shared by both curated and search discovery so catalog and
+  // search hide gated/private/disabled, file-less, and incompatible models
+  // identically (matching install-time rejection in installModel).
+  static bool passesDiscoveryFilters(const HubModelInfo& info, const HubModelQueryOptions& options);
+
   std::string resolveToken(const std::string& explicitToken = "") const;
   static std::vector<std::string> defaultRecommendedSearchTerms();
 };
+
+// Curated model catalogue (catalog-only discovery source). Exposed for
+// license-coverage tests and downstream hub tooling.
+std::vector<std::string> curatedModelIds();
 
 } // namespace automix::ai

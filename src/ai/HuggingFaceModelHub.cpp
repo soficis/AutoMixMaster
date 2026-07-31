@@ -299,23 +299,6 @@ std::string sourceUrlForRepo(const std::string& repoId) {
   return "https://huggingface.co/" + repoId;
 }
 
-std::vector<std::string> curatedModelIds() {
-  return {
-      "rysertio/Demucs-onnx",
-      "onnx-community/whisper-tiny.en",
-      "onnx-community/whisper-small.en",
-      "onnx-community/Speech-Emotion-Classification-ONNX",
-      "onnx-community/Musical-Instrument-Classification-ONNX",
-      "onnx-community/Musical-genres-Classification-Hubert-V1-ONNX",
-      "openai/whisper-tiny",
-      "laion/clap-htsat-unfused",
-      "pranjal-pravesh/PANNs_CNN14_ONNX",
-      "SonyCSLParis/music2latent",
-      "StemSplitio/htdemucs-ft-onnx",
-      "StemSplitio/htdemucs-6s-onnx",
-  };
-}
-
 std::string inferUseCase(const std::string& repoId,
                          const std::vector<std::string>& tags,
                          const std::string& fallbackQuery) {
@@ -564,6 +547,23 @@ void appendInstallLog(const std::filesystem::path& root,
 
 } // namespace
 
+std::vector<std::string> curatedModelIds() {
+  return {
+      "rysertio/Demucs-onnx",
+      "onnx-community/whisper-tiny.en",
+      "onnx-community/whisper-small.en",
+      "onnx-community/Speech-Emotion-Classification-ONNX",
+      "onnx-community/Musical-Instrument-Classification-ONNX",
+      "onnx-community/Musical-genres-Classification-Hubert-V1-ONNX",
+      "openai/whisper-tiny",
+      "laion/clap-htsat-unfused",
+      "pranjal-pravesh/PANNs_CNN14_ONNX",
+      "SonyCSLParis/music2latent",
+      "StemSplitio/htdemucs-ft-onnx",
+      "StemSplitio/htdemucs-6s-onnx",
+  };
+}
+
 std::vector<std::string> HuggingFaceModelHub::defaultRecommendedSearchTerms() {
   return {
       "demucs",
@@ -680,6 +680,22 @@ std::optional<HubModelInfo> HuggingFaceModelHub::modelInfo(const std::string& mo
   return info;
 }
 
+bool HuggingFaceModelHub::passesDiscoveryFilters(const HubModelInfo& info, const HubModelQueryOptions& options) {
+  if (info.privateRepo || info.disabled) {
+    return false;
+  }
+  if (!options.includeGated && info.gated) {
+    return false;
+  }
+  if (info.primaryFile.empty()) {
+    return false;
+  }
+  if (!info.compatible) {
+    return false;
+  }
+  return true;
+}
+
 std::vector<HubModelInfo> HuggingFaceModelHub::discoverRecommended(const HubModelQueryOptions& options) const {
   const auto effectiveToken = resolveToken(options.token);
   std::vector<HubModelInfo> discovered;
@@ -692,10 +708,7 @@ std::vector<HubModelInfo> HuggingFaceModelHub::discoverRecommended(const HubMode
       if (!info.has_value()) {
         continue;
       }
-      if (!options.includeGated && info->gated) {
-        continue;
-      }
-      if (info->privateRepo || info->disabled || info->primaryFile.empty()) {
+      if (!passesDiscoveryFilters(*info, options)) {
         continue;
       }
       if (!seen.insert(info->repoId).second) {
@@ -743,16 +756,7 @@ std::vector<HubModelInfo> HuggingFaceModelHub::discoverRecommended(const HubMode
         continue;
       }
 
-      if (info->privateRepo || info->disabled) {
-        continue;
-      }
-      if (!options.includeGated && info->gated) {
-        continue;
-      }
-      if (info->primaryFile.empty()) {
-        continue;
-      }
-      if (!info->compatible) {
+      if (!passesDiscoveryFilters(*info, options)) {
         continue;
       }
 

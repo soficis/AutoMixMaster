@@ -13,6 +13,7 @@
 #include <juce_core/juce_core.h>
 #include <nlohmann/json.hpp>
 
+#include "ai/ItoMasterAdapter.h"
 #include "ai/ModelCatalogValidator.h"
 #include "util/StringUtils.h"
 
@@ -565,6 +566,15 @@ std::vector<std::string> curatedModelIds() {
   };
 }
 
+// Artifacts that must accompany the primary model file to form a complete pack
+// (the ITO-Master mastering route consumes all three as one model pack).
+std::vector<std::string> auxiliaryAssetsForRepo(const std::string& repoId) {
+  if (repoId == kItoMasterRepoId) {
+    return {kItoMasterPredictorFile, kItoMasterConfigFile};
+  }
+  return {};
+}
+
 std::vector<std::string> HuggingFaceModelHub::defaultRecommendedSearchTerms() {
   return {
       "demucs",
@@ -886,6 +896,36 @@ HubInstallResult HuggingFaceModelHub::installModel(const std::string& modelIdOrR
 
   result.downloadedFiles.push_back(primaryPath.filename().string());
 
+  // Fetch auxiliary artifacts so the pack is complete on disk (e.g. the
+  // ITO-Master pack needs mastering_tcn.onnx + config.json alongside the
+  // primary fxencoder.onnx). Each is SHA-256 verified when the repo exposes it.
+  for (const auto& auxiliaryAsset : auxiliaryAssetsForRepo(info->repoId)) {
+    const auto auxiliaryPath = installPath / auxiliaryAsset;
+    const auto auxiliaryUrl = "https://huggingface.co/" + info->repoId + "/resolve/" + revision + "/" +
+                              escapePathPreservingSlash(auxiliaryAsset);
+    if (!downloadToFile(auxiliaryUrl, auxiliaryPath, effectiveToken, &detail)) {
+      result.message = "Auxiliary asset download failed (" + auxiliaryAsset + "): " +
+                       (detail.empty() ? "unknown error" : detail);
+      appendInstallLog(destinationRoot, info.value(), result);
+      return result;
+    }
+    const auto auxiliaryShaIt = info->fileSha256.find(auxiliaryAsset);
+    if (auxiliaryShaIt != info->fileSha256.end() && !auxiliaryShaIt->second.empty()) {
+      const auto computedAuxSha = computeFileSha256(auxiliaryPath);
+      if (computedAuxSha != auxiliaryShaIt->second) {
+        std::filesystem::remove(auxiliaryPath, error);
+        result.message = "SHA-256 verification failed for auxiliary asset " + auxiliaryAsset +
+                         ". Expected: " + auxiliaryShaIt->second +
+                         ", computed: " + (computedAuxSha.empty() ? "(unable to compute)" : computedAuxSha) +
+                         ". Corrupted download removed.";
+        appendInstallLog(destinationRoot, info.value(), result);
+        return result;
+      }
+    }
+    result.downloadedFiles.push_back(auxiliaryAsset);
+    result.auxiliaryFiles.push_back(auxiliaryAsset);
+  }
+
   if (options.downloadReadme) {
     const auto readmeIt = std::find_if(info->files.begin(), info->files.end(), [](const std::string& file) {
       return toLower(file) == "readme.md";
@@ -915,6 +955,7 @@ HubInstallResult HuggingFaceModelHub::installModel(const std::string& modelIdOrR
       {"installedAtUtc", iso8601NowUtc()},
       {"primaryFile", primaryPath.filename().string()},
       {"primaryFileSha256", computeFileSha256(primaryPath)},
+      {"auxiliaryFiles", result.auxiliaryFiles},
       {"hasOnnx", info->hasOnnx},
       {"tokenUsed", !effectiveToken.empty()},
       {"availableFiles", info->files},

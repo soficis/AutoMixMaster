@@ -683,6 +683,59 @@ TEST_CASE("ITO-Master download and activation are gated on CC BY-NC consent", "[
   std::filesystem::remove_all(root);
 }
 
+// ────────────────────────────────────────────────────────────────────────────────
+// T3.8: ITO-Master mastering stage — pack schema auxiliary artifacts
+// ────────────────────────────────────────────────────────────────────────────────
+
+TEST_CASE("Model pack loader carries auxiliary artifacts and rejects incomplete packs", "[ai]") {
+  const auto root = std::filesystem::temp_directory_path() / "automix_ito_pack_aux";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+
+  {
+    std::ofstream model(root / "fxencoder.onnx", std::ios::binary);
+    model << "encoder";
+    std::ofstream predictor(root / "mastering_tcn.onnx", std::ios::binary);
+    predictor << "predictor";
+    std::ofstream config(root / "config.json");
+    config << "{}";
+    std::ofstream meta(root / "model.json");
+    meta << R"({
+  "id": "ito-master-pack",
+  "name": "ITO-Master",
+  "type": "master_parameters",
+  "task_scope": "master",
+  "engine": "onnxruntime",
+  "model_file": "fxencoder.onnx",
+  "auxiliary_files": ["mastering_tcn.onnx", "config.json"],
+  "license": "CC BY-NC 4.0",
+  "source": "https://huggingface.co/kramp/ito-master-onnx",
+  "feature_schema_version": "1.0.0",
+  "output_schema": {
+    "confidence": "float",
+    "target_lufs": "float",
+    "pre_gain_db": "float",
+    "limiter_ceiling_db": "float",
+    "glue_ratio": "float"
+  }
+})";
+  }
+
+  automix::ai::ModelPackLoader loader;
+  const auto complete = loader.load(root);
+  REQUIRE(complete.has_value());
+  REQUIRE(complete->auxiliaryFiles.size() == 2);
+  REQUIRE(complete->auxiliaryFiles[0] == "mastering_tcn.onnx");
+  REQUIRE(complete->auxiliaryFiles[1] == "config.json");
+
+  // A pack whose manifest lists an auxiliary artifact that is not on disk must
+  // be rejected: the ITO route can never complete with a partial pack.
+  std::filesystem::remove(root / "mastering_tcn.onnx");
+  REQUIRE_FALSE(loader.load(root).has_value());
+
+  std::filesystem::remove_all(root);
+}
+
 TEST_CASE("Model strategy returns base plans unchanged when no model inference is available", "[ai]") {
   std::vector<automix::analysis::StemAnalysisEntry> entries;
   entries.push_back({.stemId = "s1",

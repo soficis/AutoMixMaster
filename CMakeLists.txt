@@ -94,6 +94,7 @@ add_library(automix_core
   src/engine/SessionRepository.cpp
   src/dsp/DeEsser.cpp
   src/dsp/DynamicDeHarshEq.cpp
+  src/dsp/ItoMasterFxChain.cpp
   src/dsp/LookaheadLimiter.cpp
   src/dsp/MidSideProcessor.cpp
   src/dsp/MultibandProcessor.cpp
@@ -105,6 +106,7 @@ add_library(automix_core
   src/analysis/StemAnalyzer.cpp
   src/automix/HeuristicAutoMixStrategy.cpp
   src/automaster/HeuristicAutoMasterStrategy.cpp
+  src/automaster/ItoMasterStrategy.cpp
   src/automaster/OriginalMixReference.cpp
   src/renderers/BuiltInRenderer.cpp
   src/renderers/BundledToolDiscovery.cpp
@@ -130,6 +132,7 @@ add_library(automix_core
   src/ai/ModelStrategy.cpp
   src/ai/AutoMixStrategyAI.cpp
   src/ai/AutoMasterStrategyAI.cpp
+  src/ai/ItoMasterAdapter.cpp
   src/ai/FeatureSchema.cpp
   src/ai/MasteringCompliance.cpp
   src/ai/OnnxModelInference.cpp
@@ -352,6 +355,9 @@ if(BUILD_TESTING)
     tests/unit/MetadataPolicyTests.cpp
     tests/unit/AutoMasterTests.cpp
     tests/unit/AiExtensionTests.cpp
+    tests/unit/ItoMasterFxChainTests.cpp
+    tests/unit/ItoMasterAdapterTests.cpp
+    tests/unit/ItoMasterStrategyTests.cpp
     tests/unit/LoudnessMeterTests.cpp
     tests/unit/LookaheadLimiterTests.cpp
     tests/unit/MasteringModulesTests.cpp

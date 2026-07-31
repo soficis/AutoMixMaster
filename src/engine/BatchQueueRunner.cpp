@@ -595,4 +595,86 @@ domain::BatchResult BatchQueueRunner::process(domain::BatchJob& job,
   return result;
 }
 
+domain::BatchResult BatchQueueRunner::processStreaming(domain::BatchJob& job,
+                                                       const DetailedProgressCallback& progressCallback,
+                                                       std::atomic_bool* cancelFlag,
+                                                       StreamConfig config) const {
+  domain::BatchResult result;
+  if (job.items.empty()) {
+    return result;
+  }
+
+  if (!config.enableStreaming || config.chunkSize == 0) {
+    auto wrappedCallback =
+        [&](const size_t itemIndex, const double fraction, const std::string& stage) {
+          if (progressCallback) {
+            ProgressDetail detail;
+            detail.itemIndex = itemIndex;
+            detail.overallFraction = fraction;
+            detail.itemFraction = fraction;
+            detail.stage = stage;
+            progressCallback(detail);
+          }
+        };
+    auto rawResult = process(job, wrappedCallback, cancelFlag);
+    result.completed = rawResult.completed;
+    result.failed = rawResult.failed;
+    result.cancelled = rawResult.cancelled;
+    return result;
+  }
+
+  const size_t totalItems = job.items.size();
+  const size_t chunkSize = std::max<size_t>(config.chunkSize, 1);
+
+  for (size_t chunkStart = 0; chunkStart < totalItems; chunkStart += chunkSize) {
+    if (cancelFlag != nullptr && cancelFlag->load()) {
+      result.cancelled = totalItems - result.completed - result.failed;
+      break;
+    }
+
+    const size_t chunkEnd = std::min(chunkStart + chunkSize, totalItems);
+    const size_t currentChunkSize = chunkEnd - chunkStart;
+
+    domain::BatchJob chunkJob;
+    chunkJob.settings = job.settings;
+    chunkJob.items.reserve(currentChunkSize);
+    for (size_t i = chunkStart; i < chunkEnd; ++i) {
+      chunkJob.items.push_back(job.items[i]);
+    }
+
+    auto chunkProgress = [&](const size_t itemOffset, const double itemFraction, const std::string& stage) {
+      if (!progressCallback) {
+        return;
+      }
+      const size_t globalIndex = chunkStart + itemOffset;
+      const double chunkContribution = static_cast<double>(currentChunkSize) / static_cast<double>(totalItems);
+      const double chunkBase = static_cast<double>(chunkStart) / static_cast<double>(totalItems);
+      const double overallFraction = chunkBase + (itemFraction * chunkContribution);
+
+      ProgressDetail detail;
+      detail.itemIndex = globalIndex;
+      detail.overallFraction = std::clamp(overallFraction, 0.0, 1.0);
+      detail.itemFraction = itemFraction;
+      detail.stage = stage;
+      detail.itemName = chunkJob.items[itemOffset].session.sessionName;
+      detail.status = chunkJob.items[itemOffset].status;
+      detail.completedCount = result.completed;
+      detail.failedCount = result.failed;
+      detail.totalCount = totalItems;
+      progressCallback(detail);
+    };
+
+    const auto chunkResult = process(chunkJob, chunkProgress, cancelFlag);
+    result.completed += chunkResult.completed;
+    result.failed += chunkResult.failed;
+    result.cancelled += chunkResult.cancelled;
+
+    for (size_t i = 0; i < currentChunkSize; ++i) {
+      job.items[chunkStart + i] = std::move(chunkJob.items[i]);
+    }
+  }
+
+  return result;
+}
+
 } // namespace automix::engine

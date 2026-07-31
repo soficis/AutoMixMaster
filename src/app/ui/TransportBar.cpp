@@ -14,6 +14,7 @@ TransportBar::TransportBar() {
   addAndMakeVisible(playPauseButton_);
   addAndMakeVisible(stopButton_);
   addAndMakeVisible(skipEndButton_);
+  addAndMakeVisible(clearTracksButton_);
   addAndMakeVisible(timeLabel_);
   addAndMakeVisible(volumeSlider_);
   addAndMakeVisible(loopToggle_);
@@ -23,6 +24,7 @@ TransportBar::TransportBar() {
   playPauseButton_.setTooltip("Play / Pause (Space)");
   stopButton_.setTooltip("Stop");
   skipEndButton_.setTooltip("Skip to End (End)");
+  clearTracksButton_.setTooltip("Clear Imported Tracks");
   loopToggle_.setTooltip("Toggle Loop (L)");
   volumeSlider_.setTooltip("Volume");
 
@@ -64,6 +66,10 @@ TransportBar::TransportBar() {
     if (onSkipToEnd)
       onSkipToEnd();
   };
+  clearTracksButton_.onClick = [this] {
+    if (onClearTracks)
+      onClearTracks();
+  };
   loopToggle_.onClick = [this] {
     if (onLoopToggle)
       onLoopToggle();
@@ -86,11 +92,12 @@ void TransportBar::resized() {
   auto area = getLocalBounds().reduced(static_cast<int>(metrics::paddingMedium));
 
   // Left: transport buttons
-  auto leftArea = area.removeFromLeft(220);
+  auto leftArea = area.removeFromLeft(268);
   skipStartButton_.setBounds(leftArea.removeFromLeft(48).reduced(2));
   playPauseButton_.setBounds(leftArea.removeFromLeft(64).reduced(2));
   stopButton_.setBounds(leftArea.removeFromLeft(56).reduced(2));
   skipEndButton_.setBounds(leftArea.removeFromLeft(48).reduced(2));
+  clearTracksButton_.setBounds(leftArea.removeFromLeft(48).reduced(2));
 
   // Right: volume + loop
   auto rightArea = area.removeFromRight(200);

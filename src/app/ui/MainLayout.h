@@ -26,6 +26,7 @@
 #include "app/controllers/SessionController.h"
 #include "app/ui/SelectionState.h"
 #include "app/ui/SessionManager.h"
+#include "app/ui/VerificationEngine.h"
 
 namespace automix::app {
 
@@ -48,6 +49,8 @@ public:
   MainLayout();
   ~MainLayout() override;
 
+  TaskOrchestrator* getTaskOrchestrator() const { return taskOrchestrator_.get(); }
+
   void paint(juce::Graphics& g) override;
   void resized() override;
   bool keyPressed(const juce::KeyPress& key) override;
@@ -68,6 +71,10 @@ private:
   void wireControlDeckCallbacks();
   void wireHeroWaveformCallbacks();
 
+  // Controller factory (extracted from constructor)
+  void initControllers();
+  void initComboBoxes();
+
   // Action handlers
   void onImport();
   void onAutoMix();
@@ -79,6 +86,9 @@ private:
   void onLoadSession();
   void onModelsDialog();
   void onSettings();
+  void onUndo();
+  void onRedo();
+  void onHeaderProfileSelected(const juce::String& profileId);
   bool startAiSeparationBeforeAutoMixIfNeeded();
 
   // Import helper shared by button and drag/drop

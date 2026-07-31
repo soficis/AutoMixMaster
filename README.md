@@ -2,7 +2,8 @@
 
 # AutoMixMaster
 
-**Version 0.4.1**
+**Version 0.4.2**
+
 
 <img src="assets/AutoMixMaster.jpg" alt="AutoMixMaster application interface" width="860">
 
@@ -275,13 +276,31 @@ If a tool is missing, it is hidden from selectable available renderers automatic
 
 AutoMixMaster is distributed under the **GNU General Public License v3 (GPLv3)**.
 
+### Core & Libraries
+
 | Component | License | Role |
 | :--- | :--- | :--- |
-| JUCE 8.0.8 | AGPLv3 / Commercial | Framework |
-| libebur128 | MIT | Metering |
-| nlohmann/json | MIT | Metadata |
-| Catch2 3.7.1 | BSL-1.0 | Testing |
-| PhaseLimiter | GPL / Custom | Limiting |
-| FFmpeg | GPL-compatible | Optional renderer |
-| SoX | GPL-2.0-or-later | Optional renderer |
-| rsgain | BSD-2-Clause | Optional ReplayGain tagging stage |
+| JUCE 8.0.8 | AGPLv3 / Commercial | Audio & GUI Framework |
+| libebur128 | MIT | EBU R128 Loudness Metering |
+| nlohmann/json | MIT | JSON Serialization & Model Metadata |
+| Catch2 3.7.1 | BSL-1.0 | Unit Testing Framework |
+| PhaseLimiter | GPL-2.0 / Custom | Optional External Limiter |
+| FFmpeg | GPL-compatible / LGPL | Optional External Audio Renderer |
+| SoX | GPL-2.0-or-later | Optional External Processor |
+| rsgain | BSD-2-Clause | Optional ReplayGain Tagging Stage |
+
+### AI Model Hub & Third-Party Weights
+
+Model weights are **not bundled** into the installer or executable binaries. Users can optionally download models on-demand through the built-in Model Hub (`ModelManager`), which preserves and displays upstream model licensing metadata (`license` / `cardData` tags):
+
+| Model / Model Family | Upstream Author | License | Usage & Compatibility |
+| :--- | :--- | :--- | :--- |
+| **HTDemucs / Demucs 4-stem** | Meta Research | MIT (code), CC-BY-NC 4.0 (MUSDB18-HQ weights) | Stem Separation (Non-Commercial weights) |
+| **HTDemucs 6-stem (`htdemucs_6s`)** | Meta / Community ONNX | CC-BY-NC 4.0 | 6-Stem Separation (Guitar/Piano/Drums/Bass/Vocal/Other) |
+| **Denoiser (`dns64` / Speech Enhancer)** | Meta Research | CC-BY-NC 4.0 | Speech & Vocal Denoising (Non-Commercial evaluation) |
+| **Whisper Tiny / Small** | OpenAI | MIT | Transcripts, Vocal Alignment & Pitch Analysis |
+| **CLAP (`clap-htsat`)** | LAION | MIT | Style Retrieval & Audio Embeddings |
+| **PANNs (`PANNs_CNN14`)** | Bio-DSP / Open | MIT | General Audio Tagging & Classification |
+
+> **Non-Commercial Notice**: Models licensed under **CC-BY-NC 4.0** (such as Meta Demucs and Denoiser weights) are restricted to personal, educational, and non-commercial evaluation use. Commercial workflows can use open-source MIT-licensed models (e.g. Whisper, CLAP) or the built-in deterministic heuristic DSP engines.
+

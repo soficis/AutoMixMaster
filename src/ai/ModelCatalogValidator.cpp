@@ -35,6 +35,7 @@ std::string inferTaskScopeFromJoined(const std::string& joinedLower) {
     return "mix";
   }
   if (containsToken(joinedLower, "demucs") ||
+      containsToken(joinedLower, "htdemucs") ||
       containsToken(joinedLower, "mdx") ||
       containsToken(joinedLower, "roformer") ||
       containsToken(joinedLower, "unmix") ||

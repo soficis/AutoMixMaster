@@ -39,30 +39,11 @@ double normalizeFeatureValue(const double value) {
 }
 
 std::string canonicalProviderName(const std::string& rawProvider) {
-  const auto provider = toLower(rawProvider);
-  if (provider.find("cpu") != std::string::npos) {
-    return "cpu";
-  }
-  if (provider.find("cuda") != std::string::npos) {
-    return "cuda";
-  }
-  if (provider.find("dml") != std::string::npos || provider.find("directml") != std::string::npos) {
-    return "directml";
-  }
-  if (provider.find("coreml") != std::string::npos) {
-    return "coreml";
-  }
-  return provider;
+  return gpu::canonicalProviderName(rawProvider);
 }
 
 std::string platformPreferredProvider() {
-#if defined(_WIN32)
-  return "directml";
-#elif defined(__APPLE__)
-  return "coreml";
-#else
-  return "cuda";
-#endif
+  return gpu::platformPreferredProvider();
 }
 
 std::filesystem::path pickQuantizedVariant(const std::filesystem::path& modelPath, const std::string& preferredPrecision) {
@@ -192,17 +173,40 @@ void appendExecutionProvider(Ort::SessionOptions& options, const std::string& pr
   }
 
   std::unordered_map<std::string, std::string> providerOptions;
-  if (normalized == "cuda") {
+  if (normalized == gpu::kProviderCuda) {
+    // CUDA provider with default device ID 0
+    providerOptions["device_id"] = "0";
+    providerOptions["cudnn_conv_algo_search"] = "DEFAULT";
     options.AppendExecutionProvider("CUDA", providerOptions);
     return;
   }
-  if (normalized == "directml") {
+  if (normalized == gpu::kProviderDirectMl) {
+    // DirectML provider on default device
+    providerOptions["device_id"] = "0";
     options.AppendExecutionProvider("DML", providerOptions);
     return;
   }
-  if (normalized == "coreml") {
+  if (normalized == gpu::kProviderCoreMl) {
     providerOptions["ModelFormat"] = "MLProgram";
     options.AppendExecutionProvider("CoreML", providerOptions);
+    return;
+  }
+  if (normalized == gpu::kProviderAne) {
+    // Apple Neural Engine via CoreML with ANE override
+    providerOptions["ModelFormat"] = "MLProgram";
+    providerOptions["ANEUnits"] = "256";
+    options.AppendExecutionProvider("CoreML", providerOptions);
+    return;
+  }
+  if (normalized == gpu::kProviderOpenVino) {
+    // OpenVINO provider for Intel NPU / GPU
+    providerOptions["device_type"] = "CPU_FP32";
+    options.AppendExecutionProvider("OpenVINO", providerOptions);
+    return;
+  }
+  if (normalized == "tensorrt") {
+    options.AppendExecutionProvider("Tensorrt", providerOptions);
+    return;
   }
 }
 
@@ -436,7 +440,11 @@ bool OnnxModelInference::loadModel(const std::filesystem::path& modelPath) {
       appendExecutionProvider(*nativeState->sessionOptions, activeExecutionProvider_);
     } catch (const std::exception&) {
       providerFallbacks_.fetch_add(1);
-      activeExecutionProvider_ = "cpu";
+      {
+        std::scoped_lock lock(failedProvidersMutex_);
+        failedProviders_.push_back(activeExecutionProvider_);
+      }
+      activeExecutionProvider_ = gpu::kProviderCpu;
     }
 
 #if defined(_WIN32)
@@ -497,10 +505,22 @@ bool OnnxModelInference::loadModel(const std::filesystem::path& modelPath) {
                 << "; tuning_mem_pattern=" << (tuning.memPattern ? "on" : "off")
                 << "; tuning_cpu_arena=" << (tuning.cpuArena ? "on" : "off")
                 << "; tuning_execution_mode=" << (tuning.sequentialExecution ? "sequential" : "parallel");
-  } catch (const std::exception& errorException) {
+    } catch (const std::exception& errorException) {
     nativeSessionActive_ = false;
+    const auto what = std::string(errorException.what());
+    const bool isOom =
+        what.find("OOM") != std::string::npos ||
+        what.find("out of memory") != std::string::npos;
+    if (isOom) {
+      gpuOomCount_.fetch_add(1);
+      gpuRecoveryCount_.fetch_add(1);
+    }
+    {
+      std::scoped_lock lock(failedProvidersMutex_);
+      failedProviders_.push_back(activeExecutionProvider_);
+    }
     diagnostics << "; backend=native_onnxruntime_unavailable"
-                << "; native_error=" << errorException.what()
+                << "; native_error=" << what
                 << "; fallback=deterministic_adapter";
   }
 #else
@@ -721,9 +741,43 @@ InferenceResult OnnxModelInference::run(const InferenceRequest& request) const {
       return result;
     } catch (const std::exception& errorException) {
       providerFallbacks_.fetch_add(1);
+      const auto what = std::string(errorException.what());
+
+      const bool isOom =
+          what.find("OOM") != std::string::npos ||
+          what.find("out of memory") != std::string::npos ||
+          what.find("CUDA error 2") != std::string::npos ||
+          what.find("cudaMalloc") != std::string::npos;
+      const bool isDeviceLost =
+          what.find("device-lost") != std::string::npos ||
+          what.find("device lost") != std::string::npos ||
+          what.find("CUDA error 1") != std::string::npos ||
+          what.find("cudaError") != std::string::npos;
+
+      if (isOom) {
+        gpuOomCount_.fetch_add(1);
+        gpuRecoveryCount_.fetch_add(1);
+      } else if (isDeviceLost) {
+        gpuDeviceLostCount_.fetch_add(1);
+        gpuRecoveryCount_.fetch_add(1);
+      }
+
+      {
+        std::scoped_lock lock(failedProvidersMutex_);
+        if (std::find(failedProviders_.begin(), failedProviders_.end(),
+                      activeExecutionProvider_) == failedProviders_.end()) {
+          failedProviders_.push_back(activeExecutionProvider_);
+        }
+      }
+
       result = runDeterministicFallback(request);
-      result.logMessage = "ONNX native inference failed ('" + std::string(errorException.what()) +
-                          "'); deterministic fallback used.";
+      result.logMessage = "ONNX native inference failed ('" + what +
+                           "'); deterministic fallback used.";
+      if (isOom) {
+        result.logMessage += " GPU OOM recovery triggered.";
+      } else if (isDeviceLost) {
+        result.logMessage += " GPU device-lost recovery triggered.";
+      }
       finalizeMetrics();
       return result;
     }
@@ -854,13 +908,20 @@ std::string OnnxModelInference::backendDiagnostics() const {
   const double averageMs =
       calls > 0 ? (static_cast<double>(cumulativeMicros) / static_cast<double>(calls)) / 1000.0 : 0.0;
 
+  const auto oomCount = gpuOomCount_.load();
+  const auto devLostCount = gpuDeviceLostCount_.load();
+  const auto recoveryCount = gpuRecoveryCount_.load();
+
   std::ostringstream os;
   os << diagnostics_
      << "; calls=" << calls
      << "; batches=" << batchCalls_.load()
      << "; provider_fallbacks=" << providerFallbacks_.load()
      << "; avg_inference_ms=" << averageMs
-     << "; warmup_ms=" << warmupDurationMillis_.load();
+     << "; warmup_ms=" << warmupDurationMillis_.load()
+     << "; gpu_oom=" << oomCount
+     << "; gpu_device_lost=" << devLostCount
+     << "; gpu_recoveries=" << recoveryCount;
 
   if (!profilingArtifacts_.empty()) {
     os << "; ort_profile=" << profilingArtifacts_.back().string();
@@ -878,18 +939,50 @@ bool OnnxModelInference::usingNativeSession() const { return nativeSessionActive
 
 std::string OnnxModelInference::resolveExecutionProvider() const {
   const std::string requested = canonicalProviderName(requestedExecutionProvider_);
-  const std::string preferred = requested == "auto" ? platformPreferredProvider() : requested;
 
-  if (supportsExecutionProvider(preferred)) {
-    return preferred;
+  if (requested != "auto") {
+    if (supportsExecutionProvider(requested)) {
+      return requested;
+    }
+    // Requested provider not available; fall through to chain
+    providerFallbacks_.fetch_add(1);
   }
 
+  // Probe runtime providers and walk the priority chain
+  std::vector<std::string> runtimeProviders;
+#if AUTOMIX_HAS_NATIVE_ORT
+  try {
+    runtimeProviders = Ort::GetAvailableProviders();
+  } catch (...) {
+  }
+#endif
+
+  // If runtime probe succeeded, use it; otherwise fall back to metadata list
+  const auto& probeProviders = runtimeProviders.empty()
+                                   ? availableExecutionProviders_
+                                   : runtimeProviders;
+
+  const auto& chain = gpu::providerPriorityChain();
+  for (const auto& preferred : chain) {
+    // Skip providers already known to fail
+    {
+      std::scoped_lock lock(failedProvidersMutex_);
+      if (std::find(failedProviders_.begin(), failedProviders_.end(), preferred) !=
+          failedProviders_.end()) {
+        continue;
+      }
+    }
+
+    for (const auto& rp : probeProviders) {
+      if (gpu::canonicalProviderName(rp) == preferred && gpu::canonicalProviderName(rp) != "cpu") {
+        return preferred;
+      }
+    }
+  }
+
+  // CPU always works
   providerFallbacks_.fetch_add(1);
-  if (supportsExecutionProvider("cpu")) {
-    return "cpu";
-  }
-
-  return availableExecutionProviders_.empty() ? "cpu" : availableExecutionProviders_.front();
+  return gpu::kProviderCpu;
 }
 
 bool OnnxModelInference::supportsExecutionProvider(const std::string& provider) const {
@@ -940,12 +1033,50 @@ void OnnxModelInference::captureProfilingArtifactIfNeeded() const {
 #endif
 }
 
+std::vector<std::string> OnnxModelInference::detectAvailableProviders() const {
+  std::vector<std::string> providers = {gpu::kProviderCpu};
+#if AUTOMIX_HAS_NATIVE_ORT
+  try {
+    const auto runtimeProviders = Ort::GetAvailableProviders();
+    providers.reserve(1 + runtimeProviders.size());
+    for (const auto& p : runtimeProviders) {
+      providers.push_back(gpu::canonicalProviderName(p));
+    }
+  } catch (...) {
+  }
+  std::sort(providers.begin(), providers.end());
+  providers.erase(std::unique(providers.begin(), providers.end()), providers.end());
+
+  std::stable_sort(providers.begin(), providers.end(),
+                   [](const std::string& a, const std::string& b) {
+                     return gpu::providerPriority(a) < gpu::providerPriority(b);
+                   });
+#endif
+  return providers;
+}
+
+std::vector<std::string> OnnxModelInference::failedProviders() const {
+  std::scoped_lock lock(failedProvidersMutex_);
+  return failedProviders_;
+}
+
+uint64_t OnnxModelInference::gpuRecoveryCount() const {
+  return gpuRecoveryCount_.load();
+}
+
 void OnnxModelInference::resetMetrics() {
   inferenceCalls_.store(0);
   batchCalls_.store(0);
   providerFallbacks_.store(0);
   cumulativeInferenceMicros_.store(0);
   warmupDurationMillis_.store(0);
+  gpuOomCount_.store(0);
+  gpuDeviceLostCount_.store(0);
+  gpuRecoveryCount_.store(0);
+  {
+    std::scoped_lock lock(failedProvidersMutex_);
+    failedProviders_.clear();
+  }
 }
 
 } // namespace automix::ai

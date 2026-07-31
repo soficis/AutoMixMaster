@@ -22,6 +22,7 @@ class ModelManager {
 
   void setActivePackId(const std::string& task, const std::string& packId);
   std::string activePackId(const std::string& task) const;
+  bool uninstallPack(const std::string& packId);
 
  private:
   std::vector<std::filesystem::path> rootPaths_;

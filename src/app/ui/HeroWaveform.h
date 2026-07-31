@@ -3,21 +3,26 @@
 #include <vector>
 
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <juce_opengl/juce_opengl.h>
 
 #include "app/style/Theme.h"
 #include "engine/AudioBuffer.h"
 
 namespace automix::app {
 
-/// Full-width stereo waveform display with playhead, zoom, seek, loop regions, and file drop target.
+/// Full-width stereo waveform display with playhead, zoom, seek, loop regions, file drop target,
+/// stem colour overlays, zoom controls, and OpenGL-accelerated rendering.
 class HeroWaveform final : public juce::Component,
-                           public juce::FileDragAndDropTarget {
+                           public juce::FileDragAndDropTarget,
+                           private juce::Timer {
 public:
   HeroWaveform();
+  ~HeroWaveform() override;
 
   void paint(juce::Graphics& g) override;
   void mouseDown(const juce::MouseEvent& event) override;
   void mouseDrag(const juce::MouseEvent& event) override;
+  void mouseWheelMove(const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel) override;
   void resized() override;
 
   // FileDragAndDropTarget
@@ -30,15 +35,31 @@ public:
   void setPlayheadProgress(double progress);
   void setZoom(double zoomFactor, double centerProgress);
   void setLoopRange(bool enabled, double startProgress, double endProgress);
+  struct StemGroup { std::vector<float> peaks; juce::Colour colour; juce::String name; };
+  void setStemGroups(const std::vector<StemGroup>& groups);
 
   // Callbacks
   std::function<void(double)> onSeek;                        // progress fraction 0..1
-  std::function<void(std::vector<juce::File>)> onFilesDropped; // audio files dropped onto waveform
+  std::function<void(double)> onZoomChanged;                 // new zoom factor
+  std::function<void(std::vector<juce::File>)> onFilesDropped; // audio/preset files dropped
+  std::function<void(juce::File)> onPresetDropped;           // JSON preset file dropped
 
 private:
   double progressFromX(int x) const;
   void buildWaveformCache();
   void buildMipLevels();
+  void timerCallback() override;
+
+  void drawZoomControls(juce::Graphics& g);
+  void drawStemOverlay(juce::Graphics& g, const juce::Rectangle<float>& bounds, float midY, int w, float h);
+
+  // OpenGL context for accelerated rendering
+  juce::OpenGLContext openGLContext_;
+
+  // Zoom control state
+  bool zoomInHover_ = false;
+  bool zoomOutHover_ = false;
+  bool zoomResetHover_ = false;
 
   // Mip-level cached peak data (built once on setBuffer)
   static constexpr int kMipLevels = 3;
@@ -61,6 +82,11 @@ private:
   std::vector<float> rawSamples_;
   int rawSampleCount_ = 0;
   int rawChannelCount_ = 0;
+
+  // Per-channel stem data for colour overlays
+  std::vector<float> stemPeaks_[4]; // up to 4 stem groups
+  juce::Colour stemColours_[4];
+  int numStemGroups_ = 0;
 
   bool isDragOver_ = false;
 

@@ -135,6 +135,17 @@ private:
   juce::ThreadPool backgroundPool_{3};
   std::atomic<float> outputVolume_{1.0f};
 
+  // Live meter targets: written by the audio callback, read by the UI timer
+  // (30 Hz, message thread) which copies them into GlowMeters::setLevels/setPeaks.
+  // Initialised to the meter floor; only playback publishes real levels.
+  std::atomic<float> liveMeterLeftLevel_{-60.0f};
+  std::atomic<float> liveMeterRightLevel_{-60.0f};
+  std::atomic<float> liveMeterLeftPeak_{-60.0f};
+  std::atomic<float> liveMeterRightPeak_{-60.0f};
+
+  // Last play state pushed to the transport bar (message thread only).
+  bool transportBarPlaying_ = false;
+
   // ── Coordinators (created in constructor body) ──────────────────
   std::unique_ptr<TaskOrchestrator> taskOrchestrator_;
   std::unique_ptr<AudioPreviewManager> previewManager_;

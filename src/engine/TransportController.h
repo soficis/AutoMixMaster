@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 
@@ -22,6 +23,16 @@ class TransportController final : public juce::ChangeBroadcaster {
   void seekToSample(int64_t samplePosition);
   void seekToFraction(double fraction);
   void advance(int numSamples);
+
+  /// Realtime-safe (audio callback): publishes the playhead without locking and
+  /// without posting a change message. The caller must pass a position already
+  /// clamped to the playback range.
+  void setPositionRealtime(int64_t samplePosition);
+
+  /// Realtime-safe (audio callback): ends playback without locking and without
+  /// posting a change message. The play button is reconciled by the periodic
+  /// UI timer; message-thread state is re-synced by the next user transport action.
+  void stopFromAudioThread();
   void setLoopRangeSeconds(double loopInSeconds, double loopOutSeconds, bool enabled);
   void clearLoopRange();
 
@@ -39,9 +50,12 @@ class TransportController final : public juce::ChangeBroadcaster {
   [[nodiscard]] double loopOutProgress() const;
 
  private:
+  // The audio callback reads/writes only the atomics below (lock-free);
+  // the mutex protects message-thread-only state (state_, timeline, loop).
   mutable std::mutex mutex_;
+  std::atomic<bool> playing_{false};
+  std::atomic<int64_t> positionSamples_{0};
   int64_t totalSamples_ = 0;
-  int64_t positionSamples_ = 0;
   int64_t loopStartSamples_ = 0;
   int64_t loopEndSamples_ = 0;
   bool loopEnabled_ = false;

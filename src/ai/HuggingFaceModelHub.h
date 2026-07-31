@@ -62,6 +62,9 @@ struct HubInstallResult {
   std::string revision;
   std::string message;
   std::vector<std::string> downloadedFiles;
+  // Non-primary artifacts fetched alongside the primary model file (e.g.
+  // mastering_tcn.onnx + config.json for the ITO-Master pack).
+  std::vector<std::string> auxiliaryFiles;
 };
 
 class HuggingFaceModelHub {

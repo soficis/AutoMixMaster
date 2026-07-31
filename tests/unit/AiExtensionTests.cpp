@@ -1,15 +1,80 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <optional>
+#include <string>
+#include <vector>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <nlohmann/json.hpp>
 
 #include "ai/IModelInference.h"
 #include "ai/FeatureSchema.h"
+#include "ai/HuggingFaceModelHub.h"
 #include "ai/ModelManager.h"
 #include "ai/ModelPackLoader.h"
 #include "ai/ModelStrategy.h"
+#include "app/ui/HeroWaveform.h"
+
+namespace {
+
+std::optional<std::filesystem::path> findRepoRelativePath(const std::filesystem::path& relative) {
+  std::vector<std::filesystem::path> candidates;
+#ifdef AUTOMIX_SOURCE_DIR
+  candidates.push_back(std::filesystem::path(AUTOMIX_SOURCE_DIR) / relative);
+#endif
+  candidates.push_back(std::filesystem::current_path() / relative);
+  candidates.push_back(std::filesystem::current_path().parent_path() / relative);
+  for (const auto& candidate : candidates) {
+    if (std::filesystem::exists(candidate)) {
+      return candidate;
+    }
+  }
+  return std::nullopt;
+}
+
+std::vector<std::string> readCuratedModelIdsFromSource(const std::filesystem::path& sourcePath) {
+  std::ifstream stream(sourcePath);
+  if (!stream.good()) {
+    return {};
+  }
+  const std::string content((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+  const auto markerPos = content.find("curatedModelIds()");
+  if (markerPos == std::string::npos) {
+    return {};
+  }
+  const auto openBrace = content.find('{', markerPos);
+  if (openBrace == std::string::npos) {
+    return {};
+  }
+  std::vector<std::string> ids;
+  std::string current;
+  bool inString = false;
+  for (size_t i = openBrace + 1; i < content.size(); ++i) {
+    const char c = content[i];
+    if (inString) {
+      if (c == '\\') {
+        ++i;
+      } else if (c == '"') {
+        ids.push_back(current);
+        current.clear();
+        inString = false;
+      } else {
+        current.push_back(c);
+      }
+      continue;
+    }
+    if (c == '"') {
+      inString = true;
+    } else if (c == '}') {
+      break;
+    }
+  }
+  return ids;
+}
+
+} // namespace
 
 namespace {
 
@@ -327,4 +392,139 @@ TEST_CASE("Model manager scans demo packs from assets roots", "[ai]") {
   REQUIRE(foundDemoRole);
   REQUIRE(foundDemoMix);
   REQUIRE(foundDemoMaster);
+}
+
+TEST_CASE("Curated hub models all have license manifest rows", "[ai][licensing]") {
+  const auto manifestPath = findRepoRelativePath("docs/model-licensing-audit.json");
+  REQUIRE(manifestPath.has_value());
+
+  std::ifstream manifestStream(*manifestPath);
+  REQUIRE(manifestStream.good());
+
+  nlohmann::json manifest;
+  manifestStream >> manifest;
+  REQUIRE(manifest.at("schemaVersion") == 1);
+  REQUIRE(manifest.at("models").is_array());
+
+  const auto& models = manifest.at("models");
+  const auto rowFor = [&models](const std::string& id) -> const nlohmann::json* {
+    for (const auto& row : models) {
+      if (row.value("id", "") == id) {
+        return &row;
+      }
+    }
+    return nullptr;
+  };
+
+  const auto sourcePath = findRepoRelativePath("src/ai/HuggingFaceModelHub.cpp");
+  REQUIRE(sourcePath.has_value());
+  const auto curated = readCuratedModelIdsFromSource(*sourcePath);
+  REQUIRE(curated.size() >= 12);
+  for (const auto& id : curated) {
+    INFO("curated model missing license manifest row: " << id);
+    REQUIRE(rowFor(id) != nullptr);
+  }
+
+  const std::vector<std::string> knownNonCommercial = {
+      "SonyCSLParis/music2latent",
+      "kramp/ito-master-onnx",
+  };
+  for (const auto& id : knownNonCommercial) {
+    INFO("known non-commercial model: " << id);
+    const auto* row = rowFor(id);
+    REQUIRE(row != nullptr);
+    REQUIRE(row->value("flagged", false) == true);
+    REQUIRE(row->value("commercialUsable", true) == false);
+  }
+}
+
+TEST_CASE("Discovery filters exclude incompatible models identically in curated and search paths", "[ai]") {
+  automix::ai::HubModelInfo synthetic;
+  synthetic.repoId = "test-org/incompatible-model";
+  synthetic.modelId = "huggingface:test-org/incompatible-model";
+  synthetic.displayName = "Incompatible Model";
+  synthetic.primaryFile = "model.onnx";
+  synthetic.license = "MIT";
+  synthetic.hasOnnx = true;
+  synthetic.compatible = false;
+  synthetic.compatibilityReport = "unsupported architecture";
+
+  const automix::ai::HubModelInfo compatible = [&synthetic] {
+    auto info = synthetic;
+    info.compatible = true;
+    info.compatibilityReport.clear();
+    return info;
+  }();
+
+  const automix::ai::HubModelQueryOptions curated{
+      .maxResultsPerQuery = 8,
+      .includeGated = false,
+      .curatedOnly = true,
+  };
+  const automix::ai::HubModelQueryOptions search{
+      .maxResultsPerQuery = 8,
+      .includeGated = false,
+      .curatedOnly = false,
+  };
+
+  // The compatible entry passes the shared filter under both discovery modes.
+  REQUIRE(automix::ai::HuggingFaceModelHub::passesDiscoveryFilters(compatible, curated));
+  REQUIRE(automix::ai::HuggingFaceModelHub::passesDiscoveryFilters(compatible, search));
+
+  // The incompatible entry is excluded by the shared filter in both modes,
+  // so curated and search discovery filter incompatibility identically.
+  REQUIRE_FALSE(automix::ai::HuggingFaceModelHub::passesDiscoveryFilters(synthetic, curated));
+  REQUIRE_FALSE(automix::ai::HuggingFaceModelHub::passesDiscoveryFilters(synthetic, search));
+  const bool curatedExcluded = automix::ai::HuggingFaceModelHub::passesDiscoveryFilters(synthetic, curated);
+  const bool searchExcluded = automix::ai::HuggingFaceModelHub::passesDiscoveryFilters(synthetic, search);
+  REQUIRE(curatedExcluded == searchExcluded);
+}
+
+// ────────────────────────────────────────────────────────────────
+// HeroWaveform (T2.2): zoom hit-test geometry + playhead dirty-check
+// ────────────────────────────────────────────────────────────────
+
+TEST_CASE("HeroWaveform zoom control rects match draw geometry and stay in bounds", "[ui][waveform]") {
+  using automix::app::HeroWaveform;
+
+  for (const int width : {960, 640}) {
+    const juce::Rectangle<int> bounds(0, 0, width, 200);
+
+    const auto rectIn = HeroWaveform::zoomControlRectFor(0, bounds);
+    const auto rectOut = HeroWaveform::zoomControlRectFor(1, bounds);
+    const auto rectReset = HeroWaveform::zoomControlRectFor(2, bounds);
+
+    // Draw rects == hit rects: [right-136, right-108), [right-104, right-76), [right-72, right-44)
+    REQUIRE(rectIn == juce::Rectangle<int>(width - 136, 4, 28, 28));
+    REQUIRE(rectOut == juce::Rectangle<int>(width - 104, 4, 28, 28));
+    REQUIRE(rectReset == juce::Rectangle<int>(width - 72, 4, 28, 28));
+
+    // Correct left-to-right order, no overlap, all inside bounds
+    REQUIRE(rectIn.getX() < rectOut.getX());
+    REQUIRE(rectOut.getX() < rectReset.getX());
+    REQUIRE(rectIn.getRight() <= rectOut.getX());
+    REQUIRE(rectOut.getRight() <= rectReset.getX());
+    REQUIRE(rectReset.getRight() <= bounds.getRight());
+    REQUIRE(rectIn.getBottom() <= bounds.getBottom());
+  }
+}
+
+TEST_CASE("HeroWaveform playhead dirty-check skips repaint on unchanged pixel", "[ui][waveform]") {
+  using automix::app::HeroWaveform;
+
+  int lastPixel = -1; // matches the member initialiser; first update always repaints
+
+  REQUIRE(HeroWaveform::playheadPixelChanged(100, lastPixel));   // first pixel -> repaint
+  REQUIRE(lastPixel == 100);
+
+  REQUIRE_FALSE(HeroWaveform::playheadPixelChanged(100, lastPixel)); // same pixel -> no repaint
+
+  REQUIRE(HeroWaveform::playheadPixelChanged(101, lastPixel));   // moved -> repaint
+  REQUIRE(lastPixel == 101);
+
+  REQUIRE_FALSE(HeroWaveform::playheadPixelChanged(101, lastPixel)); // same pixel -> no repaint
+
+  // Off-view sentinel (-1) toggling in and out of view still triggers a repaint.
+  REQUIRE(HeroWaveform::playheadPixelChanged(-1, lastPixel));
+  REQUIRE_FALSE(HeroWaveform::playheadPixelChanged(-1, lastPixel));
 }

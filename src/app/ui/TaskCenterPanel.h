@@ -5,6 +5,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "app/style/Theme.h"
+#include "engine/BatchQueueRunner.h"
 
 namespace automix::app {
 
@@ -42,6 +43,18 @@ public:
   void moveQueueItem(int fromIndex, int toIndex);
   void removeQueueItem(int index);
 
+  // Batch ETA / summary row
+  /// Pure ETA estimate: remaining_items * avg_item_seconds where
+  /// avg_item_seconds = elapsedSeconds / currentIndex (items completed so far).
+  static juce::RelativeTime etaEstimate(int currentIndex, int total, double elapsedSeconds);
+  /// Feed real BatchQueueRunner::ProgressDetail data (itemIndex, overallFraction,
+  /// completed/failed/totalCount) plus wall-clock elapsed into the summary row.
+  void setBatchProgress(const engine::BatchQueueRunner::ProgressDetail& detail, double elapsedSeconds);
+  /// Current ETA row text ("—", "ETA mm:ss", or "Done").
+  juce::String batchEtaText() const;
+  /// Current item-status counts text ("completed/failed/total").
+  juce::String batchCountsText() const;
+
   // Callbacks
   std::function<void()> onCancel;
   std::function<void(int fromIndex, int toIndex)> onQueueItemMoved;
@@ -56,6 +69,8 @@ private:
   static juce::Colour stateColour(TaskState state);
   static const char* stateLabel(TaskState state);
   void drawQueueItem(juce::Graphics& g, juce::Rectangle<float> bounds, const BatchQueueItem& item, int index);
+  static juce::String formatEta(const juce::RelativeTime& eta);
+  void updateBatchSummary();
 
   juce::Label taskLabel_;
   juce::Label stateBadge_;
@@ -70,6 +85,14 @@ private:
   juce::Label queueEtaLabel_;
   juce::Label queueThroughputLabel_;
   std::vector<BatchQueueItem> queueItems_;
+
+  // Batch ETA / summary row components
+  juce::Label etaLabel_;
+  juce::Label batchCountsLabel_;
+  double batchProgressValue_ = 0.0;
+  double batchElapsedSeconds_ = 0.0;
+  engine::BatchQueueRunner::ProgressDetail batchDetail_;
+  juce::ProgressBar batchProgressBar_;
 
   double progressValue_ = 0.0;
   TaskState currentState_ = TaskState::Idle;

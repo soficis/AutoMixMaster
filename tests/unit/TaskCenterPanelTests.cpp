@@ -1,10 +1,12 @@
 #include <string>
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <juce_events/juce_events.h>
 
 #include "app/ui/TaskCenterPanel.h"
+#include "engine/BatchQueueRunner.h"
 
 namespace {
 
@@ -45,4 +47,69 @@ TEST_CASE("TaskCenterPanel trims old history entries for large logs", "[ui][task
   REQUIRE(text.contains("line 2199"));
   REQUIRE_FALSE(text.contains("line 0"));
   REQUIRE(countNewlines(text) <= 1500);
+}
+
+TEST_CASE("etaEstimate computes remaining time from throughput", "[ui][taskcenter][eta]") {
+  using automix::app::TaskCenterPanel;
+
+  SECTION("zero elapsed means zero ETA") {
+    REQUIRE(TaskCenterPanel::etaEstimate(1, 2, 0.0).inSeconds() == Catch::Approx(0.0));
+  }
+
+  SECTION("half done at T leaves ~T remaining") {
+    REQUIRE(TaskCenterPanel::etaEstimate(1, 2, 120.0).inSeconds() == Catch::Approx(120.0));
+    REQUIRE(TaskCenterPanel::etaEstimate(3, 6, 90.0).inSeconds() == Catch::Approx(90.0));
+  }
+
+  SECTION("currentIndex == total has no remaining time") {
+    REQUIRE(TaskCenterPanel::etaEstimate(2, 2, 100.0).inSeconds() == Catch::Approx(0.0));
+  }
+
+  SECTION("total == 0 does not divide by zero") {
+    REQUIRE(TaskCenterPanel::etaEstimate(0, 0, 50.0).inSeconds() == Catch::Approx(0.0));
+    REQUIRE(TaskCenterPanel::etaEstimate(1, 0, 50.0).inSeconds() == Catch::Approx(0.0));
+  }
+
+  SECTION("no completed items yet has zero ETA") {
+    REQUIRE(TaskCenterPanel::etaEstimate(0, 5, 40.0).inSeconds() == Catch::Approx(0.0));
+  }
+}
+
+TEST_CASE("TaskCenterPanel batch ETA row state transitions", "[ui][taskcenter][eta]") {
+  juce::ScopedJuceInitialiser_GUI juceInit;
+
+  automix::app::TaskCenterPanel panel;
+  const juce::String emDash(static_cast<juce::juce_wchar>(0x2014));
+
+  SECTION("no batch items shows dash") {
+    REQUIRE(panel.batchEtaText() == emDash);
+    REQUIRE(panel.batchCountsText() == "0 completed, 0 failed / 0 total");
+  }
+
+  SECTION("running batch with elapsed shows formatted ETA") {
+    automix::engine::BatchQueueRunner::ProgressDetail detail;
+    detail.itemIndex = 1;
+    detail.overallFraction = 0.4;
+    detail.completedCount = 1;
+    detail.failedCount = 0;
+    detail.totalCount = 5;
+    panel.setBatchProgress(detail, 120.0);
+
+    // currentIndex = itemIndex + 1 = 2 of 5; remaining 3 items at 60 s/item = 180 s.
+    REQUIRE(panel.batchEtaText() == "ETA 03:00");
+    REQUIRE(panel.batchCountsText() == "1 completed, 0 failed / 5 total");
+  }
+
+  SECTION("complete batch shows Done") {
+    automix::engine::BatchQueueRunner::ProgressDetail detail;
+    detail.itemIndex = 5;
+    detail.overallFraction = 1.0;
+    detail.completedCount = 5;
+    detail.failedCount = 0;
+    detail.totalCount = 5;
+    panel.setBatchProgress(detail, 300.0);
+
+    REQUIRE(panel.batchEtaText() == "Done");
+    REQUIRE(panel.batchCountsText() == "5 completed, 0 failed / 5 total");
+  }
 }

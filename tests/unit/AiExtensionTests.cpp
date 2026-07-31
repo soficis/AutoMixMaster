@@ -1,12 +1,17 @@
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <juce_events/juce_events.h>
 #include <nlohmann/json.hpp>
 
 #include "ai/IModelInference.h"
@@ -15,6 +20,7 @@
 #include "ai/ModelManager.h"
 #include "ai/ModelPackLoader.h"
 #include "ai/ModelStrategy.h"
+#include "app/controllers/ModelController.h"
 #include "app/ui/HeroWaveform.h"
 
 namespace {
@@ -527,4 +533,190 @@ TEST_CASE("HeroWaveform playhead dirty-check skips repaint on unchanged pixel", 
   // Off-view sentinel (-1) toggling in and out of view still triggers a repaint.
   REQUIRE(HeroWaveform::playheadPixelChanged(-1, lastPixel));
   REQUIRE_FALSE(HeroWaveform::playheadPixelChanged(-1, lastPixel));
+}
+
+// ────────────────────────────────────────────────────────────────
+// T3.5: ITO-Master curated hub entry + CC BY-NC consent gating
+// ────────────────────────────────────────────────────────────────
+
+namespace {
+
+bool waitForAsync(const std::function<bool()>& predicate, const int timeoutMs = 6000) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (predicate()) {
+      return true;
+    }
+    if (auto* messageManager = juce::MessageManager::getInstanceWithoutCreating(); messageManager != nullptr) {
+      messageManager->runDispatchLoopUntil(10);
+    } else {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  }
+  return predicate();
+}
+
+struct ModelInstallProbe {
+  int installCalls = 0;
+};
+
+automix::app::ModelController::ModelHubOps makeProbeModelHubOps(ModelInstallProbe& probe) {
+  automix::app::ModelController::ModelHubOps ops;
+  ops.discoverRecommended = [](const automix::ai::HubModelQueryOptions&) {
+    return std::vector<automix::ai::HubModelInfo>{};
+  };
+  ops.installModel = [&probe](const std::string& repoId, const automix::ai::HubInstallOptions&) {
+    ++probe.installCalls;
+    automix::ai::HubInstallResult result;
+    result.success = true;
+    result.repoId = repoId;
+    result.message = "installed";
+    return result;
+  };
+  ops.modelInfo = [](const std::string& repoId) -> std::optional<automix::ai::HubModelInfo> {
+    automix::ai::HubModelInfo info;
+    info.repoId = repoId;
+    return info;
+  };
+  return ops;
+}
+
+} // namespace
+
+TEST_CASE("Curated hub includes ITO-Master mapped to mastering-assistant with three-asset pack metadata", "[ai][licensing]") {
+  const auto curated = automix::ai::curatedModelIds();
+  REQUIRE(std::find(curated.begin(), curated.end(), "kramp/ito-master-onnx") != curated.end());
+
+  REQUIRE(automix::ai::HuggingFaceModelHub::inferUseCase("kramp/ito-master-onnx", {}, "") == "mastering-assistant");
+  REQUIRE(automix::ai::HuggingFaceModelHub::inferUseCase("kramp/ito-master-onnx",
+                                                         {"audio-to-audio", "mastering"}, "") == "mastering-assistant");
+
+  // The license-audit manifest row carries the three-asset pack reference that
+  // the T3.8 mastering route consumes.
+  const auto manifestPath = findRepoRelativePath("docs/model-licensing-audit.json");
+  REQUIRE(manifestPath.has_value());
+  std::ifstream manifestStream(*manifestPath);
+  REQUIRE(manifestStream.good());
+  nlohmann::json manifest;
+  manifestStream >> manifest;
+  const nlohmann::json* row = nullptr;
+  for (const auto& candidate : manifest.at("models")) {
+    if (candidate.value("id", "") == "kramp/ito-master-onnx") {
+      row = &candidate;
+      break;
+    }
+  }
+  REQUIRE(row != nullptr);
+  REQUIRE(row->value("license", "") == "CC BY-NC 4.0");
+  REQUIRE(row->value("commercialUsable", true) == false);
+  REQUIRE(row->contains("assets"));
+  const auto assets = row->at("assets").get<std::vector<std::string>>();
+  REQUIRE(assets.size() >= 3);
+  REQUIRE(std::find(assets.begin(), assets.end(), "fxencoder.onnx") != assets.end());
+  REQUIRE(std::find(assets.begin(), assets.end(), "mastering_tcn.onnx") != assets.end());
+  REQUIRE(std::find(assets.begin(), assets.end(), "config.json") != assets.end());
+}
+
+TEST_CASE("ITO-Master download and activation are gated on CC BY-NC consent", "[ai][licensing][controllers]") {
+  juce::ScopedJuceInitialiser_GUI juceInit;
+  juce::ThreadPool pool(1);
+  automix::ai::ModelManager modelManager;
+  ModelInstallProbe probe;
+
+  const auto root = std::filesystem::temp_directory_path() / "automix_ito_consent";
+  std::filesystem::remove_all(root);
+
+  std::atomic<int> completions{0};
+  std::string lastStatus;
+  std::string lastReport;
+
+  automix::app::ModelController::Callbacks callbacks;
+  callbacks.onInstallComplete = [&](const bool) { ++completions; };
+  callbacks.onStatus = [&](const std::string& value) { lastStatus = value; };
+  callbacks.onReport = [&](const std::string& value) { lastReport = value; };
+
+  automix::app::ModelController controller(modelManager, pool, std::move(callbacks), makeProbeModelHubOps(probe));
+  controller.setModelHubRoot(root);
+
+  const std::string itoModelId = "huggingface:kramp/ito-master-onnx";
+
+  REQUIRE(automix::app::ModelController::modelRequiresLicenseConsent("kramp/ito-master-onnx"));
+  REQUIRE_FALSE(automix::app::ModelController::modelRequiresLicenseConsent("onnx-community/whisper-tiny.en"));
+
+  // Without consent the download is blocked synchronously before any hub call.
+  std::atomic_bool cancelFlag{false};
+  controller.installModel(itoModelId, cancelFlag);
+  REQUIRE(probe.installCalls == 0);
+  REQUIRE(completions.load() == 1);
+  REQUIRE(lastStatus.find("consent") != std::string::npos);
+  REQUIRE(lastReport.find("CC BY-NC") != std::string::npos);
+  REQUIRE_FALSE(controller.hasModelLicenseConsent(itoModelId));
+
+  // Activation is gated the same way: a registry entry exists but the model
+  // cannot be activated until consent is on record.
+  std::filesystem::create_directories(root);
+  {
+    std::ofstream registry(root / "install_registry.json");
+    registry << nlohmann::json::array(
+                    {{{"modelId", itoModelId},
+                      {"repoId", "kramp/ito-master-onnx"},
+                      {"taskScope", "master"},
+                      {"installPath", (root / "ito-master-install").string()}}})
+                    .dump(2);
+  }
+  REQUIRE_FALSE(controller.activateInstalledModelForTask(itoModelId, "master"));
+  REQUIRE(lastStatus.find("consent") != std::string::npos);
+
+  // Acknowledging the CC BY-NC license persists the opt-in per model.
+  REQUIRE(controller.acknowledgeModelLicenseConsent(itoModelId));
+  REQUIRE(controller.hasModelLicenseConsent(itoModelId));
+
+  // With consent recorded activation proceeds past the license gate.
+  REQUIRE_FALSE(controller.activateInstalledModelForTask(itoModelId, "master"));
+  REQUIRE(lastStatus.find("consent") == std::string::npos);
+
+  // With consent recorded the install proceeds to the hub download path.
+  controller.installModel(itoModelId, cancelFlag);
+  REQUIRE(waitForAsync([&]() { return probe.installCalls >= 1 && completions.load() >= 2; }));
+  REQUIRE(probe.installCalls == 1);
+
+  std::filesystem::remove_all(root);
+}
+
+TEST_CASE("Model strategy returns base plans unchanged when no model inference is available", "[ai]") {
+  std::vector<automix::analysis::StemAnalysisEntry> entries;
+  entries.push_back({.stemId = "s1",
+                     .stemName = "stem",
+                     .metrics = {.rmsDb = -20.0, .lowEnergy = 0.4, .midEnergy = 0.4, .highEnergy = 0.2}});
+
+  automix::domain::MixPlan baseMix;
+  baseMix.dryWet = 0.42;
+  baseMix.mixBusHeadroomDb = 5.0;
+  baseMix.decisionLog.push_back("heuristic mix");
+
+  automix::domain::MasterPlan baseMaster;
+  baseMaster.targetLufs = -16.0;
+  baseMaster.preGainDb = 2.0;
+  baseMaster.decisionLog.push_back("heuristic master");
+
+  // With no inference the strategy must pass the base plans through unchanged
+  // (strategies fall to heuristics) until the T3.8 mastering route ships.
+  automix::ai::ModelStrategy strategy;
+  const auto [mixOut, masterOut] = strategy.applyOverrides(nullptr, entries, baseMix, baseMaster);
+
+  REQUIRE(mixOut.dryWet == Catch::Approx(0.42));
+  REQUIRE(mixOut.mixBusHeadroomDb == Catch::Approx(5.0));
+  REQUIRE(mixOut.decisionLog.size() == 1);
+  REQUIRE(mixOut.decisionLog[0] == "heuristic mix");
+  REQUIRE(masterOut.targetLufs == Catch::Approx(-16.0));
+  REQUIRE(masterOut.preGainDb == Catch::Approx(2.0));
+  REQUIRE(masterOut.decisionLog.size() == 1);
+  REQUIRE(masterOut.decisionLog[0] == "heuristic master");
+
+  // An unloaded inference object follows the same pass-through contract.
+  DummyModelInference unloaded;
+  const auto [mixPass, masterPass] = strategy.applyOverrides(&unloaded, entries, baseMix, baseMaster);
+  REQUIRE(mixPass.dryWet == Catch::Approx(0.42));
+  REQUIRE(masterPass.targetLufs == Catch::Approx(-16.0));
+  REQUIRE(masterPass.decisionLog.size() == 1);
 }

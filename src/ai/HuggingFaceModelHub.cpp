@@ -17,11 +17,11 @@
 #include "util/StringUtils.h"
 
 namespace automix::ai {
-namespace {
 
 using ::automix::util::toLower;
 using ::automix::util::trim;
 
+namespace {
 std::optional<std::string> readEnvironment(const char* key) {
 #if defined(_WIN32)
   char* buffer = nullptr;
@@ -299,9 +299,11 @@ std::string sourceUrlForRepo(const std::string& repoId) {
   return "https://huggingface.co/" + repoId;
 }
 
-std::string inferUseCase(const std::string& repoId,
-                         const std::vector<std::string>& tags,
-                         const std::string& fallbackQuery) {
+} // namespace
+
+std::string HuggingFaceModelHub::inferUseCase(const std::string& repoId,
+                                              const std::vector<std::string>& tags,
+                                              const std::string& fallbackQuery) {
   const auto repoLower = toLower(repoId);
   auto joined = repoLower;
   for (const auto& tag : tags) {
@@ -545,8 +547,6 @@ void appendInstallLog(const std::filesystem::path& root,
   out << event.dump() << "\n";
 }
 
-} // namespace
-
 std::vector<std::string> curatedModelIds() {
   return {
       "rysertio/Demucs-onnx",
@@ -561,6 +561,7 @@ std::vector<std::string> curatedModelIds() {
       "SonyCSLParis/music2latent",
       "StemSplitio/htdemucs-ft-onnx",
       "StemSplitio/htdemucs-6s-onnx",
+      "kramp/ito-master-onnx",
   };
 }
 
@@ -671,7 +672,7 @@ std::optional<HubModelInfo> HuggingFaceModelHub::modelInfo(const std::string& mo
   }
 
   info.primaryFile = pickPrimaryFile(info.files, &info.hasOnnx);
-  info.useCase = inferUseCase(info.repoId, info.tags, "");
+  info.useCase = HuggingFaceModelHub::inferUseCase(info.repoId, info.tags, "");
   const auto compatibility = validateCatalogModel(info);
   info.compatible = compatibility.compatible;
   info.taskScope = compatibility.taskScope;
@@ -760,7 +761,7 @@ std::vector<HubModelInfo> HuggingFaceModelHub::discoverRecommended(const HubMode
         continue;
       }
 
-      info->useCase = inferUseCase(info->repoId, info->tags, query);
+      info->useCase = HuggingFaceModelHub::inferUseCase(info->repoId, info->tags, query);
       info->curated = options.curatedOnly;
       const bool trust = trustedOrganization(info->repoId);
       const bool hasOpenLicense = info->license != "unknown" && info->license != "other";

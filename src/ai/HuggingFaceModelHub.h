@@ -77,6 +77,12 @@ class HuggingFaceModelHub {
 
   std::string resolveToken(const std::string& explicitToken = "") const;
   static std::vector<std::string> defaultRecommendedSearchTerms();
+
+  // Maps a repo id + tags + fallback search query onto a hub use-case label.
+  // Public so tests can pin curated entries (e.g. ITO-Master -> mastering-assistant).
+  static std::string inferUseCase(const std::string& repoId,
+                                  const std::vector<std::string>& tags,
+                                  const std::string& fallbackQuery);
 };
 
 // Curated model catalogue (catalog-only discovery source). Exposed for

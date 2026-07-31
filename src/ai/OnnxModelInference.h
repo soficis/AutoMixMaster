@@ -14,6 +14,12 @@
 
 namespace automix::ai {
 
+enum class ProviderFailureKind {
+  Oom,
+  DeviceLost,
+  Unknown,
+};
+
 class OnnxModelInference final : public IModelInference {
  public:
   ~OnnxModelInference() noexcept override;
@@ -31,6 +37,8 @@ class OnnxModelInference final : public IModelInference {
   void setThreadConfiguration(int intraOpThreads, int interOpThreads);
   void setProfilingEnabled(bool enabled);
   void setPreferredPrecision(std::string precision);
+
+  void recordProviderFailure(const std::string& provider, ProviderFailureKind kind);
 
   [[nodiscard]] std::string activeExecutionProvider() const;
   [[nodiscard]] std::string backendDiagnostics() const;

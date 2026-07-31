@@ -3,11 +3,14 @@
 #include <algorithm>
 #include <cmath>
 
+// allow: SIZE_OK — batch task/queue/history display is one cohesive panel; splitting
+// into an extra compilation unit would require a CMakeLists.txt change (forbidden in T2.5).
+
 namespace automix::app {
 
 using namespace theme;
 
-TaskCenterPanel::TaskCenterPanel() : progressBar_(progressValue_) {
+TaskCenterPanel::TaskCenterPanel() : progressBar_(progressValue_), batchProgressBar_(batchProgressValue_) {
   taskLabel_.setText("Ready", juce::dontSendNotification);
   taskLabel_.setFont(typography::body());
   taskLabel_.setColour(juce::Label::textColourId, colour(colours::text));
@@ -61,6 +64,14 @@ TaskCenterPanel::TaskCenterPanel() : progressBar_(progressValue_) {
   queueThroughputLabel_.setColour(juce::Label::textColourId, colour(colours::textMuted));
   queueThroughputLabel_.setJustificationType(juce::Justification::centredRight);
 
+  etaLabel_.setFont(typography::caption());
+  etaLabel_.setColour(juce::Label::textColourId, colour(colours::textMuted));
+  etaLabel_.setJustificationType(juce::Justification::centredLeft);
+
+  batchCountsLabel_.setFont(typography::caption());
+  batchCountsLabel_.setColour(juce::Label::textColourId, colour(colours::textMuted));
+  batchCountsLabel_.setJustificationType(juce::Justification::centredRight);
+
   addAndMakeVisible(taskLabel_);
   addAndMakeVisible(stateBadge_);
   addAndMakeVisible(progressBar_);
@@ -70,7 +81,12 @@ TaskCenterPanel::TaskCenterPanel() : progressBar_(progressValue_) {
   addAndMakeVisible(queueHeaderLabel_);
   addAndMakeVisible(queueEtaLabel_);
   addAndMakeVisible(queueThroughputLabel_);
+  addAndMakeVisible(etaLabel_);
+  addAndMakeVisible(batchCountsLabel_);
+  addAndMakeVisible(batchProgressBar_);
   addAndMakeVisible(historyEditor_);
+
+  updateBatchSummary();
 }
 
 void TaskCenterPanel::paint(juce::Graphics& g) {
@@ -150,6 +166,12 @@ void TaskCenterPanel::resized() {
     area.removeFromTop(queueHeight + 4);
   }
 
+  // Batch ETA / summary row: ETA (left) + overall progress bar (middle) + counts (right)
+  auto summaryRow = area.removeFromTop(22);
+  etaLabel_.setBounds(summaryRow.removeFromLeft(92).reduced(1));
+  batchCountsLabel_.setBounds(summaryRow.removeFromRight(190).reduced(1));
+  batchProgressBar_.setBounds(summaryRow.reduced(2, 4));
+
   // Remaining: history editor
   area.removeFromTop(4);
   historyEditor_.setBounds(area);
@@ -209,6 +231,67 @@ void TaskCenterPanel::setProgress(double progress) {
   }
   progressBar_.repaint();
   progressLabel_.repaint();
+
+  // Live overall-fraction path: mirror into the batch summary bar while a batch is active.
+  if (batchDetail_.totalCount > 0) {
+    batchProgressValue_ = std::clamp(progress, 0.0, 1.0);
+    batchProgressBar_.repaint();
+  }
+}
+
+void TaskCenterPanel::setBatchProgress(const engine::BatchQueueRunner::ProgressDetail& detail, double elapsedSeconds) {
+  batchDetail_ = detail;
+  batchElapsedSeconds_ = std::max(0.0, elapsedSeconds);
+  batchProgressValue_ = std::clamp(detail.overallFraction, 0.0, 1.0);
+  updateBatchSummary();
+  batchProgressBar_.repaint();
+}
+
+juce::String TaskCenterPanel::batchEtaText() const {
+  return etaLabel_.getText();
+}
+
+juce::String TaskCenterPanel::batchCountsText() const {
+  return batchCountsLabel_.getText();
+}
+
+juce::RelativeTime TaskCenterPanel::etaEstimate(int currentIndex, int total, double elapsedSeconds) {
+  if (total <= 0 || currentIndex <= 0 || currentIndex >= total || elapsedSeconds <= 0.0) {
+    return juce::RelativeTime::seconds(0.0);
+  }
+  const double avgItemSeconds = elapsedSeconds / static_cast<double>(currentIndex);
+  const int remainingItems = total - currentIndex;
+  return juce::RelativeTime::seconds(avgItemSeconds * static_cast<double>(remainingItems));
+}
+
+juce::String TaskCenterPanel::formatEta(const juce::RelativeTime& eta) {
+  const int totalSeconds = static_cast<int>(std::ceil(eta.inSeconds()));
+  const int minutes = totalSeconds / 60;
+  const int seconds = totalSeconds % 60;
+  return juce::String::formatted("ETA %02d:%02d", minutes, seconds);
+}
+
+void TaskCenterPanel::updateBatchSummary() {
+  const size_t total = batchDetail_.totalCount;
+  const size_t completed = batchDetail_.completedCount;
+  const size_t failed = batchDetail_.failedCount;
+
+  if (total == 0) {
+    // No batch items: em dash "—".
+    etaLabel_.setText(juce::String(static_cast<juce::juce_wchar>(0x2014)), juce::dontSendNotification);
+  } else {
+    const int currentIndex = static_cast<int>(batchDetail_.itemIndex) + 1;
+    if (currentIndex >= static_cast<int>(total)) {
+      etaLabel_.setText("Done", juce::dontSendNotification);
+    } else {
+      const auto eta = etaEstimate(currentIndex, static_cast<int>(total), batchElapsedSeconds_);
+      etaLabel_.setText(formatEta(eta), juce::dontSendNotification);
+    }
+  }
+
+  batchCountsLabel_.setText(juce::String(completed) + " completed, " + juce::String(failed) + " failed / " +
+                                juce::String(total) + " total",
+                            juce::dontSendNotification);
 }
 
 void TaskCenterPanel::setCanCancel(bool canCancel) {

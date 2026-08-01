@@ -254,39 +254,68 @@ APPRUN
 
   local tools_dir="$DIST_DIR/tools"
   mkdir -p "$tools_dir"
-  local appimagetool="$tools_dir/appimagetool-${arch}.AppImage"
 
   # Pinned release of appimagetool (AppImage/appimagetool v1.9.1, 2025-11-18).
   # Update APPIMAGETOOL_VERSION and the matching SHA-256 entries when upgrading.
   local APPIMAGETOOL_VERSION="1.9.1"
-  local appimagetool_url="https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-${arch}.AppImage"
 
   # Expected SHA-256 checksums for each supported architecture.
-  local expected_sha256
-  case "$arch" in
-    x86_64)  expected_sha256="ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0" ;;
-    aarch64) expected_sha256="f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158" ;;
-    *)
-      echo "No known checksum for appimagetool on arch '${arch}'" >&2
+  appimagetool_sha256() {
+    case "$1" in
+      x86_64)  echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0" ;;
+      aarch64) echo "f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158" ;;
+      *)
+        echo "No known checksum for appimagetool on arch '$1'" >&2
+        return 1
+        ;;
+    esac
+  }
+
+  # Download if missing and verify; prints the tool path on success.
+  fetch_appimagetool() {
+    local tool_arch="$1"
+    local tool="$tools_dir/appimagetool-${tool_arch}.AppImage"
+    local expected_sha256
+    expected_sha256="$(appimagetool_sha256 "$tool_arch")" || return 1
+
+    if [[ ! -x "$tool" ]]; then
+      echo "Downloading appimagetool ${APPIMAGETOOL_VERSION} (${tool_arch})..."
+      curl -L --fail --retry 3 --output "$tool" \
+        "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-${tool_arch}.AppImage"
+      chmod 0755 "$tool"
+    fi
+
+    echo "Verifying appimagetool checksum..."
+    local actual_sha256
+    actual_sha256="$(sha256sum "$tool" | awk '{print $1}')"
+    if [[ "$actual_sha256" != "$expected_sha256" ]]; then
+      echo "Checksum mismatch for appimagetool-${tool_arch}.AppImage" >&2
+      echo "  expected: $expected_sha256" >&2
+      echo "  got:      $actual_sha256" >&2
+      rm -f "$tool"
       exit 1
-      ;;
-  esac
+    fi
 
-  if [[ ! -x "$appimagetool" ]]; then
-    echo "Downloading appimagetool ${APPIMAGETOOL_VERSION} (${arch})..."
-    curl -L --fail --retry 3 --output "$appimagetool" "$appimagetool_url"
-    chmod 0755 "$appimagetool"
-  fi
+    echo "$tool"
+  }
 
-  echo "Verifying appimagetool checksum..."
-  local actual_sha256
-  actual_sha256="$(sha256sum "$appimagetool" | awk '{print $1}')"
-  if [[ "$actual_sha256" != "$expected_sha256" ]]; then
-    echo "Checksum mismatch for appimagetool-${arch}.AppImage" >&2
-    echo "  expected: $expected_sha256" >&2
-    echo "  got:      $actual_sha256" >&2
-    rm -f "$appimagetool"
-    exit 1
+  local appimagetool
+  appimagetool="$(fetch_appimagetool "$arch")"
+
+  # The AppImage runtime cannot be executed under QEMU user-mode emulation
+  # (execve fails with "Exec format error"), so in emulated arm64 containers
+  # the native-arch appimagetool is unusable. Detect that and fall back to the
+  # x86_64 appimagetool: it is fully static, so the host kernel executes it
+  # natively even inside an emulated arm64 container, and appimagetool
+  # cross-builds by embedding the runtime matching $arch.
+  if ! APPIMAGE_EXTRACT_AND_RUN=1 "$appimagetool" --version >/dev/null 2>&1; then
+    echo "appimagetool-${arch}.AppImage is not executable here (QEMU-emulated build?); falling back to x86_64 appimagetool to cross-build" >&2
+    if [[ "$arch" == "aarch64" ]]; then
+      appimagetool="$(fetch_appimagetool "x86_64")"
+    else
+      echo "No cross-build fallback available for arch '${arch}'" >&2
+      exit 1
+    fi
   fi
 
   local output="$DIST_DIR/${APP_NAME}-${VERSION}-${arch}.AppImage"

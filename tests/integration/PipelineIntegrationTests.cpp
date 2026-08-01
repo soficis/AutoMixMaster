@@ -1,7 +1,5 @@
-#ifndef _USE_MATH_DEFINES
-#define _USE_MATH_DEFINES
-#endif
 #include <cmath>
+#include <numbers>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -21,9 +19,9 @@ automix::engine::AudioBuffer makeTestSignal(double durationSec = 1.0) {
   for (int i = 0; i < samples; ++i) {
     const double t = static_cast<double>(i) / sampleRate;
     const float sample = static_cast<float>(
-        0.6 * std::sin(2.0 * M_PI * 440.0 * t) +
-        0.25 * std::sin(2.0 * M_PI * 880.0 * t) +
-        0.15 * std::sin(2.0 * M_PI * 1760.0 * t));
+        0.6 * std::sin(2.0 * std::numbers::pi_v<double> * 440.0 * t) +
+        0.25 * std::sin(2.0 * std::numbers::pi_v<double> * 880.0 * t) +
+        0.15 * std::sin(2.0 * std::numbers::pi_v<double> * 1760.0 * t));
     buffer.setSample(0, i, sample);
     buffer.setSample(1, i, sample * 0.97f);
   }

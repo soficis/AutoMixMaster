@@ -19,7 +19,11 @@ class GpuCapabilityDetector final {
  public:
   GpuCapabilityDetector() = delete;
 
-  /// Enumerate GPU adapters visible to the host OS.
+  /// Detect GPU adapters visible to the host OS.
+  /// Currently captures only the first NVIDIA GPU from nvidia-smi (multi-GPU
+  /// enumeration is a best-effort single-line capture).  On Apple platforms,
+  /// reports the integrated GPU.  Falls back to a DirectML entry on Windows
+  /// or a CPU-only entry when no GPU is found.
   /// The returned list is empty when no GPU-supporting runtime (ONNX Runtime,
   /// CUDA driver, DirectML, CoreML) is available or no compatible hardware
   /// was discovered.

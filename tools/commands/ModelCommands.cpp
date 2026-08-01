@@ -184,6 +184,9 @@ int commandValidateModelPack(const CommandArgs& args) {
   std::unique_ptr<automix::ai::IModelInference> inference = std::make_unique<automix::ai::NullModelInference>();
   if (pack.engine == "onnxruntime") {
     inference = std::make_unique<automix::ai::OnnxModelInference>();
+  } else if (pack.engine != "unknown") {
+    std::cerr << "Warning: model engine '" << pack.engine
+              << "' is not supported by validate-modelpack; runtime inference validation will be skipped.\n";
   }
 
   const auto modelPath = pack.rootPath / pack.modelFile;

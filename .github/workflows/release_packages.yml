@@ -117,7 +117,14 @@ jobs:
           $packageDir = "$releaseRoot/AutoMixMaster-windows-${{ matrix.arch }}"
           New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
 
-          Copy-Item "build_windows_${{ matrix.arch }}/AutoMixMasterApp_artefacts/Release/AutoMixMaster.exe" "$packageDir/AutoMixMaster.exe" -Force
+          $exeCandidates = @(
+            "build_windows_${{ matrix.arch }}/AutoMixMasterApp_artefacts/Release/AutoMixMaster.exe",
+            "build_windows_${{ matrix.arch }}/AutoMixMasterApp_artefacts/Release/Standalone/AutoMixMaster.exe",
+            "build_windows_${{ matrix.arch }}/AutoMixMasterApp_artefacts/AutoMixMaster.exe"
+          )
+          $exePath = $exeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $exePath) { throw "AutoMixMaster.exe not found in build outputs!" }
+          Copy-Item $exePath "$packageDir/AutoMixMaster.exe" -Force
           Copy-Item "assets" "$packageDir/assets" -Recurse -Force
 
           $zipName = "AutoMixMaster-windows-${{ matrix.arch }}.zip"
@@ -173,6 +180,7 @@ jobs:
             echo "AutoMixMaster.app not found" >&2
             exit 1
           fi
+          mkdir -p "$APP_BUNDLE/Contents/MacOS"
           cp -R assets "$APP_BUNDLE/Contents/MacOS/assets"
           ZIP_PATH="dist/release/macos/AutoMixMaster-macos-${{ matrix.arch }}.zip"
           ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$ZIP_PATH"

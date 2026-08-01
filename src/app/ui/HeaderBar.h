@@ -1,5 +1,9 @@
 #pragma once
 
+#include <functional>
+#include <utility>
+#include <vector>
+
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "app/style/Theme.h"

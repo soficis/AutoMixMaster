@@ -6,8 +6,8 @@ if(CMAKE_VERSION VERSION_GREATER_EQUAL 4.0)
 endif()
 
 if(WIN32 AND CMAKE_GENERATOR MATCHES "Visual Studio")
-  if(NOT CMAKE_GENERATOR MATCHES "Visual Studio 1[78] 202[26]")
-    message(FATAL_ERROR "Windows Visual Studio builds require Visual Studio 2022 or 2026 tools.")
+  if(NOT CMAKE_GENERATOR MATCHES "Visual Studio 1[789]")
+    message(FATAL_ERROR "Windows Visual Studio builds require Visual Studio 2022 (17) or later.")
   endif()
 endif()
 

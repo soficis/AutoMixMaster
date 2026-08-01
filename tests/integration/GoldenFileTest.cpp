@@ -1,9 +1,7 @@
-#ifndef _USE_MATH_DEFINES
-#define _USE_MATH_DEFINES
-#endif
 #include "GoldenFileTest.h"
 
 #include <cmath>
+#include <numbers>
 #include <fstream>
 #include <sstream>
 
@@ -26,9 +24,9 @@ engine::AudioBuffer loadTestInput(const std::filesystem::path& /*inputPath*/) {
   for (int i = 0; i < samples; ++i) {
     const double t = static_cast<double>(i) / sampleRate;
     const float sample = static_cast<float>(
-        1.35 * (0.7 * std::sin(2.0 * M_PI * 440.0 * t) +
-                0.3 * std::sin(2.0 * M_PI * 880.0 * t) +
-                0.1 * std::sin(2.0 * M_PI * 1760.0 * t)));
+        1.35 * (0.7 * std::sin(2.0 * std::numbers::pi_v<double> * 440.0 * t) +
+                0.3 * std::sin(2.0 * std::numbers::pi_v<double> * 880.0 * t) +
+                0.1 * std::sin(2.0 * std::numbers::pi_v<double> * 1760.0 * t)));
     buffer.setSample(0, i, sample);
     buffer.setSample(1, i, sample * 0.95f);
   }

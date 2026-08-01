@@ -98,10 +98,11 @@ void TaskCenterPanel::paint(juce::Graphics& g) {
 
   if (!queueItems_.empty()) {
     auto area = getLocalBounds().reduced(static_cast<int>(metrics::paddingMedium));
-    auto topRow = area.removeFromTop(24);
-    auto queueArea = area.removeFromTop(static_cast<int>(queueItems_.size()) * kQueueItemHeight + 4);
-
-    queueArea.removeFromTop(topRow.getHeight() + 24 + 4 + 24 + 4);
+    // Mirror resized() layout: skip top row (24) + queue header row (18)
+    area.removeFromTop(24);
+    area.removeFromTop(18);
+    auto queueArea = area.removeFromTop(
+        std::min(static_cast<int>(queueItems_.size()), kMaxVisibleQueueItems) * kQueueItemHeight + 4);
 
     g.setColour(colour(colours::surfaceBorder).withAlpha(0.3f));
     g.fillRoundedRectangle(queueArea.toFloat(), 4.0f);

@@ -103,7 +103,7 @@ TEST_CASE("TaskCenterPanel batch ETA row state transitions", "[ui][taskcenter][e
 
   SECTION("complete batch shows Done") {
     automix::engine::BatchQueueRunner::ProgressDetail detail;
-    detail.itemIndex = 5;
+    detail.itemIndex = 4;  // 0-based: last valid index for 5 items is 4
     detail.overallFraction = 1.0;
     detail.completedCount = 5;
     detail.failedCount = 0;

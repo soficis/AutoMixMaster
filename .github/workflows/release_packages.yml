@@ -43,6 +43,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Persist compiler output so emulated arm64 rebuilds (failure retries)
+      # do not recompile the whole tree under QEMU.
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-linux-${{ matrix.arch }}-${{ github.sha }}
+          restore-keys: |
+            ccache-linux-${{ matrix.arch }}-
+
       - name: Set up QEMU for arm64 emulation
         if: matrix.emulated
         uses: docker/setup-qemu-action@v3
@@ -52,7 +62,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential cmake ninja-build pkg-config curl \
+            build-essential cmake ninja-build pkg-config curl ccache \
             libasound2-dev libjack-jackd2-dev libfreetype6-dev libfontconfig1-dev \
             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev \
             libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libgtk-3-dev \
@@ -66,6 +76,8 @@ jobs:
       # binaries under QEMU user-mode emulation).
       - name: Build .deb + AppImage
         if: ${{ !matrix.emulated }}
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: bash ./tools/package_linux.sh
 
       - name: Build .deb + AppImage (arm64, QEMU-emulated)
@@ -74,11 +86,12 @@ jobs:
           docker run --rm --platform linux/arm64 \
             -v "${{ github.workspace }}:/workspace" \
             -w /workspace \
+            -e CCACHE_DIR=/workspace/.ccache \
             arm64v8/ubuntu:24.04 \
             bash -c 'set -euo pipefail; \
               apt-get update && apt-get install -y --no-install-recommends \
                 build-essential cmake ninja-build pkg-config curl git ca-certificates \
-                unzip file xz-utils \
+                ccache unzip file xz-utils \
                 libasound2-dev libjack-jackd2-dev libfreetype6-dev libfontconfig1-dev \
                 libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev \
                 libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libgtk-3-dev \
@@ -86,6 +99,7 @@ jobs:
                 dpkg-dev fakeroot; \
               bash ./tools/package_linux.sh'
           sudo chown -R "$(id -u):$(id -g)" dist
+          if [[ -d .ccache ]]; then sudo chown -R "$(id -u):$(id -g)" .ccache; fi
 
       - name: Verify Flatpak prefetch wiring
         run: |

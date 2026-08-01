@@ -93,8 +93,15 @@ if [[ $BUILD_APPIMAGE -eq 1 ]]; then
 fi
 
 if [[ $SKIP_BUILD -eq 0 ]]; then
-  cmake -S "$REPO_ROOT" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DBUILD_TOOLS=OFF
+  ccache_launcher=()
+  if command -v ccache >/dev/null 2>&1; then
+    ccache_launcher=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
+  fi
+  cmake -S "$REPO_ROOT" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DBUILD_TOOLS=OFF "${ccache_launcher[@]}"
   cmake --build "$BUILD_DIR" --config Release --target AutoMixMasterApp --parallel 3
+  if command -v ccache >/dev/null 2>&1; then
+    ccache --show-stats
+  fi
 fi
 
 BINARY_PATH=""

@@ -32,6 +32,7 @@ private:
   juce::TextButton modelsButton_{"Models"};
   juce::TextButton settingsButton_{"Settings"};
   juce::ComboBox profileSelector_;
+  std::vector<juce::String> profileIds_; // comboId (1-based) → profile ID mapping
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HeaderBar)
 };

@@ -74,6 +74,7 @@ private:
 
   juce::Label taskLabel_;
   juce::Label stateBadge_;
+  double progressValue_ = 0.0;
   juce::ProgressBar progressBar_;
   juce::Label progressLabel_;
   juce::TextButton copyLogButton_{"Copy Log"};
@@ -94,7 +95,6 @@ private:
   engine::BatchQueueRunner::ProgressDetail batchDetail_;
   juce::ProgressBar batchProgressBar_;
 
-  double progressValue_ = 0.0;
   TaskState currentState_ = TaskState::Idle;
   bool hasHistoryEntries_ = false;
   int historyLineCount_ = 0;

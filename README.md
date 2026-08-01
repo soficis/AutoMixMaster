@@ -308,5 +308,5 @@ Model weights are **not bundled** into the installer or executable binaries. Use
 
 > **Non-Commercial Notice**: Models licensed under **CC-BY-NC 4.0** (such as Meta Demucs, Denoiser, and ITO-Master weights) are restricted to personal, educational, and non-commercial evaluation use. Commercial workflows can use open-source MIT-licensed models (e.g. Whisper, CLAP) or the built-in deterministic heuristic DSP engines. User consent gating is enforced prior to model download and execution.
 
-> **Model Licensing Audit**: For complete machine-checkable model license metadata and audit reports, see [docs/model-licensing-audit.md](file:///u:/Junk%20holda/AutoMixMaster/docs/model-licensing-audit.md) and [docs/model-licensing-audit.json](file:///u:/Junk%20holda/AutoMixMaster/docs/model-licensing-audit.json).
+> **Model Licensing Audit**: For complete machine-checkable model license metadata and audit reports, see [docs/model-licensing-audit.md](docs/model-licensing-audit.md) and [docs/model-licensing-audit.json](docs/model-licensing-audit.json).
 

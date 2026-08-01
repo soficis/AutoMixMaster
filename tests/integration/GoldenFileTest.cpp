@@ -19,32 +19,6 @@ namespace automix::integration {
 
 namespace {
 
-double measureIntegratedLufs(const engine::AudioBuffer& buffer) {
-  double sumSq = 0.0;
-  int totalSamples = 0;
-  for (int ch = 0; ch < buffer.getNumChannels(); ++ch) {
-    for (int i = 0; i < buffer.getNumSamples(); ++i) {
-      const double sample = static_cast<double>(buffer.getSample(ch, i));
-      sumSq += sample * sample;
-      ++totalSamples;
-    }
-  }
-  if (totalSamples == 0) return -120.0;
-  const double rms = std::sqrt(sumSq / static_cast<double>(totalSamples));
-  return 20.0 * std::log10(rms + 1e-20) - 0.691;
-}
-
-double estimateTruePeakDbtp(const engine::AudioBuffer& buffer, int oversampleFactor = 4) {
-  double peak = 0.0;
-  for (int ch = 0; ch < buffer.getNumChannels(); ++ch) {
-    for (int i = 0; i < buffer.getNumSamples(); ++i) {
-      peak = std::max(peak, static_cast<double>(std::abs(buffer.getSample(ch, i))));
-    }
-  }
-  const double margin = 1.0 + 0.5 / static_cast<double>(oversampleFactor);
-  return 20.0 * std::log10(peak * margin + 1e-20);
-}
-
 engine::AudioBuffer loadTestInput(const std::filesystem::path& /*inputPath*/) {
   const double sampleRate = 44100.0;
   const int samples = static_cast<int>(sampleRate * 2.0);

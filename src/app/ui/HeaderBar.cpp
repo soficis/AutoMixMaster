@@ -48,8 +48,8 @@ HeaderBar::HeaderBar() {
   };
   profileSelector_.onChange = [this] {
     const auto id = profileSelector_.getSelectedId();
-    if (id != 0 && onProfileSelected) {
-      onProfileSelected(juce::String(id));
+    if (id > 0 && id <= static_cast<int>(profileIds_.size()) && onProfileSelected) {
+      onProfileSelected(profileIds_[id - 1]);
     }
   };
 }
@@ -91,10 +91,12 @@ void HeaderBar::setSessionName(const juce::String& name) {
 void HeaderBar::setProfiles(const std::vector<std::pair<juce::String, juce::String>>& profiles,
                             const juce::String& activeId) {
   profileSelector_.clear(juce::dontSendNotification);
+  profileIds_.clear();
   int comboId = 1;
   int selectedId = 0;
   for (const auto& [name, id] : profiles) {
     profileSelector_.addItem(name, comboId);
+    profileIds_.push_back(id);
     if (id == activeId)
       selectedId = comboId;
     ++comboId;

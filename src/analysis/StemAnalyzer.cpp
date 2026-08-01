@@ -64,6 +64,7 @@ StftSummary runStft(const std::vector<double>& mono,
                    const int fftOrder,
                    const int hopSize,
                    const bool halfWaveFlux) {
+  (void)sampleRate;
   StftSummary summary;
   const int fftSize = 1 << fftOrder;
   const int nyquistBins = fftSize / 2;

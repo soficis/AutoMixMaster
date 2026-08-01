@@ -30,32 +30,77 @@ concurrency:
 jobs:
   linux-packages:
     name: Linux (${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: x64
-            runner: ubuntu-24.04
+            emulated: false
           - arch: arm64
-            runner: ubuntu-24.04-arm64
+            emulated: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Persist compiler output so emulated arm64 rebuilds (failure retries)
+      # do not recompile the whole tree under QEMU.
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-linux-${{ matrix.arch }}-${{ github.sha }}
+          restore-keys: |
+            ccache-linux-${{ matrix.arch }}-
+
+      - name: Set up QEMU for arm64 emulation
+        if: matrix.emulated
+        uses: docker/setup-qemu-action@v3
+
       - name: Install build dependencies
+        if: ${{ !matrix.emulated }}
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential cmake ninja-build pkg-config curl \
+            build-essential cmake ninja-build pkg-config curl ccache \
             libasound2-dev libjack-jackd2-dev libfreetype6-dev libfontconfig1-dev \
             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev \
             libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libgtk-3-dev \
             libglu1-mesa-dev mesa-common-dev libcurl4-openssl-dev \
             dpkg-dev fakeroot flatpak flatpak-builder
 
+      # Public ubuntu-24.04-arm64 runners are frequently starved for 10h+,
+      # so arm64 packages are built on the x64 runner inside an emulated
+      # arm64v8/ubuntu:24.04 container (docker/setup-qemu-action registers
+      # binfmt_misc, docker run --platform linux/arm64 executes native arm64
+      # binaries under QEMU user-mode emulation).
       - name: Build .deb + AppImage
+        if: ${{ !matrix.emulated }}
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: bash ./tools/package_linux.sh
+
+      - name: Build .deb + AppImage (arm64, QEMU-emulated)
+        if: matrix.emulated
+        run: |
+          docker run --rm --platform linux/arm64 \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            -e CCACHE_DIR=/workspace/.ccache \
+            -e AUTOMIX_QEMU_EMULATED=1 \
+            arm64v8/ubuntu:24.04 \
+            bash -c 'set -euo pipefail; \
+              apt-get update && apt-get install -y --no-install-recommends \
+                build-essential cmake ninja-build pkg-config curl git ca-certificates \
+                ccache unzip file xz-utils \
+                libasound2-dev libjack-jackd2-dev libfreetype6-dev libfontconfig1-dev \
+                libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev \
+                libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libgtk-3-dev \
+                libglu1-mesa-dev mesa-common-dev libcurl4-openssl-dev \
+                dpkg-dev fakeroot; \
+              bash ./tools/package_linux.sh'
+          sudo chown -R "$(id -u):$(id -g)" dist
+          if [[ -d .ccache ]]; then sudo chown -R "$(id -u):$(id -g)" .ccache; fi
 
       - name: Verify Flatpak prefetch wiring
         run: |
@@ -66,7 +111,22 @@ jobs:
       # Flatpak sandbox builds can fail if CMake FetchContent tries live GitHub clone.
       # Keep manifest prefetch sources + FETCHCONTENT_SOURCE_DIR_* overrides in sync.
       - name: Build Flatpak bundle
+        if: ${{ !matrix.emulated }}
         run: bash ./tools/build_flatpak.sh
+
+      - name: Build Flatpak bundle (arm64, QEMU-emulated)
+        if: matrix.emulated
+        run: |
+          docker run --rm --platform linux/arm64 \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            -e AUTOMIX_FLATPAK_DISABLE_SANDBOX=1 \
+            arm64v8/ubuntu:24.04 \
+            bash -c 'set -euo pipefail; \
+              apt-get update && apt-get install -y --no-install-recommends \
+                flatpak flatpak-builder git ca-certificates; \
+              bash ./tools/build_flatpak.sh'
+          sudo chown -R "$(id -u):$(id -g)" dist
 
       - name: Collect Linux release assets
         run: |
@@ -100,12 +160,15 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure
-        run: >
-          cmake -S . -B build_windows_${{ matrix.arch }}
-          -G "Visual Studio 17 2022"
-          -A ${{ matrix.vs_platform }}
-          -DBUILD_TESTING=OFF
-          -DBUILD_TOOLS=OFF
+        shell: pwsh
+        run: |
+          # Auto-detect the installed Visual Studio generator
+          $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vsWhere) {
+            $vsVersion = & $vsWhere -latest -property catalog_productLineVersion
+            Write-Host "Detected Visual Studio $vsVersion"
+          }
+          cmake -S . -B build_windows_${{ matrix.arch }} -A ${{ matrix.vs_platform }} -DBUILD_TESTING=OFF -DBUILD_TOOLS=OFF
 
       - name: Build
         run: cmake --build build_windows_${{ matrix.arch }} --config Release --target AutoMixMasterApp --parallel 3
@@ -117,7 +180,14 @@ jobs:
           $packageDir = "$releaseRoot/AutoMixMaster-windows-${{ matrix.arch }}"
           New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
 
-          Copy-Item "build_windows_${{ matrix.arch }}/AutoMixMasterApp_artefacts/Release/AutoMixMaster.exe" "$packageDir/AutoMixMaster.exe" -Force
+          $exeCandidates = @(
+            "build_windows_${{ matrix.arch }}/AutoMixMasterApp_artefacts/Release/AutoMixMaster.exe",
+            "build_windows_${{ matrix.arch }}/AutoMixMasterApp_artefacts/Release/Standalone/AutoMixMaster.exe",
+            "build_windows_${{ matrix.arch }}/AutoMixMasterApp_artefacts/AutoMixMaster.exe"
+          )
+          $exePath = $exeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $exePath) { throw "AutoMixMaster.exe not found in build outputs!" }
+          Copy-Item $exePath "$packageDir/AutoMixMaster.exe" -Force
           Copy-Item "assets" "$packageDir/assets" -Recurse -Force
 
           $zipName = "AutoMixMaster-windows-${{ matrix.arch }}.zip"
@@ -173,6 +243,7 @@ jobs:
             echo "AutoMixMaster.app not found" >&2
             exit 1
           fi
+          mkdir -p "$APP_BUNDLE/Contents/MacOS"
           cp -R assets "$APP_BUNDLE/Contents/MacOS/assets"
           ZIP_PATH="dist/release/macos/AutoMixMaster-macos-${{ matrix.arch }}.zip"
           ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$ZIP_PATH"
@@ -233,6 +304,21 @@ jobs:
             echo "name=$name"
             echo "prerelease=$prerelease"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Validate release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ steps.release-meta.outputs.tag }}"
+          # GitHub tags must be valid git refs; the API rejects names with
+          # spaces or characters outside [0-9A-Za-z._/-] ("tag_name is not a
+          # valid tag"), e.g. "0.4.3 AKA (v1.1)".
+          if [[ -z "$tag" || "$tag" =~ [^0-9A-Za-z._/-] || "$tag" == *".."* || "$tag" == .* || "$tag" == *. || "$tag" == -* ]]; then
+            echo "Release tag '$tag' is not a valid GitHub tag name." >&2
+            echo "Tags may only contain letters, digits, '.', '_', '-' and '/', must not" >&2
+            echo "contain spaces or '..', and must not start with '-' or end with '.'. Example: v0.4.3" >&2
+            exit 1
+          fi
 
       - name: Ensure release assets exist
         shell: bash

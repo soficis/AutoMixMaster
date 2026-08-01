@@ -286,13 +286,13 @@ APPRUN
     expected_sha256="$(appimagetool_sha256 "$tool_arch")" || return 1
 
     if [[ ! -x "$tool" ]]; then
-      echo "Downloading appimagetool ${APPIMAGETOOL_VERSION} (${tool_arch})..."
+      echo "Downloading appimagetool ${APPIMAGETOOL_VERSION} (${tool_arch})..." >&2
       curl -L --fail --retry 3 --output "$tool" \
         "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-${tool_arch}.AppImage"
       chmod 0755 "$tool"
     fi
 
-    echo "Verifying appimagetool checksum..."
+    echo "Verifying appimagetool checksum..." >&2
     local actual_sha256
     actual_sha256="$(sha256sum "$tool" | awk '{print $1}')"
     if [[ "$actual_sha256" != "$expected_sha256" ]]; then

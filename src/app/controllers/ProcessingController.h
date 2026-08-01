@@ -72,7 +72,9 @@ class ProcessingController {
 
   void runBatch(const std::filesystem::path& inputFolder,
                 const domain::RenderSettings& baseSettings,
-                std::atomic_bool& cancelFlag);
+                std::atomic_bool& cancelFlag,
+                std::optional<ai::ModelPack> mixPack = std::nullopt,
+                std::optional<ai::ModelPack> masterPack = std::nullopt);
 
  private:
   juce::ThreadPool& threadPool_;

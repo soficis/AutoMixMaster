@@ -1,15 +1,86 @@
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <optional>
+#include <string>
+#include <thread>
+#include <vector>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <juce_events/juce_events.h>
+#include <nlohmann/json.hpp>
 
 #include "ai/IModelInference.h"
 #include "ai/FeatureSchema.h"
+#include "ai/HuggingFaceModelHub.h"
 #include "ai/ModelManager.h"
 #include "ai/ModelPackLoader.h"
 #include "ai/ModelStrategy.h"
+#include "app/controllers/ModelController.h"
+#include "app/ui/HeroWaveform.h"
+
+namespace {
+
+std::optional<std::filesystem::path> findRepoRelativePath(const std::filesystem::path& relative) {
+  std::vector<std::filesystem::path> candidates;
+#ifdef AUTOMIX_SOURCE_DIR
+  candidates.push_back(std::filesystem::path(AUTOMIX_SOURCE_DIR) / relative);
+#endif
+  candidates.push_back(std::filesystem::current_path() / relative);
+  candidates.push_back(std::filesystem::current_path().parent_path() / relative);
+  for (const auto& candidate : candidates) {
+    if (std::filesystem::exists(candidate)) {
+      return candidate;
+    }
+  }
+  return std::nullopt;
+}
+
+std::vector<std::string> readCuratedModelIdsFromSource(const std::filesystem::path& sourcePath) {
+  std::ifstream stream(sourcePath);
+  if (!stream.good()) {
+    return {};
+  }
+  const std::string content((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+  const auto markerPos = content.find("curatedModelIds()");
+  if (markerPos == std::string::npos) {
+    return {};
+  }
+  const auto openBrace = content.find('{', markerPos);
+  if (openBrace == std::string::npos) {
+    return {};
+  }
+  std::vector<std::string> ids;
+  std::string current;
+  bool inString = false;
+  for (size_t i = openBrace + 1; i < content.size(); ++i) {
+    const char c = content[i];
+    if (inString) {
+      if (c == '\\') {
+        ++i;
+      } else if (c == '"') {
+        ids.push_back(current);
+        current.clear();
+        inString = false;
+      } else {
+        current.push_back(c);
+      }
+      continue;
+    }
+    if (c == '"') {
+      inString = true;
+    } else if (c == '}') {
+      break;
+    }
+  }
+  return ids;
+}
+
+} // namespace
 
 namespace {
 
@@ -327,4 +398,378 @@ TEST_CASE("Model manager scans demo packs from assets roots", "[ai]") {
   REQUIRE(foundDemoRole);
   REQUIRE(foundDemoMix);
   REQUIRE(foundDemoMaster);
+}
+
+TEST_CASE("Curated hub models all have license manifest rows", "[ai][licensing]") {
+  const auto manifestPath = findRepoRelativePath("docs/model-licensing-audit.json");
+  REQUIRE(manifestPath.has_value());
+
+  std::ifstream manifestStream(*manifestPath);
+  REQUIRE(manifestStream.good());
+
+  nlohmann::json manifest;
+  manifestStream >> manifest;
+  REQUIRE(manifest.at("schemaVersion") == 1);
+  REQUIRE(manifest.at("models").is_array());
+
+  const auto& models = manifest.at("models");
+  const auto rowFor = [&models](const std::string& id) -> const nlohmann::json* {
+    for (const auto& row : models) {
+      if (row.value("id", "") == id) {
+        return &row;
+      }
+    }
+    return nullptr;
+  };
+
+  const auto sourcePath = findRepoRelativePath("src/ai/HuggingFaceModelHub.cpp");
+  REQUIRE(sourcePath.has_value());
+  const auto curated = readCuratedModelIdsFromSource(*sourcePath);
+  REQUIRE(curated.size() >= 12);
+  for (const auto& id : curated) {
+    INFO("curated model missing license manifest row: " << id);
+    REQUIRE(rowFor(id) != nullptr);
+  }
+
+  const std::vector<std::string> knownNonCommercial = {
+      "SonyCSLParis/music2latent",
+      "kramp/ito-master-onnx",
+  };
+  for (const auto& id : knownNonCommercial) {
+    INFO("known non-commercial model: " << id);
+    const auto* row = rowFor(id);
+    REQUIRE(row != nullptr);
+    REQUIRE(row->value("flagged", false) == true);
+    REQUIRE(row->value("commercialUsable", true) == false);
+  }
+}
+
+TEST_CASE("Discovery filters exclude incompatible models identically in curated and search paths", "[ai]") {
+  automix::ai::HubModelInfo synthetic;
+  synthetic.repoId = "test-org/incompatible-model";
+  synthetic.modelId = "huggingface:test-org/incompatible-model";
+  synthetic.displayName = "Incompatible Model";
+  synthetic.primaryFile = "model.onnx";
+  synthetic.license = "MIT";
+  synthetic.hasOnnx = true;
+  synthetic.compatible = false;
+  synthetic.compatibilityReport = "unsupported architecture";
+
+  const automix::ai::HubModelInfo compatible = [&synthetic] {
+    auto info = synthetic;
+    info.compatible = true;
+    info.compatibilityReport.clear();
+    return info;
+  }();
+
+  const automix::ai::HubModelQueryOptions curated{
+      .maxResultsPerQuery = 8,
+      .includeGated = false,
+      .curatedOnly = true,
+  };
+  const automix::ai::HubModelQueryOptions search{
+      .maxResultsPerQuery = 8,
+      .includeGated = false,
+      .curatedOnly = false,
+  };
+
+  // The compatible entry passes the shared filter under both discovery modes.
+  REQUIRE(automix::ai::HuggingFaceModelHub::passesDiscoveryFilters(compatible, curated));
+  REQUIRE(automix::ai::HuggingFaceModelHub::passesDiscoveryFilters(compatible, search));
+
+  // The incompatible entry is excluded by the shared filter in both modes,
+  // so curated and search discovery filter incompatibility identically.
+  REQUIRE_FALSE(automix::ai::HuggingFaceModelHub::passesDiscoveryFilters(synthetic, curated));
+  REQUIRE_FALSE(automix::ai::HuggingFaceModelHub::passesDiscoveryFilters(synthetic, search));
+  const bool curatedExcluded = automix::ai::HuggingFaceModelHub::passesDiscoveryFilters(synthetic, curated);
+  const bool searchExcluded = automix::ai::HuggingFaceModelHub::passesDiscoveryFilters(synthetic, search);
+  REQUIRE(curatedExcluded == searchExcluded);
+}
+
+// ────────────────────────────────────────────────────────────────
+// HeroWaveform (T2.2): zoom hit-test geometry + playhead dirty-check
+// ────────────────────────────────────────────────────────────────
+
+TEST_CASE("HeroWaveform zoom control rects match draw geometry and stay in bounds", "[ui][waveform]") {
+  using automix::app::HeroWaveform;
+
+  for (const int width : {960, 640}) {
+    const juce::Rectangle<int> bounds(0, 0, width, 200);
+
+    const auto rectIn = HeroWaveform::zoomControlRectFor(0, bounds);
+    const auto rectOut = HeroWaveform::zoomControlRectFor(1, bounds);
+    const auto rectReset = HeroWaveform::zoomControlRectFor(2, bounds);
+
+    // Draw rects == hit rects: [right-136, right-108), [right-104, right-76), [right-72, right-44)
+    REQUIRE(rectIn == juce::Rectangle<int>(width - 136, 4, 28, 28));
+    REQUIRE(rectOut == juce::Rectangle<int>(width - 104, 4, 28, 28));
+    REQUIRE(rectReset == juce::Rectangle<int>(width - 72, 4, 28, 28));
+
+    // Correct left-to-right order, no overlap, all inside bounds
+    REQUIRE(rectIn.getX() < rectOut.getX());
+    REQUIRE(rectOut.getX() < rectReset.getX());
+    REQUIRE(rectIn.getRight() <= rectOut.getX());
+    REQUIRE(rectOut.getRight() <= rectReset.getX());
+    REQUIRE(rectReset.getRight() <= bounds.getRight());
+    REQUIRE(rectIn.getBottom() <= bounds.getBottom());
+  }
+}
+
+TEST_CASE("HeroWaveform playhead dirty-check skips repaint on unchanged pixel", "[ui][waveform]") {
+  using automix::app::HeroWaveform;
+
+  int lastPixel = -1; // matches the member initialiser; first update always repaints
+
+  REQUIRE(HeroWaveform::playheadPixelChanged(100, lastPixel));   // first pixel -> repaint
+  REQUIRE(lastPixel == 100);
+
+  REQUIRE_FALSE(HeroWaveform::playheadPixelChanged(100, lastPixel)); // same pixel -> no repaint
+
+  REQUIRE(HeroWaveform::playheadPixelChanged(101, lastPixel));   // moved -> repaint
+  REQUIRE(lastPixel == 101);
+
+  REQUIRE_FALSE(HeroWaveform::playheadPixelChanged(101, lastPixel)); // same pixel -> no repaint
+
+  // Off-view sentinel (-1) toggling in and out of view still triggers a repaint.
+  REQUIRE(HeroWaveform::playheadPixelChanged(-1, lastPixel));
+  REQUIRE_FALSE(HeroWaveform::playheadPixelChanged(-1, lastPixel));
+}
+
+// ────────────────────────────────────────────────────────────────
+// T3.5: ITO-Master curated hub entry + CC BY-NC consent gating
+// ────────────────────────────────────────────────────────────────
+
+namespace {
+
+bool waitForAsync(const std::function<bool()>& predicate, const int timeoutMs = 6000) {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (predicate()) {
+      return true;
+    }
+    if (auto* messageManager = juce::MessageManager::getInstanceWithoutCreating(); messageManager != nullptr) {
+      messageManager->runDispatchLoopUntil(10);
+    } else {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+  }
+  return predicate();
+}
+
+struct ModelInstallProbe {
+  int installCalls = 0;
+};
+
+automix::app::ModelController::ModelHubOps makeProbeModelHubOps(ModelInstallProbe& probe) {
+  automix::app::ModelController::ModelHubOps ops;
+  ops.discoverRecommended = [](const automix::ai::HubModelQueryOptions&) {
+    return std::vector<automix::ai::HubModelInfo>{};
+  };
+  ops.installModel = [&probe](const std::string& repoId, const automix::ai::HubInstallOptions&) {
+    ++probe.installCalls;
+    automix::ai::HubInstallResult result;
+    result.success = true;
+    result.repoId = repoId;
+    result.message = "installed";
+    return result;
+  };
+  ops.modelInfo = [](const std::string& repoId) -> std::optional<automix::ai::HubModelInfo> {
+    automix::ai::HubModelInfo info;
+    info.repoId = repoId;
+    return info;
+  };
+  return ops;
+}
+
+} // namespace
+
+TEST_CASE("Curated hub includes ITO-Master mapped to mastering-assistant with three-asset pack metadata", "[ai][licensing]") {
+  const auto curated = automix::ai::curatedModelIds();
+  REQUIRE(std::find(curated.begin(), curated.end(), "kramp/ito-master-onnx") != curated.end());
+
+  REQUIRE(automix::ai::HuggingFaceModelHub::inferUseCase("kramp/ito-master-onnx", {}, "") == "mastering-assistant");
+  REQUIRE(automix::ai::HuggingFaceModelHub::inferUseCase("kramp/ito-master-onnx",
+                                                         {"audio-to-audio", "mastering"}, "") == "mastering-assistant");
+
+  // The license-audit manifest row carries the three-asset pack reference that
+  // the T3.8 mastering route consumes.
+  const auto manifestPath = findRepoRelativePath("docs/model-licensing-audit.json");
+  REQUIRE(manifestPath.has_value());
+  std::ifstream manifestStream(*manifestPath);
+  REQUIRE(manifestStream.good());
+  nlohmann::json manifest;
+  manifestStream >> manifest;
+  const nlohmann::json* row = nullptr;
+  for (const auto& candidate : manifest.at("models")) {
+    if (candidate.value("id", "") == "kramp/ito-master-onnx") {
+      row = &candidate;
+      break;
+    }
+  }
+  REQUIRE(row != nullptr);
+  REQUIRE(row->value("license", "") == "CC BY-NC 4.0");
+  REQUIRE(row->value("commercialUsable", true) == false);
+  REQUIRE(row->contains("assets"));
+  const auto assets = row->at("assets").get<std::vector<std::string>>();
+  REQUIRE(assets.size() >= 3);
+  REQUIRE(std::find(assets.begin(), assets.end(), "fxencoder.onnx") != assets.end());
+  REQUIRE(std::find(assets.begin(), assets.end(), "mastering_tcn.onnx") != assets.end());
+  REQUIRE(std::find(assets.begin(), assets.end(), "config.json") != assets.end());
+}
+
+TEST_CASE("ITO-Master download and activation are gated on CC BY-NC consent", "[ai][licensing][controllers]") {
+  juce::ScopedJuceInitialiser_GUI juceInit;
+  juce::ThreadPool pool(1);
+  automix::ai::ModelManager modelManager;
+  ModelInstallProbe probe;
+
+  const auto root = std::filesystem::temp_directory_path() / "automix_ito_consent";
+  std::filesystem::remove_all(root);
+
+  std::atomic<int> completions{0};
+  std::string lastStatus;
+  std::string lastReport;
+
+  automix::app::ModelController::Callbacks callbacks;
+  callbacks.onInstallComplete = [&](const bool) { ++completions; };
+  callbacks.onStatus = [&](const std::string& value) { lastStatus = value; };
+  callbacks.onReport = [&](const std::string& value) { lastReport = value; };
+
+  automix::app::ModelController controller(modelManager, pool, std::move(callbacks), makeProbeModelHubOps(probe));
+  controller.setModelHubRoot(root);
+
+  const std::string itoModelId = "huggingface:kramp/ito-master-onnx";
+
+  REQUIRE(automix::app::ModelController::modelRequiresLicenseConsent("kramp/ito-master-onnx"));
+  REQUIRE_FALSE(automix::app::ModelController::modelRequiresLicenseConsent("onnx-community/whisper-tiny.en"));
+
+  // Without consent the download is blocked synchronously before any hub call.
+  std::atomic_bool cancelFlag{false};
+  controller.installModel(itoModelId, cancelFlag);
+  REQUIRE(probe.installCalls == 0);
+  REQUIRE(completions.load() == 1);
+  REQUIRE(lastStatus.find("consent") != std::string::npos);
+  REQUIRE(lastReport.find("CC BY-NC") != std::string::npos);
+  REQUIRE_FALSE(controller.hasModelLicenseConsent(itoModelId));
+
+  // Activation is gated the same way: a registry entry exists but the model
+  // cannot be activated until consent is on record.
+  std::filesystem::create_directories(root);
+  {
+    std::ofstream registry(root / "install_registry.json");
+    registry << nlohmann::json::array(
+                    {{{"modelId", itoModelId},
+                      {"repoId", "kramp/ito-master-onnx"},
+                      {"taskScope", "master"},
+                      {"installPath", (root / "ito-master-install").string()}}})
+                    .dump(2);
+  }
+  REQUIRE_FALSE(controller.activateInstalledModelForTask(itoModelId, "master"));
+  REQUIRE(lastStatus.find("consent") != std::string::npos);
+
+  // Acknowledging the CC BY-NC license persists the opt-in per model.
+  REQUIRE(controller.acknowledgeModelLicenseConsent(itoModelId));
+  REQUIRE(controller.hasModelLicenseConsent(itoModelId));
+
+  // With consent recorded activation proceeds past the license gate.
+  REQUIRE_FALSE(controller.activateInstalledModelForTask(itoModelId, "master"));
+  REQUIRE(lastStatus.find("consent") == std::string::npos);
+
+  // With consent recorded the install proceeds to the hub download path.
+  controller.installModel(itoModelId, cancelFlag);
+  REQUIRE(waitForAsync([&]() { return probe.installCalls >= 1 && completions.load() >= 2; }));
+  REQUIRE(probe.installCalls == 1);
+
+  std::filesystem::remove_all(root);
+}
+
+// ────────────────────────────────────────────────────────────────────────────────
+// T3.8: ITO-Master mastering stage — pack schema auxiliary artifacts
+// ────────────────────────────────────────────────────────────────────────────────
+
+TEST_CASE("Model pack loader carries auxiliary artifacts and rejects incomplete packs", "[ai]") {
+  const auto root = std::filesystem::temp_directory_path() / "automix_ito_pack_aux";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+
+  {
+    std::ofstream model(root / "fxencoder.onnx", std::ios::binary);
+    model << "encoder";
+    std::ofstream predictor(root / "mastering_tcn.onnx", std::ios::binary);
+    predictor << "predictor";
+    std::ofstream config(root / "config.json");
+    config << "{}";
+    std::ofstream meta(root / "model.json");
+    meta << R"({
+  "id": "ito-master-pack",
+  "name": "ITO-Master",
+  "type": "master_parameters",
+  "task_scope": "master",
+  "engine": "onnxruntime",
+  "model_file": "fxencoder.onnx",
+  "auxiliary_files": ["mastering_tcn.onnx", "config.json"],
+  "license": "CC BY-NC 4.0",
+  "source": "https://huggingface.co/kramp/ito-master-onnx",
+  "feature_schema_version": "1.0.0",
+  "output_schema": {
+    "confidence": "float",
+    "target_lufs": "float",
+    "pre_gain_db": "float",
+    "limiter_ceiling_db": "float",
+    "glue_ratio": "float"
+  }
+})";
+  }
+
+  automix::ai::ModelPackLoader loader;
+  const auto complete = loader.load(root);
+  REQUIRE(complete.has_value());
+  REQUIRE(complete->auxiliaryFiles.size() == 2);
+  REQUIRE(complete->auxiliaryFiles[0] == "mastering_tcn.onnx");
+  REQUIRE(complete->auxiliaryFiles[1] == "config.json");
+
+  // A pack whose manifest lists an auxiliary artifact that is not on disk must
+  // be rejected: the ITO route can never complete with a partial pack.
+  std::filesystem::remove(root / "mastering_tcn.onnx");
+  REQUIRE_FALSE(loader.load(root).has_value());
+
+  std::filesystem::remove_all(root);
+}
+
+TEST_CASE("Model strategy returns base plans unchanged when no model inference is available", "[ai]") {
+  std::vector<automix::analysis::StemAnalysisEntry> entries;
+  entries.push_back({.stemId = "s1",
+                     .stemName = "stem",
+                     .metrics = {.rmsDb = -20.0, .lowEnergy = 0.4, .midEnergy = 0.4, .highEnergy = 0.2}});
+
+  automix::domain::MixPlan baseMix;
+  baseMix.dryWet = 0.42;
+  baseMix.mixBusHeadroomDb = 5.0;
+  baseMix.decisionLog.push_back("heuristic mix");
+
+  automix::domain::MasterPlan baseMaster;
+  baseMaster.targetLufs = -16.0;
+  baseMaster.preGainDb = 2.0;
+  baseMaster.decisionLog.push_back("heuristic master");
+
+  // With no inference the strategy must pass the base plans through unchanged
+  // (strategies fall to heuristics) until the T3.8 mastering route ships.
+  automix::ai::ModelStrategy strategy;
+  const auto [mixOut, masterOut] = strategy.applyOverrides(nullptr, entries, baseMix, baseMaster);
+
+  REQUIRE(mixOut.dryWet == Catch::Approx(0.42));
+  REQUIRE(mixOut.mixBusHeadroomDb == Catch::Approx(5.0));
+  REQUIRE(mixOut.decisionLog.size() == 1);
+  REQUIRE(mixOut.decisionLog[0] == "heuristic mix");
+  REQUIRE(masterOut.targetLufs == Catch::Approx(-16.0));
+  REQUIRE(masterOut.preGainDb == Catch::Approx(2.0));
+  REQUIRE(masterOut.decisionLog.size() == 1);
+  REQUIRE(masterOut.decisionLog[0] == "heuristic master");
+
+  // An unloaded inference object follows the same pass-through contract.
+  DummyModelInference unloaded;
+  const auto [mixPass, masterPass] = strategy.applyOverrides(&unloaded, entries, baseMix, baseMaster);
+  REQUIRE(mixPass.dryWet == Catch::Approx(0.42));
+  REQUIRE(masterPass.targetLufs == Catch::Approx(-16.0));
+  REQUIRE(masterPass.decisionLog.size() == 1);
 }

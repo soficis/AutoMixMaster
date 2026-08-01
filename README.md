@@ -2,7 +2,8 @@
 
 # AutoMixMaster
 
-**Version 0.4.1**
+**Version 0.4.2**
+
 
 <img src="assets/AutoMixMaster.jpg" alt="AutoMixMaster application interface" width="860">
 
@@ -40,12 +41,15 @@ It focuses on predictable, fixed-rule processing so results are repeatable and b
 | :--- | :--- |
 | **Auto Mix + Auto Master** | Deterministic stem balancing, gain staging, and limiting workflow. |
 | **One-Click Pipeline** | `Mix + Master` (`Ctrl+Shift+M`) runs Auto Mix → Auto Master → Export. |
-| **AI Stem Separation (Optional)** | Splits a single full-mix import into stems before processing when enabled. |
+| **ITO-Master AI Mastering** | Experimental AI mastering strategy driving a 46-parameter native white-box FX chain with licensing consent gating. |
+| **AI Stem Separation (Optional)** | Splits a single full-mix import into stems before processing when enabled (`Ctrl+Shift+A`). |
 | **Task-Scoped Model Browser** | Install/uninstall models and set active packs per task (`mix`, `master`, `analysis`, `separation`) from Hugging Face or GitHub Releases. |
 | **Batch Processing** | Queue folders, auto-group stems by filename role patterns, and render one mastered song per group (`<song>_AutoMixMaster_YYYYMMDD_XX.<ext>`). Supports recursive discovery via UI toggle or `AUTOMIX_BATCH_RECURSIVE=1`. |
 | **Renderer Integrations** | Built-in discovery for PhaseLimiter, FFmpeg, SoX, and rsgain; only available tools are shown (`*_BIN` env overrides supported). |
 | **Verification Reporting** | Export verification report plus batch completion summary; optional per-export `.report.json` sidecar. |
-| **Task Center + Logs** | Real-time progress tracking with timestamped activity log and copy-log utility. |
+| **Task Center + ETA** | Real-time progress tracking with batch ETA countdown, summary status row, timestamped activity log, and copy-log utility. |
+| **Transport & Audio Preview** | Realtime-safe lock-free audio preview buffer, live peak/RMS meters, 0–1.5x gain control (+3.5 dB), and modal confirmation for session clearing. |
+| **Shortcuts & Commands** | `ApplicationCommandManager` integration with built-in Keyboard Shortcuts Cheatsheet modal (`?`). |
 | **Analysis Meters** | Live LUFS and peak metering via GlowMeters. |
 
 ---
@@ -275,13 +279,34 @@ If a tool is missing, it is hidden from selectable available renderers automatic
 
 AutoMixMaster is distributed under the **GNU General Public License v3 (GPLv3)**.
 
+### Core & Libraries
+
 | Component | License | Role |
 | :--- | :--- | :--- |
-| JUCE 8.0.8 | AGPLv3 / Commercial | Framework |
-| libebur128 | MIT | Metering |
-| nlohmann/json | MIT | Metadata |
-| Catch2 3.7.1 | BSL-1.0 | Testing |
-| PhaseLimiter | GPL / Custom | Limiting |
-| FFmpeg | GPL-compatible | Optional renderer |
-| SoX | GPL-2.0-or-later | Optional renderer |
-| rsgain | BSD-2-Clause | Optional ReplayGain tagging stage |
+| JUCE 8.0.8 | AGPLv3 / Commercial | Audio & GUI Framework |
+| libebur128 | MIT | EBU R128 Loudness Metering |
+| nlohmann/json | MIT | JSON Serialization & Model Metadata |
+| Catch2 3.7.1 | BSL-1.0 | Unit Testing Framework |
+| PhaseLimiter | GPL-2.0 / Custom | Optional External Limiter |
+| FFmpeg | GPL-compatible / LGPL | Optional External Audio Renderer |
+| SoX | GPL-2.0-or-later | Optional External Processor |
+| rsgain | BSD-2-Clause | Optional ReplayGain Tagging Stage |
+
+### AI Model Hub & Third-Party Weights
+
+Model weights are **not bundled** into the installer or executable binaries. Users can optionally download models on-demand through the built-in Model Hub (`ModelManager`), which preserves and displays upstream model licensing metadata (`license` / `cardData` tags):
+
+| Model / Model Family | Upstream Author | License | Usage & Compatibility |
+| :--- | :--- | :--- | :--- |
+| **HTDemucs / Demucs 4-stem** | Meta Research | MIT (code), CC-BY-NC 4.0 (MUSDB18-HQ weights) | Stem Separation (Non-Commercial weights) |
+| **HTDemucs 6-stem (`htdemucs_6s`)** | Meta / Community ONNX | CC-BY-NC 4.0 | 6-Stem Separation (Guitar/Piano/Drums/Bass/Vocal/Other) |
+| **Denoiser (`dns64` / Speech Enhancer)** | Meta Research | CC-BY-NC 4.0 | Speech & Vocal Denoising (Non-Commercial evaluation) |
+| **ITO-Master (`ito-master-v1`)** | Community / Open | CC-BY-NC 4.0 | AI Mastering (46-param native white-box FX chain) |
+| **Whisper Tiny / Small** | OpenAI | MIT | Transcripts, Vocal Alignment & Pitch Analysis |
+| **CLAP (`clap-htsat`)** | LAION | MIT | Style Retrieval & Audio Embeddings |
+| **PANNs (`PANNs_CNN14`)** | Bio-DSP / Open | MIT | General Audio Tagging & Classification |
+
+> **Non-Commercial Notice**: Models licensed under **CC-BY-NC 4.0** (such as Meta Demucs, Denoiser, and ITO-Master weights) are restricted to personal, educational, and non-commercial evaluation use. Commercial workflows can use open-source MIT-licensed models (e.g. Whisper, CLAP) or the built-in deterministic heuristic DSP engines. User consent gating is enforced prior to model download and execution.
+
+> **Model Licensing Audit**: For complete machine-checkable model license metadata and audit reports, see [docs/model-licensing-audit.md](docs/model-licensing-audit.md) and [docs/model-licensing-audit.json](docs/model-licensing-audit.json).
+

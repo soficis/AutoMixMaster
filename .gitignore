@@ -1,9 +1,10 @@
-﻿# === Build & Output ===
+# === Build & Output ===
 build*/
 build_linux_release/
 build_flatpak/
 build_macos_*/
 build_windows_*/
+AutoMixMaster-*/
 dist/
 out/
 bin/
@@ -19,7 +20,11 @@ _deps/
 artefacts/
 *artefacts/
 ntml
+dumpbin_members.log
+diff_output.txt
+_codeql_detected_source_root
 docs/
+
 
 # === CMake ===
 CMakeCache.txt
@@ -104,6 +109,22 @@ config.ini
 .github/codex_agents.md
 CLAUDE.md
 
+# === Documentation (all docs except README) ===
+docs/
+*.md
+!README*.md
+*.pdf
+*.doc
+*.docx
+
 # === Tooling Caches ===
 .flatpak-builder/
 ccache/
+
+# === Model Hub Downloaded Weights ===
+assets/**/modelhub/**/*.onnx
+assets/**/modelhub/**/*.pt
+assets/**/modelhub/**/*.bin
+assets/**/modelhub/**/*.safetensors
+
+

@@ -133,6 +133,36 @@ void emitProgress(const ModelController::Callbacks& callbacks, const double prog
   }
 }
 
+// ── License consent gating (non-commercial / CC BY-NC models) ──
+
+std::string repoIdFromModelId(const std::string& modelId) {
+  if (modelId.rfind("huggingface:", 0) == 0) {
+    return modelId.substr(12);
+  }
+  return modelId;
+}
+
+constexpr const char* kNonCommercialLicenseLabel = "CC BY-NC 4.0";
+
+constexpr const char* kItoMasterAttribution =
+    "ITO-Master, Koo et al., Sony Research (github.com/SonyResearch/ITO-Master); "
+    "ONNX export by kramp (huggingface.co/kramp/ito-master-onnx)";
+
+std::string attributionForRepo(const std::string& repoId) {
+  if (repoId == "kramp/ito-master-onnx") {
+    return kItoMasterAttribution;
+  }
+  return "See upstream source: https://huggingface.co/" + repoId;
+}
+
+std::filesystem::path licenseConsentsPath(const std::filesystem::path& root) {
+  return root / "license_consents.json";
+}
+
+std::string iso8601NowUtc() {
+  return juce::Time::getCurrentTime().toISO8601(true).toStdString();
+}
+
 } // namespace
 
 ModelController::ModelHubOps ModelController::createDefaultHubOps() {
@@ -218,6 +248,67 @@ std::set<std::string> ModelController::installedModelIds() const {
   return installedModelIdsFromRegistry(modelHubRoot_);
 }
 
+bool ModelController::modelRequiresLicenseConsent(const std::string& repoId) {
+  const auto normalized = repoIdFromModelId(repoId);
+  static const std::vector<std::string> nonCommercialRepoIds = {
+      "kramp/ito-master-onnx",
+      "SonyCSLParis/music2latent",
+  };
+  return std::find(nonCommercialRepoIds.begin(), nonCommercialRepoIds.end(), normalized) !=
+         nonCommercialRepoIds.end();
+}
+
+bool ModelController::hasModelLicenseConsent(const std::string& modelId) const {
+  if (modelId.empty()) {
+    return false;
+  }
+  const auto consents = loadJsonIfPresent(licenseConsentsPath(modelHubRoot_));
+  if (!consents.is_array()) {
+    return false;
+  }
+  for (const auto& item : consents) {
+    if (item.is_object() && item.value("modelId", "") == modelId) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool ModelController::acknowledgeModelLicenseConsent(const std::string& modelId) {
+  const auto repoId = repoIdFromModelId(modelId);
+  if (repoId.empty() || !modelRequiresLicenseConsent(repoId)) {
+    return false;
+  }
+
+  auto consents = loadJsonIfPresent(licenseConsentsPath(modelHubRoot_));
+  if (!consents.is_array()) {
+    consents = nlohmann::json::array();
+  }
+
+  const nlohmann::json record = {
+      {"modelId", modelId},
+      {"repoId", repoId},
+      {"license", kNonCommercialLicenseLabel},
+      {"attribution", attributionForRepo(repoId)},
+      {"acknowledgedAtUtc", iso8601NowUtc()},
+  };
+
+  bool updated = false;
+  for (auto& item : consents) {
+    if (item.is_object() && item.value("modelId", "") == modelId) {
+      item = record;
+      updated = true;
+      break;
+    }
+  }
+  if (!updated) {
+    consents.push_back(record);
+  }
+
+  std::string writeError;
+  return writeJson(licenseConsentsPath(modelHubRoot_), consents, &writeError);
+}
+
 bool ModelController::activateInstalledModelForTask(const std::string& modelId, const std::string& taskScope) {
   const auto normalizedRequestedScope = normalizeTaskScopeValue(taskScope);
   const auto registrySelection = findRegistryInstall(modelHubRoot_, modelId);
@@ -227,6 +318,16 @@ bool ModelController::activateInstalledModelForTask(const std::string& modelId, 
     }
     if (callbacks_.onTaskHistory) {
       callbacks_.onTaskHistory("Model activation failed (not installed): " + modelId);
+    }
+    return false;
+  }
+
+  if (ModelController::modelRequiresLicenseConsent(repoIdFromModelId(modelId)) && !hasModelLicenseConsent(modelId)) {
+    if (callbacks_.onStatus) {
+      callbacks_.onStatus("Models: license consent required for " + modelId);
+    }
+    if (callbacks_.onTaskHistory) {
+      callbacks_.onTaskHistory("Model activation blocked (CC BY-NC consent not acknowledged): " + modelId);
     }
     return false;
   }
@@ -468,6 +569,28 @@ void ModelController::installModel(const std::string& modelId, std::atomic_bool&
     }
     if (callbacks_.onReport) {
       callbacks_.onReport("Install blocked for " + modelId + ": " + selectedIt->compatibilityReport);
+    }
+    emitProgress(callbacks_, 1.0);
+    if (callbacks_.onInstallComplete) {
+      callbacks_.onInstallComplete(false);
+    }
+    return;
+  }
+
+  if (ModelController::modelRequiresLicenseConsent(repoIdFromModelId(modelId)) && !hasModelLicenseConsent(modelId)) {
+    if (callbacks_.onStatus) {
+      callbacks_.onStatus("Models: license consent required for " + modelId);
+    }
+    if (callbacks_.onTaskHistory) {
+      callbacks_.onTaskHistory("Model install blocked (CC BY-NC consent not acknowledged): " + modelId);
+    }
+    if (callbacks_.onReport) {
+      std::string report = "Model install blocked for " + modelId + "\n";
+      report += "License: " + std::string(kNonCommercialLicenseLabel) + " (non-commercial use only)\n";
+      report += "Attribution: " + attributionForRepo(repoIdFromModelId(modelId)) + "\n";
+      report += "Download is refused until you explicitly acknowledge the CC BY-NC license for this model.\n";
+      report += "Never bundle NC weights in a commercial installer/redistribution; runtime hub download under the user's license is how this stays legal.\n";
+      callbacks_.onReport(report);
     }
     emitProgress(callbacks_, 1.0);
     if (callbacks_.onInstallComplete) {

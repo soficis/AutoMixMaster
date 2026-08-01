@@ -8,24 +8,36 @@ namespace automix::app {
 using namespace theme;
 
 GlowMeters::GlowMeters() {
-  lufsLabel_.setText("LUFS: --", juce::dontSendNotification);
+  lufsLabel_.setText("I: -- LUFS", juce::dontSendNotification);
   lufsLabel_.setFont(typography::caption());
   lufsLabel_.setColour(juce::Label::textColourId, colour(colours::textMuted));
   lufsLabel_.setJustificationType(juce::Justification::centredLeft);
 
-  shortTermLabel_.setText("ST: --", juce::dontSendNotification);
+  shortTermLabel_.setText("S: -- LUFS", juce::dontSendNotification);
   shortTermLabel_.setFont(typography::caption());
   shortTermLabel_.setColour(juce::Label::textColourId, colour(colours::textMuted));
   shortTermLabel_.setJustificationType(juce::Justification::centredLeft);
 
-  truePeakLabel_.setText("TP: --", juce::dontSendNotification);
+  truePeakLabel_.setText("TP: -- dBTP", juce::dontSendNotification);
   truePeakLabel_.setFont(typography::caption());
   truePeakLabel_.setColour(juce::Label::textColourId, colour(colours::textMuted));
   truePeakLabel_.setJustificationType(juce::Justification::centredLeft);
 
+  momentaryLabel_.setText("M: -- LUFS", juce::dontSendNotification);
+  momentaryLabel_.setFont(typography::caption());
+  momentaryLabel_.setColour(juce::Label::textColourId, colour(colours::textMuted));
+  momentaryLabel_.setJustificationType(juce::Justification::centredLeft);
+
+  lufsBarLabel_.setText("LUFS", juce::dontSendNotification);
+  lufsBarLabel_.setFont(typography::caption());
+  lufsBarLabel_.setColour(juce::Label::textColourId, colour(colours::textMuted));
+  lufsBarLabel_.setJustificationType(juce::Justification::centred);
+
   addAndMakeVisible(lufsLabel_);
   addAndMakeVisible(shortTermLabel_);
   addAndMakeVisible(truePeakLabel_);
+  addAndMakeVisible(momentaryLabel_);
+  addChildComponent(lufsBarLabel_);
 
   startTimerHz(20);
 }
@@ -55,6 +67,10 @@ void GlowMeters::setLufs(double integrated, double shortTerm) {
 
 void GlowMeters::setTruePeak(double truePeakDbtp) {
   truePeakDbtp_ = truePeakDbtp;
+}
+
+void GlowMeters::setMomentaryLufs(double momentary) {
+  momentaryLufs_ = momentary;
 }
 
 void GlowMeters::timerCallback() {
@@ -91,13 +107,15 @@ void GlowMeters::timerCallback() {
   }
 
   // Pre-allocated string updates (avoid ostringstream allocation per frame)
-  lufsText_ = "LUFS: " + juce::String(integratedLufs_, 1);
-  stText_ = "ST: " + juce::String(shortTermLufs_, 1);
+  lufsText_ = "I: " + juce::String(integratedLufs_, 1) + " LUFS";
+  stText_ = "S: " + juce::String(shortTermLufs_, 1) + " LUFS";
   tpText_ = "TP: " + juce::String(truePeakDbtp_, 1) + " dBTP";
+  momentText_ = "M: " + juce::String(momentaryLufs_, 1) + " LUFS";
 
   lufsLabel_.setText(lufsText_, juce::dontSendNotification);
   shortTermLabel_.setText(stText_, juce::dontSendNotification);
   truePeakLabel_.setText(tpText_, juce::dontSendNotification);
+  momentaryLabel_.setText(momentText_, juce::dontSendNotification);
 
   // Dirty-check: skip repaint if meter values haven't changed significantly
   constexpr float threshold = 0.1f;
@@ -150,16 +168,46 @@ void GlowMeters::drawMeter(juce::Graphics& g, juce::Rectangle<float> bounds, flo
   }
 }
 
+void GlowMeters::drawLufsBar(juce::Graphics& g, juce::Rectangle<float> bounds) const {
+  // Draw a horizontal LUFS bar showing integrated LUFS range
+  g.setColour(colour(colours::meterBackground));
+  g.fillRoundedRectangle(bounds, metrics::cornerRadiusSmall);
+
+  // Map LUFS from -23 (bottom/quiet) to -6 (top/loud) normalized
+  constexpr double lufsMin = -23.0;
+  constexpr double lufsMax = -6.0;
+  double normalizedIntegrated = std::clamp((integratedLufs_ - lufsMin) / (lufsMax - lufsMin), 0.0, 1.0);
+  double normalizedShortTerm = std::clamp((shortTermLufs_ - lufsMin) / (lufsMax - lufsMin), 0.0, 1.0);
+
+  // Short-term segment (narrow)
+  auto shortTermBar = bounds.withWidth(bounds.getWidth() * static_cast<float>(normalizedShortTerm));
+  g.setColour(colour(colours::secondary).withAlpha(0.5f));
+  g.fillRoundedRectangle(shortTermBar, metrics::cornerRadiusSmall);
+
+  // Integrated segment (wider)
+  auto integratedBar = bounds.withWidth(bounds.getWidth() * static_cast<float>(normalizedIntegrated));
+  juce::ColourGradient grad(colour(colours::meterLow), integratedBar.getTopLeft(),
+                             colour(colours::meterHigh), integratedBar.getTopRight(), false);
+  g.setGradientFill(grad);
+  g.fillRoundedRectangle(integratedBar, metrics::cornerRadiusSmall);
+
+  // Target line at -14 LUFS (common streaming target)
+  constexpr double targetLufs = -14.0;
+  float targetX = bounds.getX() + bounds.getWidth() * static_cast<float>((targetLufs - lufsMin) / (lufsMax - lufsMin));
+  g.setColour(juce::Colours::white.withAlpha(0.6f));
+  g.fillRect(targetX - 0.5f, bounds.getY(), 1.0f, bounds.getHeight());
+}
+
 void GlowMeters::paint(juce::Graphics& g) {
   g.fillAll(colour(colours::surface));
 
   auto area = getLocalBounds().toFloat().reduced(metrics::paddingSmall);
 
   // Labels at bottom
-  float labelHeight = 54.0f;
+  float labelHeight = 68.0f;
   auto meterArea = area.withTrimmedBottom(labelHeight);
 
-  // Two meter bars side by side (32px wide for better visibility)
+  // Two meter bars side by side
   float meterWidth = std::min(32.0f, meterArea.getWidth() * 0.35f);
   float gap = 4.0f;
   float totalMeterWidth = meterWidth * 2.0f + gap;
@@ -178,15 +226,22 @@ void GlowMeters::paint(juce::Graphics& g) {
   g.setFont(typography::caption());
   g.drawText("L", leftBounds.withHeight(14.0f).translated(0.0f, -14.0f), juce::Justification::centred);
   g.drawText("R", rightBounds.withHeight(14.0f).translated(0.0f, -14.0f), juce::Justification::centred);
+
+  // LUFS bar below meters
+  auto lufsBarArea = juce::Rectangle<float>(area.getX(), meterArea.getBottom() + 6.0f,
+                                             area.getWidth(), 8.0f);
+  drawLufsBar(g, lufsBarArea);
 }
 
 void GlowMeters::resized() {
   auto area = getLocalBounds().reduced(static_cast<int>(metrics::paddingSmall));
-  auto labelArea = area.removeFromBottom(54);
+  auto labelArea = area.removeFromBottom(68);
 
-  lufsLabel_.setBounds(labelArea.removeFromTop(18));
-  shortTermLabel_.setBounds(labelArea.removeFromTop(18));
-  truePeakLabel_.setBounds(labelArea.removeFromTop(18));
+  momentaryLabel_.setBounds(labelArea.removeFromTop(14));
+  shortTermLabel_.setBounds(labelArea.removeFromTop(14));
+  lufsLabel_.setBounds(labelArea.removeFromTop(14));
+  truePeakLabel_.setBounds(labelArea.removeFromTop(14));
+  lufsBarLabel_.setBounds(labelArea.removeFromTop(12));
 }
 
 } // namespace automix::app

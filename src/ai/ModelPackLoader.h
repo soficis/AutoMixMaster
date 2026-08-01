@@ -21,6 +21,10 @@ struct ModelPack {
   std::string intendedUse;
   std::string featureSchemaVersion;
   std::string modelFile;
+  // Additional artifacts carried by the pack alongside the primary model file,
+  // consumed as one model pack (e.g. ITO-Master: fxencoder.onnx primary +
+  // mastering_tcn.onnx + config.json).
+  std::vector<std::string> auxiliaryFiles;
   std::string checksum;
   std::optional<size_t> inputFeatureCount;
   std::string preferredPrecision;

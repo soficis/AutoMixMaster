@@ -67,7 +67,11 @@ if(ENABLE_LIBEBUR128)
   )
   FetchContent_MakeAvailable(libebur128)
   if(MSVC AND TARGET ebur128)
-    target_compile_options(ebur128 PRIVATE /std:c17)
+    # ebur128.c emits #warning in its non-SSE2 path (hit on ARM64, where _M_X64
+    # is undefined). MSVC only accepts #warning in C mode with /std:clatest and
+    # rejects it with /std:c17 or lower (error C1188). Do NOT "fix" this back
+    # to /std:c17 - it breaks Windows ARM64 builds.
+    target_compile_options(ebur128 PRIVATE /std:clatest)
   endif()
 endif()
 

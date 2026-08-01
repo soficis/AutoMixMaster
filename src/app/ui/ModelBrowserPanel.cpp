@@ -1,4 +1,5 @@
 #include "app/ui/ModelBrowserPanel.h"
+#include "app/controllers/ModelController.h"
 
 #include <algorithm>
 #include <cctype>
@@ -248,11 +249,20 @@ ModelBrowserPanel::ModelBrowserPanel() {
     if (onInstallModel) {
       const auto modelId = modelKey(selected.value());
       const auto title = selected->displayName.empty() ? selected->repoId : selected->displayName;
+      const bool requiresConsent = ModelController::modelRequiresLicenseConsent(selected->repoId);
+
+      const juce::String dialogTitle = requiresConsent ? "License Consent Required (CC BY-NC 4.0)" : "Install Model";
+      const juce::String dialogMsg = requiresConsent
+          ? "Model '" + juce::String(title) + "' is subject to CC BY-NC 4.0 (Non-Commercial Use Only).\n\n"
+            "By installing, you acknowledge and agree that this model will be used for non-commercial purposes only."
+          : "Install model '" + juce::String(title) + "'?";
+      const juce::String btnText = requiresConsent ? "I Agree & Install" : "Install";
+
       requestConfirmation(
           juce::AlertWindow::QuestionIcon,
-          "Install Model",
-          "Install model '" + juce::String(title) + "'?",
-          "Install",
+          dialogTitle,
+          dialogMsg,
+          btnText,
           [this, modelId]() {
             if (onInstallModel) {
               onInstallModel(modelId);
@@ -379,9 +389,11 @@ void ModelBrowserPanel::resized() {
   viewport_.setBounds(area);
 
   // Resize existing rows to match viewport width
+  const int availWidth = viewport_.getWidth() > 0 ? (viewport_.getWidth() - viewport_.getScrollBarThickness()) : 560;
+  rowContainer_.setSize(availWidth, rowContainer_.getHeight());
   for (auto& row : modelRows_) {
     auto bounds = row->getBounds();
-    row->setBounds(bounds.withWidth(viewport_.getWidth() - viewport_.getScrollBarThickness()));
+    row->setBounds(0, bounds.getY(), availWidth, bounds.getHeight());
   }
 }
 
@@ -456,7 +468,8 @@ void ModelBrowserPanel::rebuildModelRows() {
   rowContainer_.removeAllChildren();
 
   constexpr int rowHeight = 52;
-  const int rowWidth = viewport_.getWidth() - viewport_.getScrollBarThickness();
+  const int availWidth = viewport_.getWidth() > 0 ? (viewport_.getWidth() - viewport_.getScrollBarThickness()) : 560;
+  const int rowWidth = std::max(availWidth, 300);
   int y = 0;
 
   const auto visible = visibleModels();
@@ -475,11 +488,21 @@ void ModelBrowserPanel::rebuildModelRows() {
         });
         const auto title = selectedIt != models_.end() && !selectedIt->displayName.empty() ? selectedIt->displayName
                                                                                              : modelId;
+        const auto repoId = selectedIt != models_.end() ? selectedIt->repoId : modelId;
+        const bool requiresConsent = ModelController::modelRequiresLicenseConsent(repoId);
+
+        const juce::String dialogTitle = requiresConsent ? "License Consent Required (CC BY-NC 4.0)" : "Install Model";
+        const juce::String dialogMsg = requiresConsent
+            ? "Model '" + juce::String(title) + "' is subject to CC BY-NC 4.0 (Non-Commercial Use Only).\n\n"
+              "By installing, you acknowledge and agree that this model will be used for non-commercial purposes only."
+            : "Install model '" + juce::String(title) + "'?";
+        const juce::String btnText = requiresConsent ? "I Agree & Install" : "Install";
+
         requestConfirmation(
             juce::AlertWindow::QuestionIcon,
-            "Install Model",
-            "Install model '" + juce::String(title) + "'?",
-            "Install",
+            dialogTitle,
+            dialogMsg,
+            btnText,
             [this, modelId]() {
               if (onInstallModel) {
                 onInstallModel(modelId);

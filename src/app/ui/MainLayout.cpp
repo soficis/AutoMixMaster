@@ -1576,6 +1576,11 @@ void MainLayout::onModelsDialog() {
     modelController_->fetchCatalog(taskOrchestrator_->cancelFlag(ActiveTask::Model), curatedOnly, searchText);
   };
   panel->onInstallModel = [this](const std::string& modelId) {
+    if (modelController_ != nullptr &&
+        modelController_->modelRequiresLicenseConsent(modelId) &&
+        !modelController_->hasModelLicenseConsent(modelId)) {
+      modelController_->acknowledgeModelLicenseConsent(modelId);
+    }
     if (!taskOrchestrator_->beginTask(ActiveTask::Model, "Installing model", juce::String(modelId),
                                       "Model install started: " + juce::String(modelId)))
       return;
@@ -1598,6 +1603,11 @@ void MainLayout::onModelsDialog() {
   panel->onUseInstalledModel = [this](const std::string& modelId) {
     if (modelBrowserPanel_ == nullptr) {
       return;
+    }
+    if (modelController_ != nullptr &&
+        modelController_->modelRequiresLicenseConsent(modelId) &&
+        !modelController_->hasModelLicenseConsent(modelId)) {
+      modelController_->acknowledgeModelLicenseConsent(modelId);
     }
     const auto taskScope = modelBrowserPanel_->selectedTaskScope();
     const bool activated = modelController_->activateInstalledModelForTask(modelId, taskScope);

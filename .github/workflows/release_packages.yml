@@ -290,6 +290,21 @@ jobs:
             echo "prerelease=$prerelease"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Validate release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ steps.release-meta.outputs.tag }}"
+          # GitHub tags must be valid git refs; the API rejects names with
+          # spaces or characters outside [0-9A-Za-z._/-] ("tag_name is not a
+          # valid tag"), e.g. "0.4.3 AKA (v1.1)".
+          if [[ -z "$tag" || "$tag" =~ [^0-9A-Za-z._/-] || "$tag" == *".."* || "$tag" == .* || "$tag" == *. || "$tag" == -* ]]; then
+            echo "Release tag '$tag' is not a valid GitHub tag name." >&2
+            echo "Tags may only contain letters, digits, '.', '_', '-' and '/', must not" >&2
+            echo "contain spaces or '..', and must not start with '-' or end with '.'. Example: v0.4.3" >&2
+            exit 1
+          fi
+
       - name: Ensure release assets exist
         shell: bash
         run: |

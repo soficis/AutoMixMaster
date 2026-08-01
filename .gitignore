@@ -121,3 +121,10 @@ docs/
 .flatpak-builder/
 ccache/
 
+# === Model Hub Downloaded Weights ===
+assets/**/modelhub/**/*.onnx
+assets/**/modelhub/**/*.pt
+assets/**/modelhub/**/*.bin
+assets/**/modelhub/**/*.safetensors
+
+

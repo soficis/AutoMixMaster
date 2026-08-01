@@ -307,17 +307,16 @@ APPRUN
   }
 
   local appimagetool
-  appimagetool="$(fetch_appimagetool "$arch")"
 
   # In QEMU-emulated containers the AppImage runtime cannot be executed
   # (execve fails with "Exec format error"). The CI workflow signals this
   # via AUTOMIX_QEMU_EMULATED=1 so we can cross-build with the x86_64
   # appimagetool, whose static binary runs natively on the host kernel.
-  if [[ "${AUTOMIX_QEMU_EMULATED:-}" == "1" ]]; then
-    if [[ "$arch" == "aarch64" ]]; then
-      echo "QEMU-emulated arm64 build detected; cross-building AppImage with x86_64 appimagetool" >&2
-      appimagetool="$(fetch_appimagetool "x86_64")"
-    fi
+  if [[ "${AUTOMIX_QEMU_EMULATED:-}" == "1" && "$arch" == "aarch64" ]]; then
+    echo "QEMU-emulated arm64 build detected; cross-building AppImage with x86_64 appimagetool" >&2
+    appimagetool="$(fetch_appimagetool "x86_64")"
+  else
+    appimagetool="$(fetch_appimagetool "$arch")"
   fi
 
   local output="$DIST_DIR/${APP_NAME}-${VERSION}-${arch}.AppImage"

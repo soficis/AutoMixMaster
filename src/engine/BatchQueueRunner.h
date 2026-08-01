@@ -43,8 +43,14 @@ class BatchQueueRunner {
 
   domain::BatchResult processStreaming(domain::BatchJob& job,
                                        const DetailedProgressCallback& progressCallback,
+                                       std::atomic_bool* cancelFlag) const {
+    return processStreaming(job, progressCallback, cancelFlag, StreamConfig{});
+  }
+
+  domain::BatchResult processStreaming(domain::BatchJob& job,
+                                       const DetailedProgressCallback& progressCallback,
                                        std::atomic_bool* cancelFlag,
-                                       StreamConfig config = {}) const;
+                                       StreamConfig config) const;
 };
 
 } // namespace automix::engine

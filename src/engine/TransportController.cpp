@@ -10,19 +10,22 @@ void TransportController::setTimeline(const int64_t totalSamples, const double s
     std::scoped_lock lock(mutex_);
     totalSamples_ = std::max<int64_t>(0, totalSamples);
     sampleRate_ = std::max(8000.0, sampleRate);
-    positionSamples_ = std::clamp(positionSamples_, int64_t{0}, totalSamples_);
+    positionSamples_.store(
+        std::clamp(positionSamples_.load(std::memory_order_relaxed), int64_t{0}, totalSamples_),
+        std::memory_order_relaxed);
     loopStartSamples_ = std::clamp(loopStartSamples_, int64_t{0}, totalSamples_);
     loopEndSamples_ = std::clamp(loopEndSamples_, int64_t{0}, totalSamples_);
     if (loopEndSamples_ <= loopStartSamples_) {
       loopEnabled_ = false;
     }
     if (totalSamples_ == 0) {
-      positionSamples_ = 0;
+      positionSamples_.store(0, std::memory_order_relaxed);
       loopStartSamples_ = 0;
       loopEndSamples_ = 0;
       loopEnabled_ = false;
       state_ = State::Stopped;
     }
+    playing_.store(state_ == State::Playing, std::memory_order_release);
   }
   sendChangeMessage();
 }
@@ -33,10 +36,11 @@ void TransportController::play() {
     if (totalSamples_ <= 0) {
       return;
     }
-    if (positionSamples_ >= totalSamples_) {
-      positionSamples_ = 0;
+    if (positionSamples_.load(std::memory_order_relaxed) >= totalSamples_) {
+      positionSamples_.store(0, std::memory_order_relaxed);
     }
     state_ = State::Playing;
+    playing_.store(true, std::memory_order_release);
   }
   sendChangeMessage();
 }
@@ -48,6 +52,7 @@ void TransportController::pause() {
       return;
     }
     state_ = State::Paused;
+    playing_.store(false, std::memory_order_release);
   }
   sendChangeMessage();
 }
@@ -56,7 +61,8 @@ void TransportController::stop() {
   {
     std::scoped_lock lock(mutex_);
     state_ = State::Stopped;
-    positionSamples_ = 0;
+    positionSamples_.store(0, std::memory_order_relaxed);
+    playing_.store(false, std::memory_order_release);
   }
   sendChangeMessage();
 }
@@ -64,12 +70,16 @@ void TransportController::stop() {
 void TransportController::seekToSample(const int64_t samplePosition) {
   {
     std::scoped_lock lock(mutex_);
-    positionSamples_ = std::clamp(samplePosition, int64_t{0}, totalSamples_);
-    if (loopEnabled_ && loopEndSamples_ > loopStartSamples_ && positionSamples_ > loopEndSamples_) {
-      positionSamples_ = loopEndSamples_;
+    positionSamples_.store(
+        std::clamp(samplePosition, int64_t{0}, totalSamples_), std::memory_order_relaxed);
+    if (loopEnabled_ && loopEndSamples_ > loopStartSamples_ &&
+        positionSamples_.load(std::memory_order_relaxed) > loopEndSamples_) {
+      positionSamples_.store(loopEndSamples_, std::memory_order_relaxed);
     }
-    if (positionSamples_ >= totalSamples_ && totalSamples_ > 0 && state_ == State::Playing) {
+    if (positionSamples_.load(std::memory_order_relaxed) >= totalSamples_ && totalSamples_ > 0 &&
+        state_ == State::Playing) {
       state_ = State::Paused;
+      playing_.store(false, std::memory_order_release);
     }
   }
   sendChangeMessage();
@@ -92,27 +102,39 @@ void TransportController::advance(const int numSamples) {
     if (state_ != State::Playing || totalSamples_ <= 0 || numSamples <= 0) {
       return;
     }
-    const auto advanced = positionSamples_ + static_cast<int64_t>(numSamples);
+    const auto advanced =
+        positionSamples_.load(std::memory_order_relaxed) + static_cast<int64_t>(numSamples);
     if (loopEnabled_ && loopEndSamples_ > loopStartSamples_) {
       if (advanced >= loopEndSamples_) {
         const int64_t loopLength = std::max<int64_t>(1, loopEndSamples_ - loopStartSamples_);
         const int64_t overshoot = advanced - loopEndSamples_;
-        positionSamples_ = loopStartSamples_ + (overshoot % loopLength);
+        positionSamples_.store(loopStartSamples_ + (overshoot % loopLength),
+                               std::memory_order_relaxed);
       } else {
-        positionSamples_ = advanced;
+        positionSamples_.store(advanced, std::memory_order_relaxed);
       }
     } else {
-      positionSamples_ = std::min(totalSamples_, advanced);
+      positionSamples_.store(std::min(totalSamples_, advanced), std::memory_order_relaxed);
     }
     changed = true;
-    if (!loopEnabled_ && positionSamples_ >= totalSamples_) {
+    if (!loopEnabled_ && positionSamples_.load(std::memory_order_relaxed) >= totalSamples_) {
       state_ = State::Paused;
+      playing_.store(false, std::memory_order_release);
     }
   }
 
   if (changed) {
     sendChangeMessage();
   }
+}
+
+void TransportController::setPositionRealtime(const int64_t samplePosition) {
+  positionSamples_.store(samplePosition, std::memory_order_relaxed);
+}
+
+void TransportController::stopFromAudioThread() {
+  positionSamples_.store(0, std::memory_order_relaxed);
+  playing_.store(false, std::memory_order_release);
 }
 
 void TransportController::setLoopRangeSeconds(const double loopInSeconds,
@@ -128,7 +150,10 @@ void TransportController::setLoopRangeSeconds(const double loopInSeconds,
     loopEnabled_ = enabled && loopEndSamples_ > loopStartSamples_;
 
     if (loopEnabled_) {
-      positionSamples_ = std::clamp(positionSamples_, loopStartSamples_, loopEndSamples_);
+      positionSamples_.store(
+          std::clamp(positionSamples_.load(std::memory_order_relaxed), loopStartSamples_,
+                     loopEndSamples_),
+          std::memory_order_relaxed);
     }
   }
   sendChangeMessage();
@@ -150,13 +175,11 @@ TransportController::State TransportController::state() const {
 }
 
 bool TransportController::isPlaying() const {
-  std::scoped_lock lock(mutex_);
-  return state_ == State::Playing;
+  return playing_.load(std::memory_order_acquire);
 }
 
 int64_t TransportController::positionSamples() const {
-  std::scoped_lock lock(mutex_);
-  return positionSamples_;
+  return positionSamples_.load(std::memory_order_relaxed);
 }
 
 int64_t TransportController::totalSamples() const {
@@ -169,7 +192,7 @@ double TransportController::positionSeconds() const {
   if (sampleRate_ <= 0.0) {
     return 0.0;
   }
-  return static_cast<double>(positionSamples_) / sampleRate_;
+  return static_cast<double>(positionSamples_.load(std::memory_order_relaxed)) / sampleRate_;
 }
 
 double TransportController::totalSeconds() const {
@@ -185,7 +208,10 @@ double TransportController::progress() const {
   if (totalSamples_ <= 0) {
     return 0.0;
   }
-  return std::clamp(static_cast<double>(positionSamples_) / static_cast<double>(totalSamples_), 0.0, 1.0);
+  return std::clamp(
+      static_cast<double>(positionSamples_.load(std::memory_order_relaxed)) /
+          static_cast<double>(totalSamples_),
+      0.0, 1.0);
 }
 
 bool TransportController::loopEnabled() const {

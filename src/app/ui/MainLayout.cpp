@@ -1,164 +1,48 @@
 #include "app/ui/MainLayout.h"
 
+#include "app/style/AutoMixLookAndFeel.h"
 #include "app/ui/AudioPreviewManager.h"
 #include "app/ui/ControlDeck.h"
 #include "app/ui/GlowMeters.h"
 #include "app/ui/HeaderBar.h"
 #include "app/ui/HeroWaveform.h"
+#include "app/ui/MainLayoutInternal.h"
 #include "app/ui/ModelBrowserPanel.h"
 #include "app/ui/StemPanel.h"
 #include "app/ui/TaskCenterPanel.h"
 #include "app/ui/TaskOrchestrator.h"
 #include "app/ui/TransportBar.h"
-#include "ai/FeatureSchema.h"
-#include "ai/OnnxModelInference.h"
-#include "analysis/StemAnalyzer.h"
-#include "automix/HeuristicAutoMixStrategy.h"
-#include "engine/AudioFileIO.h"
-#include "engine/AudioResampler.h"
-#include "engine/BatchQueueRunner.h"
-#include "engine/LoudnessMeter.h"
-#include "engine/OfflineRenderPipeline.h"
+#include "app/ui/VerificationEngine.h"
 #include "renderers/RendererPipeline.h"
 #include "util/FileUtils.h"
-#include "util/StringUtils.h"
-#include "util/WavWriter.h"
-
-#include <algorithm>
-#include <cctype>
-#include <cmath>
-#include <cstdlib>
-#include <exception>
-#include <filesystem>
-#include <fstream>
-#include <iomanip>
-#include <map>
-#include <sstream>
-#include <stdexcept>
-#include <tuple>
 
 #include <juce_audio_utils/juce_audio_utils.h>
-#include <nlohmann/json.hpp>
+
+#include <algorithm>
+#include <cmath>
 
 namespace automix::app {
 
-using namespace theme;
-
-// ─────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────
+using namespace automix::app::detail;
+using namespace automix::app::theme;
 
 namespace {
 
-template <typename Comp>
-auto safeAsync(Comp* comp) {
-  return juce::Component::SafePointer<Comp>(comp);
+constexpr float kMeterMinDb = -60.0f;
+constexpr float kMeterMaxDb = 6.0f;
+
+/// Linear amplitude to dB on the GlowMeters scale ([-60, +6] dBFS).
+float linearToMeterDb(const float linear) {
+  if (linear <= 1.0e-6f)
+    return kMeterMinDb;
+  return std::clamp(20.0f * std::log10(linear), kMeterMinDb, kMeterMaxDb);
 }
 
-std::map<std::string, std::string> activePackMapForUi(const ai::ModelManager& modelManager) {
-  std::map<std::string, std::string> active;
-  for (const auto* scope : {"mix", "master", "analysis", "separation"}) {
-    const auto id = modelManager.activePackId(scope);
-    if (!id.empty()) {
-      active[scope] = id;
-    }
-  }
-  return active;
-}
+} // namespace
 
-void configureInferenceBackend(ai::OnnxModelInference& inference,
-                               const ai::ModelPack& pack,
-                               const std::string& providerPreference) {
-  auto resolvedProvider = providerPreference;
-  if ((resolvedProvider.empty() || util::toLower(resolvedProvider) == "auto") && !pack.providerAffinity.empty()) {
-    resolvedProvider = pack.providerAffinity.front();
-  }
-  inference.setExecutionProviderPreference(resolvedProvider);
-  inference.setGraphOptimizationEnabled(true);
-  inference.setWarmupEnabled(true);
-  inference.setPreferQuantizedVariants(util::toLower(pack.preferredPrecision) != "fp32");
-  inference.setPreferredPrecision(pack.preferredPrecision.empty() ? "auto" : pack.preferredPrecision);
-  inference.setThreadConfiguration(pack.defaultIntraOpThreads.value_or(0), pack.defaultInterOpThreads.value_or(0));
-  inference.setProfilingEnabled(pack.enableProfiling);
-}
+// ── Updated StemPanel from session (needs StemPanel full type) ─
 
-std::string summarizeInferenceOutputs(const ai::InferenceResult& inferenceResult, const size_t maxEntries = 6) {
-  if (inferenceResult.outputs.empty()) {
-    return "(no outputs)";
-  }
-
-  std::vector<std::pair<std::string, double>> entries;
-  entries.reserve(inferenceResult.outputs.size());
-  for (const auto& [key, value] : inferenceResult.outputs) {
-    entries.emplace_back(key, value);
-  }
-  std::sort(entries.begin(), entries.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-
-  std::ostringstream summary;
-  summary << std::fixed << std::setprecision(3);
-  const auto limit = std::min(maxEntries, entries.size());
-  for (size_t index = 0; index < limit; ++index) {
-    if (index > 0) {
-      summary << ", ";
-    }
-    summary << entries[index].first << "=" << entries[index].second;
-  }
-  if (entries.size() > limit) {
-    summary << ", ...";
-  }
-  return summary.str();
-}
-
-std::string summarizeInferenceDelta(const ai::InferenceResult& beforeResult,
-                                    const ai::InferenceResult& afterResult,
-                                    const size_t maxEntries = 6) {
-  std::vector<std::tuple<std::string, double, double>> deltas;
-  for (const auto& [key, afterValue] : afterResult.outputs) {
-    const auto beforeIt = beforeResult.outputs.find(key);
-    if (beforeIt == beforeResult.outputs.end()) {
-      continue;
-    }
-    deltas.emplace_back(key, beforeIt->second, afterValue - beforeIt->second);
-  }
-
-  if (deltas.empty()) {
-    return "(no shared output keys)";
-  }
-
-  std::sort(deltas.begin(), deltas.end(), [](const auto& a, const auto& b) { return std::get<0>(a) < std::get<0>(b); });
-
-  std::ostringstream summary;
-  summary << std::fixed << std::setprecision(3);
-  const auto limit = std::min(maxEntries, deltas.size());
-  for (size_t index = 0; index < limit; ++index) {
-    if (index > 0) {
-      summary << ", ";
-    }
-    summary << std::get<0>(deltas[index]) << "_delta=" << std::get<2>(deltas[index]);
-  }
-  if (deltas.size() > limit) {
-    summary << ", ...";
-  }
-  return summary.str();
-}
-
-juce::String toChainPreviewText(const std::vector<std::string>& chain) {
-  juce::String text("Active chain: ");
-  if (chain.empty()) {
-    text += "BuiltIn";
-    return text;
-  }
-
-  for (size_t i = 0; i < chain.size(); ++i) {
-    if (i > 0) {
-      text += " -> ";
-    }
-    text += chain[i].c_str();
-  }
-  return text;
-}
-
-void updateStemPanelFromSession(StemPanel& panel, const domain::Session& session) {
+void automix::app::detail::updateStemPanelFromSession(StemPanel& panel, const domain::Session& session) {
   std::vector<StemPanel::StemDisplay> stems;
   stems.reserve(session.stems.size());
   for (const auto& s : session.stems) {
@@ -172,302 +56,6 @@ void updateStemPanelFromSession(StemPanel& panel, const domain::Session& session
   }
   panel.setStems(stems);
 }
-
-std::filesystem::path uiPreferencesPath() {
-  const auto appDataDir = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory);
-  return std::filesystem::path(appDataDir.getFullPathName().toStdString()) / "AutoMixMaster" / "ui_preferences.json";
-}
-
-constexpr const char* kBatchRecursivePreferenceKey = "batchRecursiveScan";
-constexpr const char* kExportReportSidecarPreferenceKey = "writePerExportReportJson";
-
-nlohmann::json loadUiPreferences() {
-  try {
-    std::ifstream input(uiPreferencesPath());
-    if (!input.is_open()) {
-      return nlohmann::json::object();
-    }
-    nlohmann::json json;
-    input >> json;
-    if (!json.is_object()) {
-      return nlohmann::json::object();
-    }
-    return json;
-  } catch (...) {
-    return nlohmann::json::object();
-  }
-}
-
-void saveUiPreferences(nlohmann::json preferences) {
-  try {
-    const auto path = uiPreferencesPath();
-    std::error_code error;
-    std::filesystem::create_directories(path.parent_path(), error);
-    if (error) {
-      return;
-    }
-
-    std::ofstream output(path, std::ios::trunc);
-    if (!output.is_open()) {
-      return;
-    }
-    if (!preferences.is_object()) {
-      preferences = nlohmann::json::object();
-    }
-    output << preferences.dump(2);
-  } catch (...) {
-  }
-}
-
-bool loadBatchRecursivePreference() {
-  const auto json = loadUiPreferences();
-  return json.value(kBatchRecursivePreferenceKey, false);
-}
-
-void saveBatchRecursivePreference(const bool enabled) {
-  auto json = loadUiPreferences();
-  json[kBatchRecursivePreferenceKey] = enabled;
-  saveUiPreferences(std::move(json));
-}
-
-bool loadExportReportSidecarPreference() {
-  const auto json = loadUiPreferences();
-  return json.value(kExportReportSidecarPreferenceKey, true);
-}
-
-void saveExportReportSidecarPreference(const bool enabled) {
-  auto json = loadUiPreferences();
-  json[kExportReportSidecarPreferenceKey] = enabled;
-  saveUiPreferences(std::move(json));
-}
-
-void setBatchRecursiveEnvironment(const bool enabled) {
-#if defined(_WIN32)
-  _putenv_s("AUTOMIX_BATCH_RECURSIVE", enabled ? "1" : "0");
-#else
-  setenv("AUTOMIX_BATCH_RECURSIVE", enabled ? "1" : "0", 1);
-#endif
-}
-
-class SettingsPanel final : public juce::Component {
- public:
-  SettingsPanel(juce::AudioDeviceManager& audioDeviceManager,
-                const bool writeReportJsonSidecar,
-                std::function<void(bool)> onWriteReportSidecarChanged)
-      : audioSelector_(audioDeviceManager, 0, 0, 0, 2, false, false, true, false),
-        onWriteReportSidecarChanged_(std::move(onWriteReportSidecarChanged)) {
-    reportSidecarToggle_.setButtonText("Write .report.json sidecar next to each exported file");
-    reportSidecarToggle_.setTooltip("Disable to export only audio files without per-file JSON report sidecars.");
-    reportSidecarToggle_.setToggleState(writeReportJsonSidecar, juce::dontSendNotification);
-    reportSidecarToggle_.onClick = [this] {
-      if (onWriteReportSidecarChanged_) {
-        onWriteReportSidecarChanged_(reportSidecarToggle_.getToggleState());
-      }
-    };
-
-    addAndMakeVisible(reportSidecarToggle_);
-    addAndMakeVisible(audioSelector_);
-  }
-
-  void resized() override {
-    auto area = getLocalBounds().reduced(10);
-    reportSidecarToggle_.setBounds(area.removeFromTop(28));
-    area.removeFromTop(10);
-    audioSelector_.setBounds(area);
-  }
-
- private:
-  juce::AudioDeviceSelectorComponent audioSelector_;
-  juce::ToggleButton reportSidecarToggle_;
-  std::function<void(bool)> onWriteReportSidecarChanged_;
-};
-
-bool isStemTrimSeparator(const char value) {
-  return std::isspace(static_cast<unsigned char>(value)) != 0 || value == '_' || value == '-' || value == '.';
-}
-
-std::string trimStemTokenSeparators(std::string value) {
-  value = util::trim(std::move(value));
-  while (!value.empty() && isStemTrimSeparator(value.front())) {
-    value.erase(value.begin());
-  }
-  while (!value.empty() && isStemTrimSeparator(value.back())) {
-    value.pop_back();
-  }
-  return value;
-}
-
-std::string sanitizeFileStem(std::string value) {
-  static constexpr size_t kMaxStemLength = 80;
-  value = trimStemTokenSeparators(std::move(value));
-  if (value.empty()) {
-    return "song";
-  }
-
-  for (char& ch : value) {
-    switch (ch) {
-      case '<':
-      case '>':
-      case ':':
-      case '"':
-      case '/':
-      case '\\':
-      case '|':
-      case '?':
-      case '*':
-        ch = '_';
-        break;
-      default:
-        break;
-    }
-  }
-
-  if (value.size() > kMaxStemLength) {
-    value.resize(kMaxStemLength);
-    value = trimStemTokenSeparators(std::move(value));
-  }
-
-  if (value.empty()) {
-    return "song";
-  }
-
-  return value;
-}
-
-std::string stripStemRoleSuffix(std::string value) {
-  value = trimStemTokenSeparators(std::move(value));
-  if (value.empty()) {
-    return value;
-  }
-
-  const auto lower = util::toLower(value);
-  static const std::vector<std::string> roleTokens = {
-      "vocals", "vocal", "vox", "bass", "drums", "drum", "kick", "snare",
-      "guitar", "gtr", "piano", "keys", "key", "synth", "fx", "effects", "sfx",
-      "other", "music", "mix"};
-
-  if (lower.size() > 3 && lower.back() == ')') {
-    const auto openPos = lower.find_last_of('(');
-    if (openPos != std::string::npos && openPos > 0 && openPos + 1 < lower.size() - 1) {
-      const auto role = trimStemTokenSeparators(lower.substr(openPos + 1, lower.size() - openPos - 2));
-      if (std::find(roleTokens.begin(), roleTokens.end(), role) != roleTokens.end()) {
-        return trimStemTokenSeparators(value.substr(0, openPos));
-      }
-    }
-  }
-
-  static constexpr char separators[] = {'_', '-', ' '};
-  for (const auto& role : roleTokens) {
-    for (const auto sep : separators) {
-      const auto suffix = std::string(1, sep) + role;
-      if (lower.size() > suffix.size() && lower.ends_with(suffix)) {
-        return trimStemTokenSeparators(value.substr(0, value.size() - suffix.size()));
-      }
-    }
-  }
-
-  return value;
-}
-
-std::string deriveSongTitleFromSession(const domain::Session& session) {
-  if (session.originalMixPath.has_value() && !session.originalMixPath->empty()) {
-    const auto path = std::filesystem::path(*session.originalMixPath);
-    const auto stem = stripStemRoleSuffix(path.stem().string());
-    if (!stem.empty()) {
-      return sanitizeFileStem(stem);
-    }
-  }
-
-  const auto sessionName = trimStemTokenSeparators(session.sessionName);
-  if (!sessionName.empty() && util::toLower(sessionName) != "untitled session") {
-    const auto stem = stripStemRoleSuffix(sessionName);
-    if (!stem.empty()) {
-      return sanitizeFileStem(stem);
-    }
-  }
-
-  if (!session.stems.empty()) {
-    const auto stem = stripStemRoleSuffix(session.stems.front().name);
-    if (!stem.empty()) {
-      return sanitizeFileStem(stem);
-    }
-  }
-
-  return "song";
-}
-
-juce::File buildUniqueDatedExportFile(const juce::File& folder,
-                                      const std::string& title,
-                                      const juce::String& ext) {
-  const auto dateStamp = juce::Time::getCurrentTime().formatted("%Y%m%d");
-  const juce::String safeTitle(title);
-
-  for (int index = 1; index <= 9999; ++index) {
-    const auto sequence = juce::String(index).paddedLeft('0', 2);
-    const auto fileName = safeTitle + "_AutoMixMaster_" + dateStamp + "_" + sequence + "." + ext;
-    const auto candidate = folder.getChildFile(fileName);
-    if (!candidate.existsAsFile()) {
-      return candidate;
-    }
-  }
-
-  return folder.getNonexistentChildFile(safeTitle + "_AutoMixMaster_" + dateStamp, ext, false);
-}
-
-double linearToDbFs(const double linear) {
-  constexpr double minValue = 1.0e-12;
-  return 20.0 * std::log10(std::max(linear, minValue));
-}
-
-struct DifferenceMetrics {
-  double referenceRmsDbfs = -120.0;
-  double outputRmsDbfs = -120.0;
-  double residualRmsDbfs = -120.0;
-  double residualRelativeDb = -120.0;
-  bool changed = false;
-  bool audiblyDifferent = false;
-};
-
-DifferenceMetrics analyzeDifference(const engine::AudioBuffer& reference, const engine::AudioBuffer& output) {
-  const int channels = std::min(reference.getNumChannels(), output.getNumChannels());
-  const int samples = std::min(reference.getNumSamples(), output.getNumSamples());
-  if (channels <= 0 || samples <= 0) {
-    throw std::runtime_error("Unable to compare buffers: no overlapping channels or samples.");
-  }
-
-  double referenceEnergy = 0.0;
-  double outputEnergy = 0.0;
-  double residualEnergy = 0.0;
-  const double normalization = static_cast<double>(channels * samples);
-
-  for (int ch = 0; ch < channels; ++ch) {
-    for (int i = 0; i < samples; ++i) {
-      const double refSample = static_cast<double>(reference.getSample(ch, i));
-      const double outSample = static_cast<double>(output.getSample(ch, i));
-      const double residual = outSample - refSample;
-      referenceEnergy += refSample * refSample;
-      outputEnergy += outSample * outSample;
-      residualEnergy += residual * residual;
-    }
-  }
-
-  const double referenceRms = std::sqrt(referenceEnergy / normalization);
-  const double outputRms = std::sqrt(outputEnergy / normalization);
-  const double residualRms = std::sqrt(residualEnergy / normalization);
-
-  DifferenceMetrics metrics;
-  metrics.referenceRmsDbfs = linearToDbFs(referenceRms);
-  metrics.outputRmsDbfs = linearToDbFs(outputRms);
-  metrics.residualRmsDbfs = linearToDbFs(residualRms);
-
-  const double baseline = std::max(referenceRms, outputRms);
-  metrics.residualRelativeDb = linearToDbFs(residualRms / std::max(baseline, 1.0e-12));
-  metrics.changed = metrics.residualRelativeDb > -80.0;
-  metrics.audiblyDifferent = metrics.residualRelativeDb > -42.0;
-  return metrics;
-}
-
-} // namespace
 
 // ─────────────────────────────────────────────────────────────────
 // Constructor
@@ -496,6 +84,16 @@ MainLayout::MainLayout() {
   addAndMakeVisible(*controlDeck_);
   addAndMakeVisible(*taskCenter_);
 
+  // Destructive Clear: MainLayout-owned (not part of TransportBar), confirmed on click.
+  clearTracksButton_.setTooltip("Clear Imported Tracks (asks for confirmation)");
+  clearTracksButton_.setWantsKeyboardFocus(true);
+  clearTracksButton_.setColour(juce::TextButton::buttonColourId, colour(colours::surface));
+  clearTracksButton_.setColour(juce::TextButton::buttonOnColourId, colour(colours::surfaceLight));
+  clearTracksButton_.setColour(juce::TextButton::textColourOffId, colour(colours::warning));
+  clearTracksButton_.setColour(juce::TextButton::textColourOnId, colour(colours::warning));
+  clearTracksButton_.onClick = [this] { onClearTracks(); };
+  addAndMakeVisible(clearTracksButton_);
+
   // 2. Create coordinators
   taskOrchestrator_ = std::make_unique<TaskOrchestrator>(*taskCenter_);
   previewManager_ = std::make_unique<AudioPreviewManager>(backgroundPool_, this);
@@ -513,14 +111,9 @@ MainLayout::MainLayout() {
     taskOrchestrator_->appendHistory(line);
   };
 
-  // 3. Populate combo boxes
-  refreshRenderers();
-  refreshCodecAvailability();
-  refreshModelPacks();
-  populateMasterPresetSelectors();
-  refreshProjectProfiles();
-  applySessionUiSelections();
-  syncSessionUiSelections();
+  // 3. Populate combo boxes and create controllers
+  initComboBoxes();
+  initControllers();
 
   // 4. Wire all UI callbacks
   wireHeaderCallbacks();
@@ -530,30 +123,29 @@ MainLayout::MainLayout() {
 
   taskCenter_->onCancel = [this] { taskOrchestrator_->cancelActiveTask(); };
 
-  // 5. Create controllers
+  // 5. Audio device & transport
+  audioDeviceManager_.initialise(0, 2, nullptr, true);
+  audioDeviceManager_.addAudioCallback(this);
+  transportController_.addChangeListener(this);
+  startTimerHz(30);
+  updateTransportDisplay();
+
+  // 6. Application command manager: keyboard shortcuts are dispatched here
+  commandManager_.setFirstCommandTarget(this);
+  commandManager_.registerAllCommandsForTarget(this);
+}
+
+// ── Controllers factory ────────────────────────────────────────
+
+void MainLayout::initControllers() {
   auto safe = safeAsync(this);
 
   // --- ModelController ---
   {
     ModelController::Callbacks cb;
-    cb.onStatus = [safe](const std::string& msg) {
-      juce::MessageManager::callAsync([safe, msg]() {
-        if (safe)
-          safe->taskOrchestrator_->setStatus(juce::String(msg), "");
-      });
-    };
-    cb.onTaskHistory = [safe](const std::string& msg) {
-      juce::MessageManager::callAsync([safe, msg]() {
-        if (safe)
-          safe->taskOrchestrator_->appendHistory(juce::String(msg));
-      });
-    };
-    cb.onProgress = [safe](const double progress) {
-      juce::MessageManager::callAsync([safe, progress]() {
-        if (safe && safe->taskOrchestrator_->activeTask() == ActiveTask::Model)
-          safe->taskOrchestrator_->setProgress(progress);
-      });
-    };
+    cb.onStatus = cbFactory::onStatus(safe);
+    cb.onTaskHistory = cbFactory::onHistory(safe);
+    cb.onProgress = cbFactory::onProgressForTask(safe, ActiveTask::Model);
     cb.onReport = [safe](const std::string& text) {
       juce::MessageManager::callAsync([safe, text]() {
         if (safe)
@@ -648,24 +240,9 @@ MainLayout::MainLayout() {
   // --- ImportController ---
   {
     ImportController::Callbacks cb;
-    cb.onStatus = [safe](const std::string& msg) {
-      juce::MessageManager::callAsync([safe, msg]() {
-        if (safe)
-          safe->taskOrchestrator_->setStatus(juce::String(msg), "");
-      });
-    };
-    cb.onTaskHistory = [safe](const std::string& msg) {
-      juce::MessageManager::callAsync([safe, msg]() {
-        if (safe)
-          safe->taskOrchestrator_->appendHistory(juce::String(msg));
-      });
-    };
-    cb.onProgress = [safe](const double progress) {
-      juce::MessageManager::callAsync([safe, progress]() {
-        if (safe && safe->taskOrchestrator_->activeTask() == ActiveTask::Import)
-          safe->taskOrchestrator_->setProgress(progress);
-      });
-    };
+    cb.onStatus = cbFactory::onStatus(safe);
+    cb.onTaskHistory = cbFactory::onHistory(safe);
+    cb.onProgress = cbFactory::onProgressForTask(safe, ActiveTask::Import);
     cb.onImportComplete = [safe](ImportResult result) {
       juce::MessageManager::callAsync([safe, result = std::move(result)]() {
         if (!safe)
@@ -702,24 +279,9 @@ MainLayout::MainLayout() {
   // --- ExportController ---
   {
     ExportController::Callbacks cb;
-    cb.onStatus = [safe](const std::string& msg) {
-      juce::MessageManager::callAsync([safe, msg]() {
-        if (safe)
-          safe->taskOrchestrator_->setStatus(juce::String(msg), "");
-      });
-    };
-    cb.onTaskHistory = [safe](const std::string& msg) {
-      juce::MessageManager::callAsync([safe, msg]() {
-        if (safe)
-          safe->taskOrchestrator_->appendHistory(juce::String(msg));
-      });
-    };
-    cb.onProgress = [safe](const double progress) {
-      juce::MessageManager::callAsync([safe, progress]() {
-        if (safe && safe->taskOrchestrator_->activeTask() == ActiveTask::Export)
-          safe->taskOrchestrator_->setProgress(progress);
-      });
-    };
+    cb.onStatus = cbFactory::onStatus(safe);
+    cb.onTaskHistory = cbFactory::onHistory(safe);
+    cb.onProgress = cbFactory::onProgressForTask(safe, ActiveTask::Export);
     cb.onExportComplete = [safe](ExportResult result) {
       juce::MessageManager::callAsync([safe, result = std::move(result)]() {
         if (!safe)
@@ -751,18 +313,8 @@ MainLayout::MainLayout() {
   // --- ProcessingController ---
   {
     ProcessingController::Callbacks cb;
-    cb.onStatus = [safe](const std::string& msg) {
-      juce::MessageManager::callAsync([safe, msg]() {
-        if (safe)
-          safe->taskOrchestrator_->setStatus(juce::String(msg), "");
-      });
-    };
-    cb.onTaskHistory = [safe](const std::string& msg) {
-      juce::MessageManager::callAsync([safe, msg]() {
-        if (safe)
-          safe->taskOrchestrator_->appendHistory(juce::String(msg));
-      });
-    };
+    cb.onStatus = cbFactory::onStatus(safe);
+    cb.onTaskHistory = cbFactory::onHistory(safe);
     cb.onProgress = [safe](const double progress) {
       juce::MessageManager::callAsync([safe, progress]() {
         if (!safe)
@@ -796,7 +348,6 @@ MainLayout::MainLayout() {
         safe->taskOrchestrator_->finishTaskCompleted(ActiveTask::AutoMix, "Auto Mix complete");
 
         if (!safe->pendingPipelineExportFolder_.empty()) {
-          // Pipeline mode: continue to Auto Master automatically
           safe->onAutoMaster();
         } else {
           safe->rebuildPreview();
@@ -823,14 +374,13 @@ MainLayout::MainLayout() {
         safe->taskOrchestrator_->appendHistory(result.reportAppend);
         safe->updateMeterPanel(result.previewReport);
 
-        safe->previewManager_->setBuffer(result.previewMaster);
-        safe->heroWaveform_->setBuffer(result.previewMaster);
         safe->updateTransportFromBuffer(result.previewMaster);
+        safe->heroWaveform_->setBuffer(result.previewMaster);
+        safe->previewManager_->setBuffer(std::move(result.previewMaster));
 
         safe->taskOrchestrator_->finishTaskCompleted(ActiveTask::AutoMaster, "Auto Master complete");
 
         if (!safe->pendingPipelineExportFolder_.empty()) {
-          // Pipeline mode: continue to export automatically
           safe->triggerPipelineExport();
         }
       });
@@ -907,24 +457,9 @@ MainLayout::MainLayout() {
   // --- SessionController ---
   {
     SessionController::Callbacks cb;
-    cb.onStatus = [safe](const std::string& msg) {
-      juce::MessageManager::callAsync([safe, msg]() {
-        if (safe)
-          safe->taskOrchestrator_->setStatus(juce::String(msg), "");
-      });
-    };
-    cb.onTaskHistory = [safe](const std::string& msg) {
-      juce::MessageManager::callAsync([safe, msg]() {
-        if (safe)
-          safe->taskOrchestrator_->appendHistory(juce::String(msg));
-      });
-    };
-    cb.onProgress = [safe](const double progress) {
-      juce::MessageManager::callAsync([safe, progress]() {
-        if (safe && safe->taskOrchestrator_->activeTask() == ActiveTask::Session)
-          safe->taskOrchestrator_->setProgress(progress);
-      });
-    };
+    cb.onStatus = cbFactory::onStatus(safe);
+    cb.onTaskHistory = cbFactory::onHistory(safe);
+    cb.onProgress = cbFactory::onProgressForTask(safe, ActiveTask::Session);
     cb.onSaveComplete = [safe](SessionSaveResult result) {
       juce::MessageManager::callAsync([safe, result = std::move(result)]() mutable {
         if (!safe)
@@ -965,15 +500,18 @@ MainLayout::MainLayout() {
     };
     sessionController_ = std::make_unique<SessionController>(backgroundPool_, std::move(cb));
   }
+}
 
-  // 6. Audio device
-  audioDeviceManager_.initialise(0, 2, nullptr, true);
-  audioDeviceManager_.addAudioCallback(this);
+// ── Combo box initialization ───────────────────────────────────
 
-  // 7. Transport
-  transportController_.addChangeListener(this);
-  startTimerHz(20);
-  updateTransportDisplay();
+void MainLayout::initComboBoxes() {
+  refreshRenderers();
+  refreshCodecAvailability();
+  refreshModelPacks();
+  populateMasterPresetSelectors();
+  refreshProjectProfiles();
+  applySessionUiSelections();
+  syncSessionUiSelections();
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -999,13 +537,26 @@ void MainLayout::paint(juce::Graphics& g) {
 void MainLayout::resized() {
   auto area = getLocalBounds();
 
+  // Transport row: transport bar (flex) + destructive Clear (fixed, right edge,
+  // outside the TransportBar component so it stays a deliberate, confirmed action).
+  auto transportRow = area.removeFromTop(kTransportHeight);
+  {
+    juce::FlexBox rowFb;
+    rowFb.flexDirection = juce::FlexBox::Direction::row;
+    rowFb.items.add(juce::FlexItem(*transportBar_).withFlex(1.0f));
+    rowFb.items.add(
+        juce::FlexItem(clearTracksButton_)
+            .withWidth(68.0f)
+            .withMargin(juce::FlexItem::Margin(8.0f, 4.0f, 8.0f, 4.0f)));
+    rowFb.performLayout(transportRow);
+  }
+
   juce::FlexBox fb;
   fb.flexDirection = juce::FlexBox::Direction::column;
   fb.justifyContent = juce::FlexBox::JustifyContent::flexStart;
 
   fb.items.add(juce::FlexItem(*headerBar_).withHeight(static_cast<float>(kHeaderHeight)));
   fb.items.add(juce::FlexItem(*heroWaveform_).withFlex(1.5f).withMinHeight(120.0f));
-  fb.items.add(juce::FlexItem(*transportBar_).withHeight(static_cast<float>(kTransportHeight)));
   fb.items.add(juce::FlexItem(*controlDeck_).withFlex(2.5f).withMinHeight(180.0f));
   fb.items.add(juce::FlexItem(*taskCenter_).withFlex(1.2f).withMinHeight(160.0f));
 
@@ -1016,47 +567,198 @@ void MainLayout::resized() {
 // Keyboard Shortcuts
 // ─────────────────────────────────────────────────────────────────
 
-bool MainLayout::keyPressed(const juce::KeyPress& key) {
-  auto ctrl = juce::ModifierKeys::ctrlModifier;
-  if (key == juce::KeyPress('s', ctrl, 0)) {
-    onSaveSession();
-    return true;
-  }
-  if (key == juce::KeyPress('o', ctrl, 0)) {
-    onLoadSession();
-    return true;
-  }
-  if (key == juce::KeyPress('i', ctrl, 0)) {
-    onImport();
-    return true;
-  }
-  if (key == juce::KeyPress('m', ctrl, 0)) {
-    onAutoMix();
-    return true;
-  }
-  if (key == juce::KeyPress('m', ctrl | juce::ModifierKeys::shiftModifier, 0)) {
-    onAutoMixMaster();
-    return true;
-  }
-  if (key == juce::KeyPress('e', ctrl, 0)) {
-    onExport();
-    return true;
-  }
-  if (key == juce::KeyPress('k', ctrl, 0)) {
-    onModelsDialog();
-    return true;
-  }
-  if (key == juce::KeyPress::spaceKey) {
-    if (transportController_.isPlaying()) {
-      transportController_.pause();
-      transportBar_->setPlaying(false);
-    } else {
-      transportController_.play();
-      transportBar_->setPlaying(true);
+namespace {
+
+/// Formats a KeyPress for display in the cheatsheet (e.g. "Ctrl+Shift+M").
+juce::String describeShortcutKey(const juce::KeyPress& key) {
+  const auto& mods = key.getModifiers();
+  juce::String text;
+  if (mods.isCtrlDown())
+    text << "Ctrl+";
+  if (mods.isShiftDown())
+    text << "Shift+";
+  if (mods.isAltDown())
+    text << "Alt+";
+  if (key.getKeyCode() == juce::KeyPress::spaceKey)
+    text << "Space";
+  else if (key.getKeyCode() >= 33 && key.getKeyCode() < 176)
+    text << juce::String::charToString(
+        static_cast<juce::juce_wchar>(juce::CharacterFunctions::toUpperCase(key.getKeyCode())));
+  else
+    text << key.getTextDescription();
+  return text;
+}
+
+/// Modal cheatsheet listing every command and its key binding(s).
+class ShortcutsDialog final : public juce::Component {
+public:
+  explicit ShortcutsDialog(const std::vector<ShortcutEntry>& entries) {
+    setWantsKeyboardFocus(true);
+    setSize(kDialogWidth, kDialogHeight);
+
+    titleLabel_.setText("Keyboard Shortcuts", juce::dontSendNotification);
+    titleLabel_.setFont(typography::subhead());
+    titleLabel_.setColour(juce::Label::textColourId, colour(colours::text));
+    titleLabel_.setJustificationType(juce::Justification::centred);
+    addAndMakeVisible(titleLabel_);
+
+    for (const auto& entry : entries) {
+      auto& row = rows_.emplace_back();
+      row.name = entry.name;
+      row.keys = describeShortcutKey(entry.defaultKey);
     }
-    return true;
+    // Merge duplicate command rows (Redo has two bindings) into one row.
+    for (size_t i = 0; i < rows_.size();) {
+      const juce::String name(rows_[i].name);
+      bool merged = false;
+      for (size_t j = i + 1; j < rows_.size();) {
+        if (rows_[j].name == name) {
+          rows_[i].keys << ", " << rows_[j].keys;
+          rows_.erase(rows_.begin() + static_cast<std::ptrdiff_t>(j));
+          merged = true;
+        } else {
+          ++j;
+        }
+      }
+      if (!merged)
+        ++i;
+    }
+    for (const auto& row : rows_) {
+      auto nameLabel = std::make_unique<juce::Label>();
+      nameLabel->setText(row.name, juce::dontSendNotification);
+      nameLabel->setFont(typography::body());
+      nameLabel->setColour(juce::Label::textColourId, colour(colours::text));
+      nameLabel->setJustificationType(juce::Justification::centredLeft);
+      auto keyLabel = std::make_unique<juce::Label>();
+      keyLabel->setText(row.keys, juce::dontSendNotification);
+      keyLabel->setFont(typography::body());
+      keyLabel->setColour(juce::Label::textColourId, colour(colours::secondary));
+      keyLabel->setJustificationType(juce::Justification::centredRight);
+      addAndMakeVisible(*nameLabel);
+      addAndMakeVisible(*keyLabel);
+      nameLabels_.push_back(std::move(nameLabel));
+      keyLabels_.push_back(std::move(keyLabel));
+    }
+
+    closeButton_.setButtonText("Close");
+    closeButton_.onClick = [this] { exitModalState(0); };
+    addAndMakeVisible(closeButton_);
   }
-  return false;
+
+  void paint(juce::Graphics& g) override {
+    g.fillAll(colour(colours::surface));
+    g.setColour(colour(colours::surfaceBorder));
+    g.drawRect(getLocalBounds(), metrics::borderWidth);
+  }
+
+  void resized() override {
+    auto area = getLocalBounds().reduced(spacing::marginLarge);
+    titleLabel_.setBounds(area.removeFromTop(28));
+    area.removeFromTop(spacing::gapMedium);
+    constexpr int rowHeight = 26;
+    for (size_t i = 0; i < nameLabels_.size(); ++i) {
+      auto row = area.removeFromTop(rowHeight);
+      nameLabels_[i]->setBounds(row.removeFromLeft(row.getWidth() * 3 / 5));
+      keyLabels_[i]->setBounds(row);
+    }
+    area.removeFromTop(spacing::gapLarge);
+    closeButton_.setBounds(area.removeFromTop(32).withSizeKeepingCentre(120, 32));
+  }
+
+  bool keyPressed(const juce::KeyPress& key) override {
+    if (key == juce::KeyPress::escapeKey) {
+      exitModalState(0);
+      return true;
+    }
+    return juce::Component::keyPressed(key);
+  }
+
+private:
+  static constexpr int kDialogWidth = 460;
+  static constexpr int kDialogHeight = 560;
+
+  juce::Label titleLabel_;
+  juce::TextButton closeButton_{"Close"};
+  struct DisplayRow {
+    juce::String name;
+    juce::String keys;
+  };
+  std::vector<DisplayRow> rows_;
+  std::vector<std::unique_ptr<juce::Label>> nameLabels_;
+  std::vector<std::unique_ptr<juce::Label>> keyLabels_;
+
+  JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ShortcutsDialog)
+};
+
+} // namespace
+
+bool MainLayout::keyPressed(const juce::KeyPress& key) {
+  auto* mappings = commandManager_.getKeyMappings();
+  const juce::CommandID commandId = mappings->findCommandForKeyPress(key);
+  if (commandId == 0)
+    return false;
+  return commandManager_.invokeDirectly(commandId, false);
+}
+
+juce::ApplicationCommandTarget* MainLayout::getNextCommandTarget() {
+  return nullptr;
+}
+
+void MainLayout::getAllCommands(juce::Array<juce::CommandID>& commands) {
+  for (const auto& entry : shortcutTable()) {
+    const auto commandId = static_cast<juce::CommandID>(entry.command);
+    if (!commands.contains(commandId))
+      commands.add(commandId);
+  }
+}
+
+void MainLayout::getCommandInfo(juce::CommandID commandID, juce::ApplicationCommandInfo& result) {
+  bool found = false;
+  for (const auto& entry : shortcutTable()) {
+    if (static_cast<juce::CommandID>(entry.command) == commandID) {
+      if (!found) {
+        result.setInfo(juce::String(entry.name), juce::String(entry.name), "General", 0);
+        found = true;
+      }
+      result.addDefaultKeypress(entry.defaultKey.getKeyCode(), entry.defaultKey.getModifiers());
+    }
+  }
+}
+
+bool MainLayout::perform(const juce::ApplicationCommandTarget::InvocationInfo& info) {
+  switch (static_cast<ShortcutCommand>(info.commandID)) {
+    case ShortcutCommand::saveSession:     onSaveSession();     break;
+    case ShortcutCommand::loadSession:     onLoadSession();     break;
+    case ShortcutCommand::import:          onImport();          break;
+    case ShortcutCommand::autoMix:         onAutoMix();         break;
+    case ShortcutCommand::autoMaster:      onAutoMaster();      break;
+    case ShortcutCommand::autoMixMaster:   onAutoMixMaster();   break;
+    case ShortcutCommand::exportProject:   onExport();          break;
+    case ShortcutCommand::modelsDialog:    onModelsDialog();    break;
+    case ShortcutCommand::undo:            onUndo();            break;
+    case ShortcutCommand::redo:            onRedo();            break;
+    case ShortcutCommand::playPause:       onTogglePlayPause(); break;
+    case ShortcutCommand::shortcutsDialog: showShortcutsDialog(); break;
+  }
+  return true;
+}
+
+void MainLayout::onTogglePlayPause() {
+  if (transportController_.isPlaying()) {
+    transportController_.pause();
+    transportBar_->setPlaying(false);
+  } else {
+    transportController_.play();
+    transportBar_->setPlaying(true);
+  }
+}
+
+void MainLayout::showShortcutsDialog() {
+  auto* dialog = new ShortcutsDialog(shortcutTable());
+  dialog->setAlwaysOnTop(true);
+  dialog->centreWithSize(dialog->getWidth(), dialog->getHeight());
+  dialog->setVisible(true);
+  dialog->enterModalState(true, nullptr, true); // modal manager owns + deletes it
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1065,6 +767,21 @@ bool MainLayout::keyPressed(const juce::KeyPress& key) {
 
 void MainLayout::timerCallback() {
   updateTransportDisplay();
+
+  // Reconcile the transport bar with the atomic play state (covers end-of-track
+  // auto-stop, which is realtime-only and posts no change message).
+  const bool playing = transportController_.isPlaying();
+  if (playing != transportBarPlaying_) {
+    transportBarPlaying_ = playing;
+    transportBar_->setPlaying(playing);
+  }
+
+  // Live meters: copy the audio-thread targets into GlowMeters (message thread).
+  auto& meters = controlDeck_->getGlowMeters();
+  meters.setLevels(liveMeterLeftLevel_.load(std::memory_order_relaxed),
+                   liveMeterRightLevel_.load(std::memory_order_relaxed));
+  meters.setPeaks(liveMeterLeftPeak_.load(std::memory_order_relaxed),
+                  liveMeterRightPeak_.load(std::memory_order_relaxed));
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1073,7 +790,8 @@ void MainLayout::timerCallback() {
 
 void MainLayout::changeListenerCallback(juce::ChangeBroadcaster* source) {
   if (source == &transportController_) {
-    transportBar_->setPlaying(transportController_.isPlaying());
+    transportBarPlaying_ = transportController_.isPlaying();
+    transportBar_->setPlaying(transportBarPlaying_);
   }
 }
 
@@ -1086,40 +804,68 @@ void MainLayout::audioDeviceIOCallbackWithContext(const float* const* /*inputCha
                                                   float* const* outputChannelData, int numOutputChannels,
                                                   int numSamples,
                                                   const juce::AudioIODeviceCallbackContext& /*context*/) {
-  std::lock_guard<std::mutex> lock(previewManager_->bufferMutex());
-  const auto& buf = previewManager_->buffer();
+  // Realtime-safe path: the preview buffer and transport state are published via
+  // atomics, so this callback performs no locking, no heap allocation and no
+  // message posting regardless of what the message thread is doing.
+  const auto buffer = previewManager_->currentBuffer();
   const float outputGain = std::clamp(outputVolume_.load(std::memory_order_relaxed), 0.0f, 1.5f);
 
-  if (!transportController_.isPlaying() || buf.getNumSamples() == 0) {
+  if (buffer == nullptr || !transportController_.isPlaying() || buffer->getNumSamples() == 0) {
     for (int ch = 0; ch < numOutputChannels; ++ch)
       if (outputChannelData[ch])
         std::fill_n(outputChannelData[ch], numSamples, 0.0f);
     return;
   }
 
-  auto pos = transportController_.positionSamples();
-  int totalSamples = buf.getNumSamples();
-  int bufChannels = buf.getNumChannels();
+  const int totalSamples = buffer->getNumSamples();
+  const int bufChannels = buffer->getNumChannels();
+  int64_t pos = transportController_.positionSamples();
 
-  for (int i = 0; i < numSamples; ++i) {
-    if (pos >= totalSamples) {
-      transportController_.stop();
-      for (int ch = 0; ch < numOutputChannels; ++ch)
-        if (outputChannelData[ch])
-          std::fill_n(outputChannelData[ch] + i, numSamples - i, 0.0f);
+  // Live meter accumulation (RMS + peak per output channel, post-gain).
+  float peakL = 0.0f;
+  float peakR = 0.0f;
+  double sumSqL = 0.0;
+  double sumSqR = 0.0;
+
+  int i = 0;
+  for (; i < numSamples; ++i) {
+    if (pos >= totalSamples)
       break;
-    }
 
     for (int ch = 0; ch < numOutputChannels; ++ch) {
-      if (outputChannelData[ch]) {
-        int srcCh = std::min(ch, bufChannels - 1);
-        outputChannelData[ch][i] = buf.getSample(srcCh, static_cast<int>(pos)) * outputGain;
+      if (outputChannelData[ch] == nullptr)
+        continue;
+      const int srcCh = std::min(ch, bufChannels - 1);
+      const float sample = buffer->getSample(srcCh, static_cast<int>(pos)) * outputGain;
+      outputChannelData[ch][i] = sample;
+      if (ch == 0) {
+        peakL = std::max(peakL, std::abs(sample));
+        sumSqL += static_cast<double>(sample) * sample;
+      } else if (ch == 1) {
+        peakR = std::max(peakR, std::abs(sample));
+        sumSqR += static_cast<double>(sample) * sample;
       }
     }
     ++pos;
   }
 
-  transportController_.seekToSample(pos);
+  if (i < numSamples) {
+    for (int ch = 0; ch < numOutputChannels; ++ch)
+      if (outputChannelData[ch])
+        std::fill_n(outputChannelData[ch] + i, numSamples - i, 0.0f);
+    transportController_.stopFromAudioThread();
+  }
+
+  transportController_.setPositionRealtime(pos);
+
+  // Publish live meter targets (relaxed atomic stores; consumed by the UI timer).
+  const int meterSamples = std::max(i, 1);
+  liveMeterLeftLevel_.store(
+      linearToMeterDb(static_cast<float>(std::sqrt(sumSqL / meterSamples))), std::memory_order_relaxed);
+  liveMeterRightLevel_.store(
+      linearToMeterDb(static_cast<float>(std::sqrt(sumSqR / meterSamples))), std::memory_order_relaxed);
+  liveMeterLeftPeak_.store(linearToMeterDb(peakL), std::memory_order_relaxed);
+  liveMeterRightPeak_.store(linearToMeterDb(peakR), std::memory_order_relaxed);
 }
 
 void MainLayout::audioDeviceAboutToStart(juce::AudioIODevice* /*device*/) {}
@@ -1134,6 +880,9 @@ void MainLayout::wireHeaderCallbacks() {
   headerBar_->onLoadSession = [this] { onLoadSession(); };
   headerBar_->onModels = [this] { onModelsDialog(); };
   headerBar_->onSettings = [this] { onSettings(); };
+  headerBar_->onProfileSelected = [this](const juce::String& profileId) {
+    onHeaderProfileSelected(profileId);
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1176,8 +925,37 @@ void MainLayout::wireTransportCallbacks() {
     }
   };
   transportBar_->onVolumeChanged = [this](double volume) {
-    outputVolume_.store(static_cast<float>(std::clamp(volume, 0.0, 1.5)), std::memory_order_relaxed);
+    outputVolume_.store(static_cast<float>(clampVolumeToEngineRange(volume)), std::memory_order_relaxed);
   };
+  transportBar_->onShowShortcuts = [this] { showShortcutsDialog(); };
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Clear imported tracks (destructive — confirmation required)
+// ─────────────────────────────────────────────────────────────────
+
+void MainLayout::onClearTracks() {
+  const int numTracks = static_cast<int>(sessionManager_.session().stems.size());
+  if (numTracks == 0)
+    return; // Nothing imported; nothing to clear.
+
+  juce::AlertWindow::showOkCancelBox(
+      juce::MessageBoxIconType::WarningIcon, "Clear imported tracks",
+      "Clear " + juce::String(numTracks) +
+          " imported tracks? This cannot be undone \xe2\x80\x94 use Undo after T4.1.",
+      "Clear", "Cancel", this,
+      juce::ModalCallbackFunction::create([safe = safeAsync(this), numTracks](int result) {
+        if (safe != nullptr && confirmClear(numTracks, result == 1))
+          safe->performClearTracks();
+      }));
+}
+
+void MainLayout::performClearTracks() {
+  transportController_.stop();
+  transportBar_->setPlaying(false);
+  transportBar_->setTimeDisplay(0.0, 0.0);
+  sessionManager_.session().stems.clear();
+  detail::updateStemPanelFromSession(controlDeck_->getStemPanel(), sessionManager_.session());
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1192,13 +970,13 @@ void MainLayout::wireControlDeckCallbacks() {
   controlDeck_->onBatch = [this] { onBatch(); };
   controlDeck_->onExport = [this] { onExport(); };
 
-  controlDeck_->getStemPanel().onSoloChanged = [this](const std::string& /*stemId*/, bool /*solo*/) {
+  controlDeck_->getStemPanel().onSoloChanged = [this](const std::string&, bool) {
     rebuildPreview();
   };
-  controlDeck_->getStemPanel().onMuteChanged = [this](const std::string& /*stemId*/, bool /*mute*/) {
+  controlDeck_->getStemPanel().onMuteChanged = [this](const std::string&, bool) {
     rebuildPreview();
   };
-  controlDeck_->getStemPanel().onVolumeChanged = [this](const std::string& /*stemId*/, float /*volume*/) {
+  controlDeck_->getStemPanel().onVolumeChanged = [this](const std::string&, float) {
     rebuildPreview();
   };
 
@@ -1285,6 +1063,38 @@ void MainLayout::wireHeroWaveformCallbacks() {
   heroWaveform_->onFilesDropped = [this](std::vector<juce::File> files) {
     importFiles(std::move(files));
   };
+  heroWaveform_->onZoomChanged = [this](double zoomFactor) {
+    sessionManager_.session().timeline.zoom = zoomFactor;
+  };
+  heroWaveform_->onPresetDropped = [this](juce::File presetFile) {
+    taskOrchestrator_->appendHistory("Preset dropped: " + presetFile.getFullPathName());
+  };
+}
+
+// ── Undo / Redo ─────────────────────────────────────────────────
+
+void MainLayout::onUndo() {
+  taskOrchestrator_->appendHistory("Undo: no undo history available");
+}
+
+void MainLayout::onRedo() {
+  taskOrchestrator_->appendHistory("Redo: no redo history available");
+}
+
+// ── Header Profile Quick-Switch ───────────────────────────────
+
+void MainLayout::onHeaderProfileSelected(const juce::String& profileIdStr) {
+  if (profileIdStr.isEmpty())
+    return;
+  const auto targetId = profileIdStr.toStdString();
+  auto& box = controlDeck_->getProfileBox();
+  for (int i = 1; i <= box.getNumItems(); ++i) {
+    const auto id = selectionState_.projectProfileIdForCombo(i);
+    if (id.has_value() && *id == targetId) {
+      box.setSelectedId(i, juce::sendNotification);
+      return;
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1546,10 +1356,16 @@ void MainLayout::onBatch() {
 
     auto settings = buildCurrentRenderSettings("");
     batchVerificationSettings_ = settings;
+
+    auto mixPack = resolveActiveModelPackForTask("mix");
+    auto masterPack = resolveActiveModelPackForTask("master");
+
     processingController_->runBatch(
         selectedPath,
         settings,
-        taskOrchestrator_->cancelFlag(ActiveTask::Batch));
+        taskOrchestrator_->cancelFlag(ActiveTask::Batch),
+        mixPack,
+        masterPack);
 
     batchImportChooser_.reset();
   });
@@ -1603,6 +1419,10 @@ void MainLayout::onExport() {
   });
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Verification (delegates to VerificationEngine)
+// ─────────────────────────────────────────────────────────────────
+
 void MainLayout::startExportVerification(const std::string& outputAudioPath) {
   if (outputAudioPath.empty()) {
     return;
@@ -1613,160 +1433,23 @@ void MainLayout::startExportVerification(const std::string& outputAudioPath) {
     return;
   }
 
-  auto sessionSnapshot = exportVerificationSession_.value();
-  auto settingsSnapshot = exportVerificationSettings_.value();
-  const auto analysisPack = resolveActiveModelPackForTask("analysis");
+  VerificationEngine::ExportContext context;
+  context.session = std::move(exportVerificationSession_.value());
+  context.settings = std::move(exportVerificationSettings_.value());
+  context.outputAudioPath = outputAudioPath;
+  context.analysisPack = resolveActiveModelPackForTask("analysis");
   exportVerificationSession_.reset();
   exportVerificationSettings_.reset();
 
   auto safe = safeAsync(this);
-
-  struct VerifyExportJob final : juce::ThreadPoolJob {
-    domain::Session session;
-    domain::RenderSettings settings;
-    std::string exportPath;
-    std::optional<ai::ModelPack> analysisPack;
-    juce::Component::SafePointer<MainLayout> safeLayout;
-
-    VerifyExportJob(domain::Session sessionSnapshot,
-                    domain::RenderSettings settingsSnapshot,
-                    std::string outputPath,
-                    std::optional<ai::ModelPack> analysisPackSnapshot,
-                    juce::Component::SafePointer<MainLayout> safePtr)
-        : juce::ThreadPoolJob("VerifyExportJob"),
-          session(std::move(sessionSnapshot)),
-          settings(std::move(settingsSnapshot)),
-          exportPath(std::move(outputPath)),
-          analysisPack(std::move(analysisPackSnapshot)),
-          safeLayout(std::move(safePtr)) {}
-
-    JobStatus runJob() override {
-      juce::String reportText;
-      try {
-        engine::AudioFileIO fileIO;
-        auto exported = fileIO.readAudioFile(exportPath);
-        if (exported.getNumSamples() <= 0 || exported.getNumChannels() <= 0) {
-          throw std::runtime_error("Exported file contained no decodable audio samples.");
-        }
-
-        engine::OfflineRenderPipeline pipeline;
-        auto mixedRawResult = pipeline.renderRawMix(session, settings, {}, nullptr);
-        if (mixedRawResult.cancelled || mixedRawResult.mixBuffer.getNumSamples() <= 0) {
-          throw std::runtime_error("Unable to render pre-master reference mix for verification.");
-        }
-
-        auto exportedComparable = exported;
-        if (std::abs(exportedComparable.getSampleRate() - mixedRawResult.mixBuffer.getSampleRate()) > 1.0e-6) {
-          engine::AudioResampler resampler;
-          exportedComparable = resampler.resampleLinear(exportedComparable, mixedRawResult.mixBuffer.getSampleRate());
-        }
-
-        analysis::StemAnalyzer analyzer;
-        const auto masteringDiff = analyzeDifference(mixedRawResult.mixBuffer, exportedComparable);
-
-        std::optional<DifferenceMetrics> mixDiff;
-        if (session.mixPlan.has_value()) {
-          auto baselineSession = session;
-          baselineSession.mixPlan.reset();
-          auto baselineRawResult = pipeline.renderRawMix(baselineSession, settings, {}, nullptr);
-          if (!baselineRawResult.cancelled && baselineRawResult.mixBuffer.getNumSamples() > 0) {
-            mixDiff = analyzeDifference(baselineRawResult.mixBuffer, mixedRawResult.mixBuffer);
-          }
-        }
-
-        engine::LoudnessMeter loudnessMeter;
-        const auto preMasterMetrics = loudnessMeter.analyze(mixedRawResult.mixBuffer);
-        const auto postMasterMetrics = loudnessMeter.analyze(exportedComparable);
-        const auto preMasterAnalysisMetrics = analyzer.analyzeBuffer(mixedRawResult.mixBuffer);
-        const auto postMasterAnalysisMetrics = analyzer.analyzeBuffer(exportedComparable);
-
-        std::optional<ai::InferenceResult> preMasterAnalysis;
-        std::optional<ai::InferenceResult> postMasterAnalysis;
-        std::string analysisDetails;
-        if (analysisPack.has_value()) {
-          const auto modelPath = analysisPack->rootPath / analysisPack->modelFile;
-          if (util::toLower(modelPath.extension().string()) != ".onnx") {
-            analysisDetails = "Analysis pack '" + analysisPack->id +
-                              "' skipped: only ONNX analysis packs are supported in verification.";
-          } else {
-            ai::OnnxModelInference inference;
-            configureInferenceBackend(inference, analysisPack.value(), settings.gpuExecutionProvider);
-            if (!inference.loadModel(modelPath)) {
-              analysisDetails = "Analysis pack '" + analysisPack->id + "' failed to load: " + modelPath.string();
-            } else {
-              const auto task = analysisPack->type.empty() ? std::string("analysis_model") : analysisPack->type;
-              preMasterAnalysis = inference.run(ai::InferenceRequest{
-                  .task = task,
-                  .features = ai::FeatureSchemaV1::extract(preMasterAnalysisMetrics),
-              });
-              postMasterAnalysis = inference.run(ai::InferenceRequest{
-                  .task = task,
-                  .features = ai::FeatureSchemaV1::extract(postMasterAnalysisMetrics),
-              });
-              analysisDetails = inference.backendDiagnostics();
-            }
-          }
-        }
-
-        std::ostringstream report;
-        report << std::fixed << std::setprecision(2);
-        report << "Verification report for " << exportPath << "\n";
-        report << "Mastering applied: " << (masteringDiff.changed ? "yes" : "no") << "\n";
-        report << "Audible difference (proxy): " << (masteringDiff.audiblyDifferent ? "likely yes" : "subtle/none") << "\n";
-        report << "Residual vs pre-master: " << masteringDiff.residualRelativeDb << " dB\n";
-        report << "Pre-master LUFS: " << preMasterMetrics.integratedLufs
-               << " | Post-master LUFS: " << postMasterMetrics.integratedLufs << "\n";
-        report << "Pre-master peak: " << preMasterMetrics.samplePeakDbfs
-               << " dBFS | Post-master peak: " << postMasterMetrics.samplePeakDbfs << " dBFS\n";
-        if (mixDiff.has_value()) {
-          report << "Mixing applied: " << (mixDiff->changed ? "yes" : "no") << "\n";
-          report << "Mix residual vs baseline: " << mixDiff->residualRelativeDb << " dB\n";
-        } else {
-          report << "Mixing applied: skipped (no mix plan available)\n";
-        }
-        if (analysisPack.has_value()) {
-          report << "Analysis pack: " << analysisPack->id << "\n";
-          if (!analysisDetails.empty()) {
-            report << "Analysis backend: " << analysisDetails << "\n";
-          }
-          if (preMasterAnalysis.has_value() && postMasterAnalysis.has_value() &&
-              preMasterAnalysis->usedModel && postMasterAnalysis->usedModel) {
-            report << "Analysis outputs (pre-master): "
-                   << summarizeInferenceOutputs(preMasterAnalysis.value()) << "\n";
-            report << "Analysis outputs (post-master): "
-                   << summarizeInferenceOutputs(postMasterAnalysis.value()) << "\n";
-            report << "Analysis output deltas (post - pre): "
-                   << summarizeInferenceDelta(preMasterAnalysis.value(), postMasterAnalysis.value()) << "\n";
-          } else {
-            report << "Analysis outputs: unavailable (model rejected task or returned no usable outputs)\n";
-          }
-        }
-        report << "Note: audible difference uses an objective residual-energy proxy, not a psychoacoustic AB test.";
-        reportText = report.str();
-      } catch (const std::exception& error) {
-        reportText = juce::String("Verification failed: ") + error.what();
-      } catch (...) {
-        reportText = "Verification failed: unknown error";
-      }
-
-      juce::MessageManager::callAsync([safeLayout = safeLayout, reportText]() {
-        if (!safeLayout) {
-          return;
-        }
-        safeLayout->taskOrchestrator_->appendHistory(reportText);
+  VerificationEngine::runExportVerification(
+      std::move(context),
+      backgroundPool_,
+      [safe](const juce::String& text) {
+        juce::MessageManager::callAsync([safe, text]() {
+          if (safe) safe->taskOrchestrator_->appendHistory(text);
+        });
       });
-
-      return jobHasFinished;
-    }
-  };
-
-  backgroundPool_.addJob(
-      new VerifyExportJob(std::move(sessionSnapshot),
-                          std::move(settingsSnapshot),
-                          outputAudioPath,
-                          analysisPack,
-                          safe),
-      true);
 }
 
 void MainLayout::startBatchVerification(const std::string& outputFolder) {
@@ -1778,241 +1461,24 @@ void MainLayout::startBatchVerification(const std::string& outputFolder) {
     return;
   }
 
-  const auto inputFolderSnapshot = batchVerificationInputFolder_.value();
-  const auto settingsSnapshot = batchVerificationSettings_.value();
-  const auto analysisPack = resolveActiveModelPackForTask("analysis");
-  const bool recursiveSnapshot = batchVerificationRecursiveScan_;
+  VerificationEngine::BatchContext context;
+  context.inputFolder = batchVerificationInputFolder_.value();
+  context.outputFolder = util::pathFromUtf8(outputFolder);
+  context.settings = batchVerificationSettings_.value();
+  context.analysisPack = resolveActiveModelPackForTask("analysis");
+  context.recursiveScan = batchVerificationRecursiveScan_;
   batchVerificationInputFolder_.reset();
   batchVerificationSettings_.reset();
 
   auto safe = safeAsync(this);
-
-  struct VerifyBatchJob final : juce::ThreadPoolJob {
-    std::filesystem::path inputFolder;
-    std::filesystem::path outputFolder;
-    domain::RenderSettings settings;
-    std::optional<ai::ModelPack> analysisPack;
-    bool recursiveScan = false;
-    juce::Component::SafePointer<MainLayout> safeLayout;
-
-    VerifyBatchJob(std::filesystem::path inputPath,
-                   std::filesystem::path outputPath,
-                   domain::RenderSettings renderSettings,
-                   std::optional<ai::ModelPack> analysisPackSnapshot,
-                   const bool recursive,
-                   juce::Component::SafePointer<MainLayout> safePtr)
-        : juce::ThreadPoolJob("VerifyBatchJob"),
-          inputFolder(std::move(inputPath)),
-          outputFolder(std::move(outputPath)),
-          settings(std::move(renderSettings)),
-          analysisPack(std::move(analysisPackSnapshot)),
-          recursiveScan(recursive),
-          safeLayout(std::move(safePtr)) {}
-
-    JobStatus runJob() override {
-      juce::String reportText;
-      try {
-        engine::BatchQueueRunner runner;
-        auto items = runner.buildItemsFromFolder(inputFolder, outputFolder, recursiveScan);
-        if (items.empty()) {
-          throw std::runtime_error("No batch items available for verification.");
-        }
-
-        const auto resolvedFormat = util::WavWriter::resolveFormat(std::filesystem::path{}, settings.outputFormat);
-        const auto requiredExtension = util::extensionForFormat(resolvedFormat);
-        for (auto& item : items) {
-          if (util::toLower(util::pathToUtf8(item.outputPath.extension())) != requiredExtension) {
-            item.outputPath.replace_extension(requiredExtension);
-          }
-        }
-
-        analysis::StemAnalyzer analyzer;
-        automix::HeuristicAutoMixStrategy autoMix;
-        engine::OfflineRenderPipeline pipeline;
-        engine::AudioFileIO fileIO;
-        engine::AudioResampler resampler;
-        engine::LoudnessMeter meter;
-
-        int verified = 0;
-        int missingOutputs = 0;
-        int masteringApplied = 0;
-        int masteringAudible = 0;
-        int mixingApplied = 0;
-        int mixingAudible = 0;
-        double masteringResidualSumDb = 0.0;
-        double mixingResidualSumDb = 0.0;
-        double loudnessDeltaSum = 0.0;
-        int analysisEvaluated = 0;
-        int analysisConfidenceCount = 0;
-        double analysisConfidencePreSum = 0.0;
-        double analysisConfidencePostSum = 0.0;
-        std::string analysisPackDiagnostics;
-        std::optional<std::string> firstAnalysisPreview;
-        ai::OnnxModelInference analysisInference;
-        bool analysisInferenceReady = false;
-        std::string analysisTask = "analysis_model";
-
-        if (analysisPack.has_value()) {
-          const auto modelPath = analysisPack->rootPath / analysisPack->modelFile;
-          if (util::toLower(util::pathToUtf8(modelPath.extension())) == ".onnx") {
-            configureInferenceBackend(analysisInference, analysisPack.value(), settings.gpuExecutionProvider);
-            if (analysisInference.loadModel(modelPath)) {
-              analysisInferenceReady = true;
-              analysisTask = analysisPack->type.empty() ? std::string("analysis_model") : analysisPack->type;
-              analysisPackDiagnostics = analysisInference.backendDiagnostics();
-            } else {
-              analysisPackDiagnostics = "failed to load analysis model at " + util::pathToUtf8(modelPath);
-            }
-          } else {
-            analysisPackDiagnostics = "analysis pack is not ONNX and was skipped";
-          }
-        }
-
-        for (auto& item : items) {
-          try {
-            if (!std::filesystem::exists(item.outputPath)) {
-              ++missingOutputs;
-              continue;
-            }
-
-            auto outputBuffer = fileIO.readAudioFile(item.outputPath);
-            if (outputBuffer.getNumSamples() <= 0 || outputBuffer.getNumChannels() <= 0) {
-              ++missingOutputs;
-              continue;
-            }
-
-            auto mixedSession = item.session;
-            const auto analysisEntries = analyzer.analyzeSession(mixedSession);
-            mixedSession.mixPlan = autoMix.buildPlan(mixedSession, analysisEntries, 1.0);
-
-            auto mixedRawResult = pipeline.renderRawMix(mixedSession, settings, {}, nullptr);
-            if (mixedRawResult.cancelled || mixedRawResult.mixBuffer.getNumSamples() <= 0) {
-              continue;
-            }
-
-            auto baselineSession = mixedSession;
-            baselineSession.mixPlan.reset();
-            auto baselineRawResult = pipeline.renderRawMix(baselineSession, settings, {}, nullptr);
-            if (baselineRawResult.cancelled || baselineRawResult.mixBuffer.getNumSamples() <= 0) {
-              continue;
-            }
-
-            auto comparableOutput = outputBuffer;
-            if (std::abs(comparableOutput.getSampleRate() - mixedRawResult.mixBuffer.getSampleRate()) > 1.0e-6) {
-              comparableOutput = resampler.resampleLinear(comparableOutput, mixedRawResult.mixBuffer.getSampleRate());
-            }
-
-            const auto masteringDiff = analyzeDifference(mixedRawResult.mixBuffer, comparableOutput);
-            const auto mixingDiff = analyzeDifference(baselineRawResult.mixBuffer, mixedRawResult.mixBuffer);
-            const auto preMasterMetrics = meter.analyze(mixedRawResult.mixBuffer);
-            const auto postMasterMetrics = meter.analyze(comparableOutput);
-            const auto preMasterAnalysisMetrics = analyzer.analyzeBuffer(mixedRawResult.mixBuffer);
-            const auto postMasterAnalysisMetrics = analyzer.analyzeBuffer(comparableOutput);
-
-            ++verified;
-            masteringApplied += masteringDiff.changed ? 1 : 0;
-            masteringAudible += masteringDiff.audiblyDifferent ? 1 : 0;
-            mixingApplied += mixingDiff.changed ? 1 : 0;
-            mixingAudible += mixingDiff.audiblyDifferent ? 1 : 0;
-            masteringResidualSumDb += masteringDiff.residualRelativeDb;
-            mixingResidualSumDb += mixingDiff.residualRelativeDb;
-            loudnessDeltaSum += (postMasterMetrics.integratedLufs - preMasterMetrics.integratedLufs);
-
-            if (analysisInferenceReady) {
-              const auto preAnalysis = analysisInference.run(ai::InferenceRequest{
-                  .task = analysisTask,
-                  .features = ai::FeatureSchemaV1::extract(preMasterAnalysisMetrics),
-              });
-              const auto postAnalysis = analysisInference.run(ai::InferenceRequest{
-                  .task = analysisTask,
-                  .features = ai::FeatureSchemaV1::extract(postMasterAnalysisMetrics),
-              });
-              if (preAnalysis.usedModel && postAnalysis.usedModel) {
-                ++analysisEvaluated;
-                const auto preConfidenceIt = preAnalysis.outputs.find("confidence");
-                const auto postConfidenceIt = postAnalysis.outputs.find("confidence");
-                if (preConfidenceIt != preAnalysis.outputs.end() && postConfidenceIt != postAnalysis.outputs.end()) {
-                  analysisConfidencePreSum += preConfidenceIt->second;
-                  analysisConfidencePostSum += postConfidenceIt->second;
-                  ++analysisConfidenceCount;
-                }
-                if (!firstAnalysisPreview.has_value()) {
-                  firstAnalysisPreview = "pre: " + summarizeInferenceOutputs(preAnalysis) +
-                                         " | post: " + summarizeInferenceOutputs(postAnalysis);
-                }
-              }
-            }
-          } catch (...) {
-            ++missingOutputs;
-          }
-        }
-
-        std::ostringstream report;
-        report << std::fixed << std::setprecision(2);
-        report << "Batch verification summary\n";
-        report << "Input folder: " << util::pathToUtf8(inputFolder) << "\n";
-        report << "Output folder: " << util::pathToUtf8(outputFolder) << "\n";
-        report << "Items discovered: " << items.size() << "\n";
-        report << "Items verified: " << verified << "\n";
-        report << "Missing/undecodable outputs: " << missingOutputs << "\n";
-        if (analysisPack.has_value()) {
-          report << "Analysis pack configured: " << analysisPack->id << "\n";
-          if (!analysisPackDiagnostics.empty()) {
-            report << "Analysis backend: " << analysisPackDiagnostics << "\n";
-          }
-        }
-
-        if (verified > 0) {
-          const auto count = static_cast<double>(verified);
-          report << "Mixing applied: " << mixingApplied << "/" << verified
-                 << " (audible proxy: " << mixingAudible << "/" << verified << ")\n";
-          report << "Mastering applied: " << masteringApplied << "/" << verified
-                 << " (audible proxy: " << masteringAudible << "/" << verified << ")\n";
-          report << "Average mix residual vs baseline: " << (mixingResidualSumDb / count) << " dB\n";
-          report << "Average master residual vs pre-master: " << (masteringResidualSumDb / count) << " dB\n";
-          report << "Average LUFS delta (post - pre): " << (loudnessDeltaSum / count) << " LU\n";
-          if (analysisPack.has_value()) {
-            report << "Analysis evaluations: " << analysisEvaluated << "/" << verified << "\n";
-            if (analysisConfidenceCount > 0) {
-              const double confidenceCount = static_cast<double>(analysisConfidenceCount);
-              report << "Average analysis confidence pre: " << (analysisConfidencePreSum / confidenceCount) << "\n";
-              report << "Average analysis confidence post: " << (analysisConfidencePostSum / confidenceCount) << "\n";
-            }
-            if (firstAnalysisPreview.has_value()) {
-              report << "Analysis output sample: " << firstAnalysisPreview.value() << "\n";
-            }
-          }
-        } else {
-          report << "No outputs were verified.\n";
-        }
-
-        report << "Note: audible difference uses residual-energy proxy, not a psychoacoustic AB test.";
-        reportText = report.str();
-      } catch (const std::exception& error) {
-        reportText = juce::String("Batch verification failed: ") + error.what();
-      } catch (...) {
-        reportText = "Batch verification failed: unknown error";
-      }
-
-      juce::MessageManager::callAsync([safeLayout = safeLayout, reportText]() {
-        if (!safeLayout) {
-          return;
-        }
-        safeLayout->taskOrchestrator_->appendHistory(reportText);
+  VerificationEngine::runBatchVerification(
+      std::move(context),
+      backgroundPool_,
+      [safe](const juce::String& text) {
+        juce::MessageManager::callAsync([safe, text]() {
+          if (safe) safe->taskOrchestrator_->appendHistory(text);
+        });
       });
-
-      return jobHasFinished;
-    }
-  };
-
-  backgroundPool_.addJob(
-      new VerifyBatchJob(inputFolderSnapshot,
-                         util::pathFromUtf8(outputFolder),
-                         settingsSnapshot,
-                         analysisPack,
-                         recursiveSnapshot,
-                         safe),
-      true);
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -2117,6 +1583,11 @@ void MainLayout::onModelsDialog() {
     modelController_->fetchCatalog(taskOrchestrator_->cancelFlag(ActiveTask::Model), curatedOnly, searchText);
   };
   panel->onInstallModel = [this](const std::string& modelId) {
+    if (modelController_ != nullptr &&
+        modelController_->modelRequiresLicenseConsent(modelId) &&
+        !modelController_->hasModelLicenseConsent(modelId)) {
+      modelController_->acknowledgeModelLicenseConsent(modelId);
+    }
     if (!taskOrchestrator_->beginTask(ActiveTask::Model, "Installing model", juce::String(modelId),
                                       "Model install started: " + juce::String(modelId)))
       return;
@@ -2139,6 +1610,11 @@ void MainLayout::onModelsDialog() {
   panel->onUseInstalledModel = [this](const std::string& modelId) {
     if (modelBrowserPanel_ == nullptr) {
       return;
+    }
+    if (modelController_ != nullptr &&
+        modelController_->modelRequiresLicenseConsent(modelId) &&
+        !modelController_->hasModelLicenseConsent(modelId)) {
+      modelController_->acknowledgeModelLicenseConsent(modelId);
     }
     const auto taskScope = modelBrowserPanel_->selectedTaskScope();
     const bool activated = modelController_->activateInstalledModelForTask(modelId, taskScope);
@@ -2655,7 +2131,7 @@ std::optional<ai::ModelPack> MainLayout::resolveActiveModelPackForTask(const std
 
   const std::string requiredType = taskScope == "mix" ? "mix_parameters"
                                    : taskScope == "master" ? "master_parameters"
-                                                            : "";
+                                                             : "";
   if (!requiredType.empty() && util::toLower(selected->type) != requiredType) {
     taskOrchestrator_->setStatus("Model pack blocked", "Incompatible model type for " + juce::String(taskScope));
     taskOrchestrator_->appendHistory("Model pack rejected for task '" + juce::String(taskScope) + "': " +
@@ -2716,74 +2192,8 @@ domain::RenderSettings MainLayout::buildCurrentRenderSettings(const std::string&
 }
 
 std::vector<renderers::ExternalRendererConfig> MainLayout::loadConfiguredExternalRenderers() {
-  std::vector<renderers::ExternalRendererConfig> configs;
-
-  std::vector<std::filesystem::path> candidates;
-  std::error_code ec;
-  auto cwd = std::filesystem::current_path(ec);
-  if (!ec) {
-    candidates.push_back(cwd / "external_renderers.json");
-    candidates.push_back(cwd / "assets" / "renderers" / "external_renderers.json");
-    auto parent = cwd.parent_path();
-    if (parent != cwd) {
-      candidates.push_back(parent / "assets" / "renderers" / "external_renderers.json");
-      auto grandparent = parent.parent_path();
-      if (grandparent != parent)
-        candidates.push_back(grandparent / "assets" / "renderers" / "external_renderers.json");
-    }
-  }
-
-  for (const auto& path : candidates) {
-    if (!std::filesystem::is_regular_file(path, ec) || ec)
-      continue;
-
-    try {
-      std::ifstream in(path);
-      if (!in.is_open())
-        continue;
-
-      nlohmann::json json;
-      in >> json;
-
-      if (!json.is_array())
-        continue;
-
-      for (const auto& entry : json) {
-        renderers::ExternalRendererConfig config;
-        config.id = entry.value("id", "");
-        config.name = entry.value("name", "");
-        config.version = entry.value("version", "unknown");
-        config.licenseId = entry.value("licenseId", "unknown");
-
-        std::string binaryPath = entry.value("binaryPath", "");
-        if (binaryPath.empty() || config.id.empty())
-          continue;
-
-        std::filesystem::path binary(binaryPath);
-        config.binaryPath = binary.is_absolute() ? binary : (path.parent_path() / binary);
-        config.bundledByDefault = entry.value("bundledByDefault", false);
-
-        if (entry.contains("pinnedProfileIds") && entry.at("pinnedProfileIds").is_array())
-          config.pinnedProfileIds = entry.at("pinnedProfileIds").get<std::vector<std::string>>();
-
-        configs.push_back(std::move(config));
-      }
-
-      break;
-    } catch (const std::exception& error) {
-      taskOrchestrator_->appendHistory("External renderer config parse failed: "
-                                       + juce::String(path.string())
-                                       + " (" + juce::String(error.what()) + ")");
-      continue;
-    } catch (...) {
-      taskOrchestrator_->appendHistory("External renderer config parse failed: "
-                                       + juce::String(path.string())
-                                       + " (unknown error)");
-      continue;
-    }
-  }
-
-  return configs;
+  auto onError = [this](const juce::String& msg) { taskOrchestrator_->appendHistory(msg); };
+  return automix::app::detail::loadConfiguredExternalRenderers(onError);
 }
 
 } // namespace automix::app

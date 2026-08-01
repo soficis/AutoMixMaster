@@ -9,9 +9,16 @@
 #include <string>
 #include <vector>
 
+#include "ai/GpuProvider.h"
 #include "ai/IModelInference.h"
 
 namespace automix::ai {
+
+enum class ProviderFailureKind {
+  Oom,
+  DeviceLost,
+  Unknown,
+};
 
 class OnnxModelInference final : public IModelInference {
  public:
@@ -31,10 +38,16 @@ class OnnxModelInference final : public IModelInference {
   void setProfilingEnabled(bool enabled);
   void setPreferredPrecision(std::string precision);
 
+  void recordProviderFailure(const std::string& provider, ProviderFailureKind kind);
+
   [[nodiscard]] std::string activeExecutionProvider() const;
   [[nodiscard]] std::string backendDiagnostics() const;
   [[nodiscard]] std::vector<std::filesystem::path> profilingArtifacts() const;
   [[nodiscard]] bool usingNativeSession() const;
+
+  [[nodiscard]] std::vector<std::string> detectAvailableProviders() const;
+  [[nodiscard]] std::vector<std::string> failedProviders() const;
+  [[nodiscard]] uint64_t gpuRecoveryCount() const;
 
  private:
   struct NativeState;
@@ -80,6 +93,11 @@ class OnnxModelInference final : public IModelInference {
   mutable std::atomic<uint64_t> providerFallbacks_ {0};
   mutable std::atomic<uint64_t> cumulativeInferenceMicros_ {0};
   mutable std::atomic<uint64_t> warmupDurationMillis_ {0};
+  mutable std::atomic<uint64_t> gpuOomCount_ {0};
+  mutable std::atomic<uint64_t> gpuDeviceLostCount_ {0};
+  mutable std::atomic<uint64_t> gpuRecoveryCount_ {0};
+  mutable std::vector<std::string> failedProviders_;
+  mutable std::mutex failedProvidersMutex_;
 };
 
 } // namespace automix::ai

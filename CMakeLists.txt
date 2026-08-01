@@ -1,13 +1,13 @@
 cmake_minimum_required(VERSION 3.24)
-project(AutoMixMaster VERSION 0.4.1 LANGUAGES C CXX)
+project(AutoMixMaster VERSION 0.4.2 LANGUAGES C CXX)
 
 if(CMAKE_VERSION VERSION_GREATER_EQUAL 4.0)
   set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 endif()
 
 if(WIN32 AND CMAKE_GENERATOR MATCHES "Visual Studio")
-  if(NOT CMAKE_GENERATOR MATCHES "Visual Studio 18 2026")
-    message(FATAL_ERROR "Windows Visual Studio builds require Visual Studio 2026 tools (generator: \"Visual Studio 18 2026\").")
+  if(NOT CMAKE_GENERATOR MATCHES "Visual Studio 1[78] 202[26]")
+    message(FATAL_ERROR "Windows Visual Studio builds require Visual Studio 2022 or 2026 tools.")
   endif()
 endif()
 
@@ -94,6 +94,7 @@ add_library(automix_core
   src/engine/SessionRepository.cpp
   src/dsp/DeEsser.cpp
   src/dsp/DynamicDeHarshEq.cpp
+  src/dsp/ItoMasterFxChain.cpp
   src/dsp/LookaheadLimiter.cpp
   src/dsp/MidSideProcessor.cpp
   src/dsp/MultibandProcessor.cpp
@@ -105,6 +106,7 @@ add_library(automix_core
   src/analysis/StemAnalyzer.cpp
   src/automix/HeuristicAutoMixStrategy.cpp
   src/automaster/HeuristicAutoMasterStrategy.cpp
+  src/automaster/ItoMasterStrategy.cpp
   src/automaster/OriginalMixReference.cpp
   src/renderers/BuiltInRenderer.cpp
   src/renderers/BundledToolDiscovery.cpp
@@ -130,10 +132,11 @@ add_library(automix_core
   src/ai/ModelStrategy.cpp
   src/ai/AutoMixStrategyAI.cpp
   src/ai/AutoMasterStrategyAI.cpp
+  src/ai/ItoMasterAdapter.cpp
   src/ai/FeatureSchema.cpp
   src/ai/MasteringCompliance.cpp
   src/ai/OnnxModelInference.cpp
-  src/ai/RtNeuralInference.cpp
+  src/ai/GpuCapabilityDetector.cpp
   src/ai/StemSeparator.cpp
   src/ai/StemRoleClassifierAI.cpp
   src/util/StringUtils.cpp
@@ -248,6 +251,7 @@ target_sources(AutoMixMasterApp PRIVATE
   src/app/controllers/PreviewController.cpp
   src/app/controllers/ProfileController.cpp
   src/app/ui/MainLayout.cpp
+  src/app/ui/VerificationEngine.cpp
   src/app/ui/HeaderBar.cpp
   src/app/ui/HeroWaveform.cpp
   src/app/ui/TransportBar.cpp
@@ -273,6 +277,7 @@ target_link_libraries(AutoMixMasterApp
     juce::juce_audio_formats
     juce::juce_audio_utils
     juce::juce_dsp
+    juce::juce_opengl
 )
 
 target_compile_definitions(AutoMixMasterApp PRIVATE
@@ -350,6 +355,9 @@ if(BUILD_TESTING)
     tests/unit/MetadataPolicyTests.cpp
     tests/unit/AutoMasterTests.cpp
     tests/unit/AiExtensionTests.cpp
+    tests/unit/ItoMasterFxChainTests.cpp
+    tests/unit/ItoMasterAdapterTests.cpp
+    tests/unit/ItoMasterStrategyTests.cpp
     tests/unit/LoudnessMeterTests.cpp
     tests/unit/LookaheadLimiterTests.cpp
     tests/unit/MasteringModulesTests.cpp
@@ -359,8 +367,13 @@ if(BUILD_TESTING)
     tests/unit/OfflineRenderPipelineTests.cpp
     tests/unit/OnnxModelInferenceTests.cpp
     tests/unit/StemSeparatorTests.cpp
+    tests/unit/ModelBenchmarkTests.cpp
+    tests/unit/GpuBenchmarkTests.cpp
     tests/regression/RegressionHarness.cpp
     tests/regression/RegressionHarnessTests.cpp
+    tests/integration/GoldenFileTest.cpp
+    tests/integration/GoldenFileTests.cpp
+    tests/integration/PipelineIntegrationTests.cpp
     src/app/ui/TaskCenterPanel.cpp
     src/app/style/AutoMixLookAndFeel.cpp
     src/app/controllers/ModelController.cpp
@@ -373,7 +386,7 @@ if(BUILD_TESTING)
     src/app/controllers/OriginalMixController.cpp
   )
 
-  target_include_directories(automix_tests PRIVATE src tests/regression)
+  target_include_directories(automix_tests PRIVATE src tests/regression tests/integration)
   target_link_libraries(automix_tests PRIVATE automix_core Catch2::Catch2WithMain juce::juce_gui_extra)
   target_compile_definitions(automix_tests PRIVATE
     AUTOMIX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"

@@ -15,12 +15,15 @@ public:
   void resized() override;
 
   void setSessionName(const juce::String& name);
+  void setProfiles(const std::vector<std::pair<juce::String, juce::String>>& profiles,
+                   const juce::String& activeId);
 
   // Callbacks for button actions
   std::function<void()> onSaveSession;
   std::function<void()> onLoadSession;
   std::function<void()> onSettings;
   std::function<void()> onModels;
+  std::function<void(const juce::String& profileId)> onProfileSelected;
 
 private:
   juce::Label sessionNameLabel_;
@@ -28,6 +31,8 @@ private:
   juce::TextButton loadButton_{"Load"};
   juce::TextButton modelsButton_{"Models"};
   juce::TextButton settingsButton_{"Settings"};
+  juce::ComboBox profileSelector_;
+  std::vector<juce::String> profileIds_; // comboId (1-based) → profile ID mapping
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HeaderBar)
 };

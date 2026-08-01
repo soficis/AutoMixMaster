@@ -6,63 +6,62 @@ namespace automix::app {
 using namespace theme;
 
 // ─────────────────────────────────────────────────────────────────
-// Constructor — set the base colour scheme
+// Constructor — applies the dark audio theme directly
 // ─────────────────────────────────────────────────────────────────
 
 AutoMixLookAndFeel::AutoMixLookAndFeel() {
-  // Base dark colour scheme
+  // Base colour scheme
   setColourScheme({
-      colour(colours::background),   // windowBackground
-      colour(colours::surface),      // widgetBackground
-      colour(colours::surface),      // menuBackground
-      colour(colours::textMuted),    // outline
-      colour(colours::text),         // defaultText
-      colour(colours::surfaceLight), // defaultFill
-      colour(colours::text),         // highlightedText
-      colour(colours::primary),      // highlightedFill
-      colour(colours::text),         // menuText
+      juce::Colour(colours::background),
+      juce::Colour(colours::surface),
+      juce::Colour(colours::surface),
+      juce::Colour(colours::textMuted),
+      juce::Colour(colours::text),
+      juce::Colour(colours::surfaceLight),
+      juce::Colour(colours::text),
+      juce::Colour(colours::primary),
+      juce::Colour(colours::text),
   });
 
-  // Additional component colours
-  setColour(juce::TextButton::buttonColourId, colour(colours::primary));
-  setColour(juce::TextButton::buttonOnColourId, colour(colours::primaryPressed));
-  setColour(juce::TextButton::textColourOffId, colour(colours::text));
-  setColour(juce::TextButton::textColourOnId, colour(colours::text));
+  setColour(juce::TextButton::buttonColourId, juce::Colour(colours::primary));
+  setColour(juce::TextButton::buttonOnColourId, juce::Colour(colours::primaryPressed));
+  setColour(juce::TextButton::textColourOffId, juce::Colour(colours::text));
+  setColour(juce::TextButton::textColourOnId, juce::Colour(colours::text));
 
-  setColour(juce::ComboBox::backgroundColourId, colour(colours::surface));
-  setColour(juce::ComboBox::textColourId, colour(colours::text));
-  setColour(juce::ComboBox::outlineColourId, colour(colours::surfaceBorder));
-  setColour(juce::ComboBox::arrowColourId, colour(colours::textMuted));
+  setColour(juce::ComboBox::backgroundColourId, juce::Colour(colours::surface));
+  setColour(juce::ComboBox::textColourId, juce::Colour(colours::text));
+  setColour(juce::ComboBox::outlineColourId, juce::Colour(colours::surfaceBorder));
+  setColour(juce::ComboBox::arrowColourId, juce::Colour(colours::textMuted));
 
-  setColour(juce::Slider::thumbColourId, colour(colours::primary));
-  setColour(juce::Slider::trackColourId, colour(colours::surfaceBorder));
-  setColour(juce::Slider::rotarySliderFillColourId, colour(colours::primary));
-  setColour(juce::Slider::backgroundColourId, colour(colours::surface));
+  setColour(juce::Slider::thumbColourId, juce::Colour(colours::primary));
+  setColour(juce::Slider::trackColourId, juce::Colour(colours::surfaceBorder));
+  setColour(juce::Slider::rotarySliderFillColourId, juce::Colour(colours::primary));
+  setColour(juce::Slider::backgroundColourId, juce::Colour(colours::surface));
 
-  setColour(juce::Label::textColourId, colour(colours::text));
+  setColour(juce::Label::textColourId, juce::Colour(colours::text));
   setColour(juce::Label::backgroundColourId, juce::Colour(0x00000000));
 
-  setColour(juce::TextEditor::backgroundColourId, colour(colours::surface));
-  setColour(juce::TextEditor::textColourId, colour(colours::text));
-  setColour(juce::TextEditor::outlineColourId, colour(colours::surfaceBorder));
-  setColour(juce::TextEditor::focusedOutlineColourId, colour(colours::primary));
+  setColour(juce::TextEditor::backgroundColourId, juce::Colour(colours::surface));
+  setColour(juce::TextEditor::textColourId, juce::Colour(colours::text));
+  setColour(juce::TextEditor::outlineColourId, juce::Colour(colours::surfaceBorder));
+  setColour(juce::TextEditor::focusedOutlineColourId, juce::Colour(colours::primary));
 
-  setColour(juce::ListBox::backgroundColourId, colour(colours::background));
-  setColour(juce::ListBox::textColourId, colour(colours::text));
+  setColour(juce::ListBox::backgroundColourId, juce::Colour(colours::background));
+  setColour(juce::ListBox::textColourId, juce::Colour(colours::text));
 
-  setColour(juce::ScrollBar::thumbColourId, colour(colours::surfaceLight));
+  setColour(juce::ScrollBar::thumbColourId, juce::Colour(colours::surfaceLight));
 
-  setColour(juce::PopupMenu::backgroundColourId, colour(colours::surface));
-  setColour(juce::PopupMenu::textColourId, colour(colours::text));
-  setColour(juce::PopupMenu::highlightedBackgroundColourId, colour(colours::primary));
-  setColour(juce::PopupMenu::highlightedTextColourId, colour(colours::text));
+  setColour(juce::PopupMenu::backgroundColourId, juce::Colour(colours::surface));
+  setColour(juce::PopupMenu::textColourId, juce::Colour(colours::text));
+  setColour(juce::PopupMenu::highlightedBackgroundColourId, juce::Colour(colours::primary));
+  setColour(juce::PopupMenu::highlightedTextColourId, juce::Colour(colours::text));
 
-  setColour(juce::ProgressBar::backgroundColourId, colour(colours::surface));
-  setColour(juce::ProgressBar::foregroundColourId, colour(colours::primary));
+  setColour(juce::ProgressBar::backgroundColourId, juce::Colour(colours::surface));
+  setColour(juce::ProgressBar::foregroundColourId, juce::Colour(colours::primary));
 
-  setColour(juce::AlertWindow::backgroundColourId, colour(colours::surface));
-  setColour(juce::AlertWindow::textColourId, colour(colours::text));
-  setColour(juce::AlertWindow::outlineColourId, colour(colours::surfaceBorder));
+  setColour(juce::AlertWindow::backgroundColourId, juce::Colour(colours::surface));
+  setColour(juce::AlertWindow::textColourId, juce::Colour(colours::text));
+  setColour(juce::AlertWindow::outlineColourId, juce::Colour(colours::surfaceBorder));
 }
 
 // ─────────────────────────────────────────────────────────────────

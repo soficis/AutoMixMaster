@@ -1,0 +1,14 @@
+{
+  "golden_files": [
+    {
+      "name": "synthetic_dual_tone",
+      "description": "Synthetic dual-tone signal (440Hz + 880Hz) for rendering chain regression",
+      "input_path": "",
+      "expected_output_path": "",
+      "expected_lufs": -14.23,
+      "expected_true_peak": -7.69,
+      "lufs_tolerance": 1.0,
+      "true_peak_tolerance": 2.5
+    }
+  ]
+}

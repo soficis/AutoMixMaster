@@ -13,15 +13,16 @@
 #include <juce_core/juce_core.h>
 #include <nlohmann/json.hpp>
 
+#include "ai/ItoMasterAdapter.h"
 #include "ai/ModelCatalogValidator.h"
 #include "util/StringUtils.h"
 
 namespace automix::ai {
-namespace {
 
 using ::automix::util::toLower;
 using ::automix::util::trim;
 
+namespace {
 std::optional<std::string> readEnvironment(const char* key) {
 #if defined(_WIN32)
   char* buffer = nullptr;
@@ -299,24 +300,11 @@ std::string sourceUrlForRepo(const std::string& repoId) {
   return "https://huggingface.co/" + repoId;
 }
 
-std::vector<std::string> curatedModelIds() {
-  return {
-      "rysertio/Demucs-onnx",
-      "onnx-community/whisper-tiny.en",
-      "onnx-community/whisper-small.en",
-      "onnx-community/Speech-Emotion-Classification-ONNX",
-      "onnx-community/Musical-Instrument-Classification-ONNX",
-      "onnx-community/Musical-genres-Classification-Hubert-V1-ONNX",
-      "openai/whisper-tiny",
-      "laion/clap-htsat-unfused",
-      "pranjal-pravesh/PANNs_CNN14_ONNX",
-      "SonyCSLParis/music2latent",
-  };
-}
+} // namespace
 
-std::string inferUseCase(const std::string& repoId,
-                         const std::vector<std::string>& tags,
-                         const std::string& fallbackQuery) {
+std::string HuggingFaceModelHub::inferUseCase(const std::string& repoId,
+                                              const std::vector<std::string>& tags,
+                                              const std::string& fallbackQuery) {
   const auto repoLower = toLower(repoId);
   auto joined = repoLower;
   for (const auto& tag : tags) {
@@ -325,6 +313,7 @@ std::string inferUseCase(const std::string& repoId,
   joined += "|" + toLower(fallbackQuery);
 
   if (joined.find("demucs") != std::string::npos ||
+      joined.find("htdemucs") != std::string::npos ||
       joined.find("mdx") != std::string::npos ||
       joined.find("roformer") != std::string::npos ||
       joined.find("unmix") != std::string::npos ||
@@ -559,7 +548,32 @@ void appendInstallLog(const std::filesystem::path& root,
   out << event.dump() << "\n";
 }
 
-} // namespace
+std::vector<std::string> curatedModelIds() {
+  return {
+      "rysertio/Demucs-onnx",
+      "onnx-community/whisper-tiny.en",
+      "onnx-community/whisper-small.en",
+      "onnx-community/Speech-Emotion-Classification-ONNX",
+      "onnx-community/Musical-Instrument-Classification-ONNX",
+      "onnx-community/Musical-genres-Classification-Hubert-V1-ONNX",
+      "openai/whisper-tiny",
+      "laion/clap-htsat-unfused",
+      "pranjal-pravesh/PANNs_CNN14_ONNX",
+      "SonyCSLParis/music2latent",
+      "StemSplitio/htdemucs-ft-onnx",
+      "StemSplitio/htdemucs-6s-onnx",
+      "kramp/ito-master-onnx",
+  };
+}
+
+// Artifacts that must accompany the primary model file to form a complete pack
+// (the ITO-Master mastering route consumes all three as one model pack).
+std::vector<std::string> auxiliaryAssetsForRepo(const std::string& repoId) {
+  if (repoId == kItoMasterRepoId) {
+    return {kItoMasterPredictorFile, kItoMasterConfigFile};
+  }
+  return {};
+}
 
 std::vector<std::string> HuggingFaceModelHub::defaultRecommendedSearchTerms() {
   return {
@@ -668,13 +682,29 @@ std::optional<HubModelInfo> HuggingFaceModelHub::modelInfo(const std::string& mo
   }
 
   info.primaryFile = pickPrimaryFile(info.files, &info.hasOnnx);
-  info.useCase = inferUseCase(info.repoId, info.tags, "");
+  info.useCase = HuggingFaceModelHub::inferUseCase(info.repoId, info.tags, "");
   const auto compatibility = validateCatalogModel(info);
   info.compatible = compatibility.compatible;
   info.taskScope = compatibility.taskScope;
   info.compatibilityReport = compatibility.reason;
 
   return info;
+}
+
+bool HuggingFaceModelHub::passesDiscoveryFilters(const HubModelInfo& info, const HubModelQueryOptions& options) {
+  if (info.privateRepo || info.disabled) {
+    return false;
+  }
+  if (!options.includeGated && info.gated) {
+    return false;
+  }
+  if (info.primaryFile.empty()) {
+    return false;
+  }
+  if (!info.compatible) {
+    return false;
+  }
+  return true;
 }
 
 std::vector<HubModelInfo> HuggingFaceModelHub::discoverRecommended(const HubModelQueryOptions& options) const {
@@ -689,10 +719,7 @@ std::vector<HubModelInfo> HuggingFaceModelHub::discoverRecommended(const HubMode
       if (!info.has_value()) {
         continue;
       }
-      if (!options.includeGated && info->gated) {
-        continue;
-      }
-      if (info->privateRepo || info->disabled || info->primaryFile.empty() || !info->compatible) {
+      if (!passesDiscoveryFilters(*info, options)) {
         continue;
       }
       if (!seen.insert(info->repoId).second) {
@@ -740,20 +767,11 @@ std::vector<HubModelInfo> HuggingFaceModelHub::discoverRecommended(const HubMode
         continue;
       }
 
-      if (info->privateRepo || info->disabled) {
-        continue;
-      }
-      if (!options.includeGated && info->gated) {
-        continue;
-      }
-      if (info->primaryFile.empty()) {
-        continue;
-      }
-      if (!info->compatible) {
+      if (!passesDiscoveryFilters(*info, options)) {
         continue;
       }
 
-      info->useCase = inferUseCase(info->repoId, info->tags, query);
+      info->useCase = HuggingFaceModelHub::inferUseCase(info->repoId, info->tags, query);
       info->curated = options.curatedOnly;
       const bool trust = trustedOrganization(info->repoId);
       const bool hasOpenLicense = info->license != "unknown" && info->license != "other";
@@ -878,6 +896,36 @@ HubInstallResult HuggingFaceModelHub::installModel(const std::string& modelIdOrR
 
   result.downloadedFiles.push_back(primaryPath.filename().string());
 
+  // Fetch auxiliary artifacts so the pack is complete on disk (e.g. the
+  // ITO-Master pack needs mastering_tcn.onnx + config.json alongside the
+  // primary fxencoder.onnx). Each is SHA-256 verified when the repo exposes it.
+  for (const auto& auxiliaryAsset : auxiliaryAssetsForRepo(info->repoId)) {
+    const auto auxiliaryPath = installPath / auxiliaryAsset;
+    const auto auxiliaryUrl = "https://huggingface.co/" + info->repoId + "/resolve/" + revision + "/" +
+                              escapePathPreservingSlash(auxiliaryAsset);
+    if (!downloadToFile(auxiliaryUrl, auxiliaryPath, effectiveToken, &detail)) {
+      result.message = "Auxiliary asset download failed (" + auxiliaryAsset + "): " +
+                       (detail.empty() ? "unknown error" : detail);
+      appendInstallLog(destinationRoot, info.value(), result);
+      return result;
+    }
+    const auto auxiliaryShaIt = info->fileSha256.find(auxiliaryAsset);
+    if (auxiliaryShaIt != info->fileSha256.end() && !auxiliaryShaIt->second.empty()) {
+      const auto computedAuxSha = computeFileSha256(auxiliaryPath);
+      if (computedAuxSha != auxiliaryShaIt->second) {
+        std::filesystem::remove(auxiliaryPath, error);
+        result.message = "SHA-256 verification failed for auxiliary asset " + auxiliaryAsset +
+                         ". Expected: " + auxiliaryShaIt->second +
+                         ", computed: " + (computedAuxSha.empty() ? "(unable to compute)" : computedAuxSha) +
+                         ". Corrupted download removed.";
+        appendInstallLog(destinationRoot, info.value(), result);
+        return result;
+      }
+    }
+    result.downloadedFiles.push_back(auxiliaryAsset);
+    result.auxiliaryFiles.push_back(auxiliaryAsset);
+  }
+
   if (options.downloadReadme) {
     const auto readmeIt = std::find_if(info->files.begin(), info->files.end(), [](const std::string& file) {
       return toLower(file) == "readme.md";
@@ -907,6 +955,7 @@ HubInstallResult HuggingFaceModelHub::installModel(const std::string& modelIdOrR
       {"installedAtUtc", iso8601NowUtc()},
       {"primaryFile", primaryPath.filename().string()},
       {"primaryFileSha256", computeFileSha256(primaryPath)},
+      {"auxiliaryFiles", result.auxiliaryFiles},
       {"hasOnnx", info->hasOnnx},
       {"tokenUsed", !effectiveToken.empty()},
       {"availableFiles", info->files},

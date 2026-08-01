@@ -268,6 +268,34 @@ TEST_CASE("ModelController install respects pre-set cancel", "[controllers][mode
   REQUIRE(fakeState.installCalls == 0);
 }
 
+TEST_CASE("ModelController enforces and persists non-commercial license consent", "[controllers][model][license]") {
+  juce::ScopedJuceInitialiser_GUI juceInit;
+
+  const auto testDir = uniqueTempPath("model_consent_test");
+  std::filesystem::create_directories(testDir);
+
+  juce::ThreadPool pool(1);
+  automix::ai::ModelManager modelManager;
+  FakeModelHubState fakeState;
+
+  automix::app::ModelController controller(
+      modelManager,
+      pool,
+      {},
+      makeFakeModelHubOps(fakeState));
+
+  controller.setModelHubRoot(testDir);
+
+  const std::string nonCommercialModelId = "huggingface:kramp/ito-master-onnx";
+  REQUIRE(automix::app::ModelController::modelRequiresLicenseConsent("kramp/ito-master-onnx"));
+  REQUIRE_FALSE(controller.hasModelLicenseConsent(nonCommercialModelId));
+
+  REQUIRE(controller.acknowledgeModelLicenseConsent(nonCommercialModelId));
+  REQUIRE(controller.hasModelLicenseConsent(nonCommercialModelId));
+
+  std::filesystem::remove_all(testDir);
+}
+
 TEST_CASE("ModelController check updates respects pre-set cancel", "[controllers][model][cancel]") {
   juce::ScopedJuceInitialiser_GUI juceInit;
 

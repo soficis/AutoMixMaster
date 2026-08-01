@@ -14,6 +14,7 @@ TransportBar::TransportBar() {
   addAndMakeVisible(playPauseButton_);
   addAndMakeVisible(stopButton_);
   addAndMakeVisible(skipEndButton_);
+  addAndMakeVisible(shortcutsButton_);
   addAndMakeVisible(timeLabel_);
   addAndMakeVisible(volumeSlider_);
   addAndMakeVisible(loopToggle_);
@@ -23,6 +24,7 @@ TransportBar::TransportBar() {
   playPauseButton_.setTooltip("Play / Pause (Space)");
   stopButton_.setTooltip("Stop");
   skipEndButton_.setTooltip("Skip to End (End)");
+  shortcutsButton_.setTooltip("Keyboard Shortcuts (Ctrl+/)");
   loopToggle_.setTooltip("Toggle Loop (L)");
   volumeSlider_.setTooltip("Volume");
 
@@ -39,7 +41,9 @@ TransportBar::TransportBar() {
 
   volumeSlider_.setSliderStyle(juce::Slider::LinearHorizontal);
   volumeSlider_.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
-  volumeSlider_.setRange(0.0, 1.0, 0.01);
+  // Engine output gain accepts up to 1.5x (clamped in the audio callback);
+  // expose the full range so the UI can reach all of the headroom.
+  volumeSlider_.setRange(0.0, 1.5, 0.01);
   volumeSlider_.setValue(1.0, juce::dontSendNotification);
   volumeSlider_.addListener(this);
 
@@ -64,6 +68,10 @@ TransportBar::TransportBar() {
     if (onSkipToEnd)
       onSkipToEnd();
   };
+  shortcutsButton_.onClick = [this] {
+    if (onShowShortcuts)
+      onShowShortcuts();
+  };
   loopToggle_.onClick = [this] {
     if (onLoopToggle)
       onLoopToggle();
@@ -86,14 +94,15 @@ void TransportBar::resized() {
   auto area = getLocalBounds().reduced(static_cast<int>(metrics::paddingMedium));
 
   // Left: transport buttons
-  auto leftArea = area.removeFromLeft(220);
+  auto leftArea = area.removeFromLeft(268);
   skipStartButton_.setBounds(leftArea.removeFromLeft(48).reduced(2));
   playPauseButton_.setBounds(leftArea.removeFromLeft(64).reduced(2));
   stopButton_.setBounds(leftArea.removeFromLeft(56).reduced(2));
   skipEndButton_.setBounds(leftArea.removeFromLeft(48).reduced(2));
 
-  // Right: volume + loop
-  auto rightArea = area.removeFromRight(200);
+  // Right: shortcuts + volume + loop
+  auto rightArea = area.removeFromRight(236);
+  shortcutsButton_.setBounds(rightArea.removeFromRight(36).reduced(2));
   loopToggle_.setBounds(rightArea.removeFromRight(72).reduced(2));
   volumeSlider_.setBounds(rightArea.reduced(2));
 
@@ -140,14 +149,6 @@ juce::String TransportBar::formatTime(double seconds) {
 }
 
 bool TransportBar::keyPressed(const juce::KeyPress& key) {
-  if (key == juce::KeyPress::spaceKey) {
-    if (isPlaying_) {
-      if (onPause) onPause();
-    } else {
-      if (onPlay) onPlay();
-    }
-    return true;
-  }
   if (key == juce::KeyPress::leftKey) {
     if (onSeekRelative) onSeekRelative(-5.0);
     return true;
@@ -157,7 +158,7 @@ bool TransportBar::keyPressed(const juce::KeyPress& key) {
     return true;
   }
   if (key == juce::KeyPress::upKey) {
-    double newVol = std::min(1.0, volumeSlider_.getValue() + 0.05);
+    double newVol = std::min(1.5, volumeSlider_.getValue() + 0.05);
     volumeSlider_.setValue(newVol, juce::sendNotificationSync);
     return true;
   }

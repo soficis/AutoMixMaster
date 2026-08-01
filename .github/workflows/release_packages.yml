@@ -87,6 +87,7 @@ jobs:
             -v "${{ github.workspace }}:/workspace" \
             -w /workspace \
             -e CCACHE_DIR=/workspace/.ccache \
+            -e AUTOMIX_QEMU_EMULATED=1 \
             arm64v8/ubuntu:24.04 \
             bash -c 'set -euo pipefail; \
               apt-get update && apt-get install -y --no-install-recommends \

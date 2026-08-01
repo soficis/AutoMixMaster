@@ -311,11 +311,12 @@ APPRUN
 
   # The AppImage runtime cannot be executed under QEMU user-mode emulation
   # (execve fails with "Exec format error"), so in emulated arm64 containers
-  # the native-arch appimagetool is unusable. Detect that and fall back to the
-  # x86_64 appimagetool: it is fully static, so the host kernel executes it
-  # natively even inside an emulated arm64 container, and appimagetool
-  # cross-builds by embedding the runtime matching $arch.
-  if ! APPIMAGE_EXTRACT_AND_RUN=1 "$appimagetool" --version >/dev/null 2>&1; then
+  # the native-arch appimagetool is unusable. Detect that via the runtime's
+  # own --appimage-version switch (handled before any extraction) and fall
+  # back to the x86_64 appimagetool: it is fully static, so the host kernel
+  # executes it natively even inside an emulated arm64 container, and
+  # appimagetool cross-builds by embedding the runtime matching $arch.
+  if ! "$appimagetool" --appimage-version >/dev/null 2>&1; then
     echo "appimagetool-${arch}.AppImage is not executable here (QEMU-emulated build?); falling back to x86_64 appimagetool to cross-build" >&2
     if [[ "$arch" == "aarch64" ]]; then
       appimagetool="$(fetch_appimagetool "x86_64")"

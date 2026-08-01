@@ -92,9 +92,11 @@ AudioPreviewManager::AudioPreviewManager(juce::ThreadPool& pool, juce::Component
         onHistoryLine("Preview updated");
 
       // Publish lock-free: the audio callback picks this up via currentBuffer()
-      // with no locking. The buffer is moved (no deep copy of the audio data).
-      buffer_.store(std::make_shared<engine::AudioBuffer>(std::move(result.preview)),
-                    std::memory_order_release);
+      // with spinlock protection. The buffer is moved (no deep copy of the audio data).
+      {
+        const juce::SpinLock::ScopedLockType lock(bufferLock_);
+        buffer_ = std::make_shared<engine::AudioBuffer>(std::move(result.preview));
+      }
     });
   };
   previewController_ = std::make_unique<PreviewController>(pool, std::move(cb));
@@ -120,12 +122,13 @@ void AudioPreviewManager::rebuildPreview(const domain::Session& session,
 }
 
 void AudioPreviewManager::setBuffer(engine::AudioBuffer buffer) {
-  buffer_.store(std::make_shared<engine::AudioBuffer>(std::move(buffer)),
-                std::memory_order_release);
+  const juce::SpinLock::ScopedLockType lock(bufferLock_);
+  buffer_ = std::make_shared<engine::AudioBuffer>(std::move(buffer));
 }
 
 std::shared_ptr<const engine::AudioBuffer> AudioPreviewManager::currentBuffer() const {
-  return buffer_.load(std::memory_order_acquire);
+  const juce::SpinLock::ScopedLockType lock(bufferLock_);
+  return buffer_;
 }
 
 } // namespace automix::app

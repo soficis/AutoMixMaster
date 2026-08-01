@@ -56,6 +56,7 @@ StemHealthReport StemHealthAssistant::analyze(const domain::Session& session,
     summedMidEnergy += std::max(0.0, entry.metrics.midEnergy);
     summedHighEnergy += std::max(0.0, entry.metrics.highEnergy);
   }
+  (void)summedMidEnergy;
 
   for (const auto& entry : analysisEntries) {
     const auto& metrics = entry.metrics;

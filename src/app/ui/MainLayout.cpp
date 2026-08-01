@@ -1084,10 +1084,17 @@ void MainLayout::onRedo() {
 // ── Header Profile Quick-Switch ───────────────────────────────
 
 void MainLayout::onHeaderProfileSelected(const juce::String& profileIdStr) {
-  const int comboId = profileIdStr.getIntValue();
-  if (comboId <= 0)
+  if (profileIdStr.isEmpty())
     return;
-  controlDeck_->getProfileBox().setSelectedId(comboId, juce::sendNotification);
+  const auto targetId = profileIdStr.toStdString();
+  auto& box = controlDeck_->getProfileBox();
+  for (int i = 1; i <= box.getNumItems(); ++i) {
+    const auto id = selectionState_.projectProfileIdForCombo(i);
+    if (id.has_value() && *id == targetId) {
+      box.setSelectedId(i, juce::sendNotification);
+      return;
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────

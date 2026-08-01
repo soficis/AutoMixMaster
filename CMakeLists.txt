@@ -67,7 +67,7 @@ if(ENABLE_LIBEBUR128)
   )
   FetchContent_MakeAvailable(libebur128)
   if(MSVC AND TARGET ebur128)
-    target_compile_options(ebur128 PRIVATE /std:clatest)
+    target_compile_options(ebur128 PRIVATE /std:c17)
   endif()
 endif()
 

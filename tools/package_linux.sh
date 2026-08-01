@@ -97,11 +97,17 @@ if [[ $SKIP_BUILD -eq 0 ]]; then
   cmake --build "$BUILD_DIR" --config Release --target AutoMixMasterApp --parallel 3
 fi
 
-BINARY_PATH="$BUILD_DIR/AutoMixMasterApp_artefacts/Release/$APP_NAME"
+BINARY_PATH=""
+if [[ -x "$BUILD_DIR/AutoMixMasterApp_artefacts/Release/$APP_NAME" ]]; then
+  BINARY_PATH="$BUILD_DIR/AutoMixMasterApp_artefacts/Release/$APP_NAME"
+elif [[ -x "$BUILD_DIR/AutoMixMasterApp_artefacts/$APP_NAME" ]]; then
+  BINARY_PATH="$BUILD_DIR/AutoMixMasterApp_artefacts/$APP_NAME"
+fi
+
 SOURCE_ASSETS_PATH="$REPO_ROOT/assets"
 
-if [[ ! -x "$BINARY_PATH" ]]; then
-  echo "Expected executable not found: $BINARY_PATH" >&2
+if [[ -z "$BINARY_PATH" || ! -x "$BINARY_PATH" ]]; then
+  echo "Expected executable not found in $BUILD_DIR/AutoMixMasterApp_artefacts/" >&2
   exit 1
 fi
 if [[ ! -d "$SOURCE_ASSETS_PATH" ]]; then

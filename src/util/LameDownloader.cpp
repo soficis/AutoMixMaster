@@ -438,7 +438,7 @@ bool copyBinaryToCache(const std::filesystem::path& source, const std::filesyste
   return ensureExecutable(destination, detail);
 }
 
-std::optional<std::filesystem::path> extractArMember(const std::filesystem::path& archivePath,
+[[maybe_unused]] std::optional<std::filesystem::path> extractArMember(const std::filesystem::path& archivePath,
                                                       const std::string& memberPrefix,
                                                       const std::filesystem::path& outputDirectory,
                                                       std::string* detail) {

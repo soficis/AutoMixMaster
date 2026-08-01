@@ -120,6 +120,9 @@ docs/
 # === Tooling Caches ===
 .flatpak-builder/
 ccache/
+.omo/
+.omo/**
+!/.omo/
 
 # === Model Hub Downloaded Weights ===
 assets/**/modelhub/**/*.onnx

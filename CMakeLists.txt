@@ -6,8 +6,8 @@ if(CMAKE_VERSION VERSION_GREATER_EQUAL 4.0)
 endif()
 
 if(WIN32 AND CMAKE_GENERATOR MATCHES "Visual Studio")
-  if(NOT CMAKE_GENERATOR MATCHES "Visual Studio 1[78] 202[26]")
-    message(FATAL_ERROR "Windows Visual Studio builds require Visual Studio 2022 or 2026 tools.")
+  if(NOT CMAKE_GENERATOR MATCHES "Visual Studio 1[789]")
+    message(FATAL_ERROR "Windows Visual Studio builds require Visual Studio 2022 (17) or later.")
   endif()
 endif()
 
@@ -67,6 +67,10 @@ if(ENABLE_LIBEBUR128)
   )
   FetchContent_MakeAvailable(libebur128)
   if(MSVC AND TARGET ebur128)
+    # ebur128.c emits #warning in its non-SSE2 path (hit on ARM64, where _M_X64
+    # is undefined). MSVC only accepts #warning in C mode with /std:clatest and
+    # rejects it with /std:c17 or lower (error C1188). Do NOT "fix" this back
+    # to /std:c17 - it breaks Windows ARM64 builds.
     target_compile_options(ebur128 PRIVATE /std:clatest)
   endif()
 endif()

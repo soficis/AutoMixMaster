@@ -93,15 +93,28 @@ if [[ $BUILD_APPIMAGE -eq 1 ]]; then
 fi
 
 if [[ $SKIP_BUILD -eq 0 ]]; then
-  cmake -S "$REPO_ROOT" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DBUILD_TOOLS=OFF
+  ccache_launcher=()
+  if command -v ccache >/dev/null 2>&1; then
+    ccache_launcher=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
+  fi
+  cmake -S "$REPO_ROOT" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DBUILD_TOOLS=OFF "${ccache_launcher[@]}"
   cmake --build "$BUILD_DIR" --config Release --target AutoMixMasterApp --parallel 3
+  if command -v ccache >/dev/null 2>&1; then
+    ccache --show-stats
+  fi
 fi
 
-BINARY_PATH="$BUILD_DIR/AutoMixMasterApp_artefacts/Release/$APP_NAME"
+BINARY_PATH=""
+if [[ -x "$BUILD_DIR/AutoMixMasterApp_artefacts/Release/$APP_NAME" ]]; then
+  BINARY_PATH="$BUILD_DIR/AutoMixMasterApp_artefacts/Release/$APP_NAME"
+elif [[ -x "$BUILD_DIR/AutoMixMasterApp_artefacts/$APP_NAME" ]]; then
+  BINARY_PATH="$BUILD_DIR/AutoMixMasterApp_artefacts/$APP_NAME"
+fi
+
 SOURCE_ASSETS_PATH="$REPO_ROOT/assets"
 
-if [[ ! -x "$BINARY_PATH" ]]; then
-  echo "Expected executable not found: $BINARY_PATH" >&2
+if [[ -z "$BINARY_PATH" || ! -x "$BINARY_PATH" ]]; then
+  echo "Expected executable not found in $BUILD_DIR/AutoMixMasterApp_artefacts/" >&2
   exit 1
 fi
 if [[ ! -d "$SOURCE_ASSETS_PATH" ]]; then
@@ -248,39 +261,62 @@ APPRUN
 
   local tools_dir="$DIST_DIR/tools"
   mkdir -p "$tools_dir"
-  local appimagetool="$tools_dir/appimagetool-${arch}.AppImage"
 
   # Pinned release of appimagetool (AppImage/appimagetool v1.9.1, 2025-11-18).
   # Update APPIMAGETOOL_VERSION and the matching SHA-256 entries when upgrading.
   local APPIMAGETOOL_VERSION="1.9.1"
-  local appimagetool_url="https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-${arch}.AppImage"
 
   # Expected SHA-256 checksums for each supported architecture.
-  local expected_sha256
-  case "$arch" in
-    x86_64)  expected_sha256="ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0" ;;
-    aarch64) expected_sha256="f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158" ;;
-    *)
-      echo "No known checksum for appimagetool on arch '${arch}'" >&2
+  appimagetool_sha256() {
+    case "$1" in
+      x86_64)  echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0" ;;
+      aarch64) echo "f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158" ;;
+      *)
+        echo "No known checksum for appimagetool on arch '$1'" >&2
+        return 1
+        ;;
+    esac
+  }
+
+  # Download if missing and verify; prints the tool path on success.
+  fetch_appimagetool() {
+    local tool_arch="$1"
+    local tool="$tools_dir/appimagetool-${tool_arch}.AppImage"
+    local expected_sha256
+    expected_sha256="$(appimagetool_sha256 "$tool_arch")" || return 1
+
+    if [[ ! -x "$tool" ]]; then
+      echo "Downloading appimagetool ${APPIMAGETOOL_VERSION} (${tool_arch})..." >&2
+      curl -L --fail --retry 3 --output "$tool" \
+        "https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_VERSION}/appimagetool-${tool_arch}.AppImage"
+      chmod 0755 "$tool"
+    fi
+
+    echo "Verifying appimagetool checksum..." >&2
+    local actual_sha256
+    actual_sha256="$(sha256sum "$tool" | awk '{print $1}')"
+    if [[ "$actual_sha256" != "$expected_sha256" ]]; then
+      echo "Checksum mismatch for appimagetool-${tool_arch}.AppImage" >&2
+      echo "  expected: $expected_sha256" >&2
+      echo "  got:      $actual_sha256" >&2
+      rm -f "$tool"
       exit 1
-      ;;
-  esac
+    fi
 
-  if [[ ! -x "$appimagetool" ]]; then
-    echo "Downloading appimagetool ${APPIMAGETOOL_VERSION} (${arch})..."
-    curl -L --fail --retry 3 --output "$appimagetool" "$appimagetool_url"
-    chmod 0755 "$appimagetool"
-  fi
+    echo "$tool"
+  }
 
-  echo "Verifying appimagetool checksum..."
-  local actual_sha256
-  actual_sha256="$(sha256sum "$appimagetool" | awk '{print $1}')"
-  if [[ "$actual_sha256" != "$expected_sha256" ]]; then
-    echo "Checksum mismatch for appimagetool-${arch}.AppImage" >&2
-    echo "  expected: $expected_sha256" >&2
-    echo "  got:      $actual_sha256" >&2
-    rm -f "$appimagetool"
-    exit 1
+  local appimagetool
+
+  # In QEMU-emulated containers the AppImage runtime cannot be executed
+  # (execve fails with "Exec format error"). The CI workflow signals this
+  # via AUTOMIX_QEMU_EMULATED=1 so we can cross-build with the x86_64
+  # appimagetool, whose static binary runs natively on the host kernel.
+  if [[ "${AUTOMIX_QEMU_EMULATED:-}" == "1" && "$arch" == "aarch64" ]]; then
+    echo "QEMU-emulated arm64 build detected; cross-building AppImage with x86_64 appimagetool" >&2
+    appimagetool="$(fetch_appimagetool "x86_64")"
+  else
+    appimagetool="$(fetch_appimagetool "$arch")"
   fi
 
   local output="$DIST_DIR/${APP_NAME}-${VERSION}-${arch}.AppImage"

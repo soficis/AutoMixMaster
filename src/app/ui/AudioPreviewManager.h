@@ -43,7 +43,8 @@ class AudioPreviewManager {
  private:
   juce::Component::SafePointer<juce::Component> owner_;
   std::unique_ptr<PreviewController> previewController_;
-  std::atomic<std::shared_ptr<const engine::AudioBuffer>> buffer_{nullptr};
+  mutable juce::SpinLock bufferLock_;
+  std::shared_ptr<const engine::AudioBuffer> buffer_{nullptr};
   std::atomic_uint64_t generation_{0};
 };
 

@@ -8,10 +8,33 @@
 
 #include "ai/FeatureSchema.h"
 #include "util/HashUtils.h"
+#include "util/Sha256.h"
 #include "util/StringUtils.h"
 
 namespace automix::ai {
 namespace {
+
+// Retained only to validate manifests written before the SHA-256 switch. Never
+// used to produce a new checksum: FNV-1a has no collision resistance, so a
+// tampered model could be made to match a forged manifest digest.
+std::string computeLegacyChecksum(const std::filesystem::path& filePath) {
+  std::ifstream in(filePath, std::ios::binary);
+  if (!in.is_open()) {
+    return "";
+  }
+
+  uint64_t hash = util::kFnv1a64OffsetBasis;
+  char buffer[4096];
+  while (in.good()) {
+    in.read(buffer, static_cast<std::streamsize>(sizeof(buffer)));
+    const auto readCount = static_cast<size_t>(in.gcount());
+    if (readCount > 0) {
+      hash = util::fnv1a64Update(hash, buffer, readCount);
+    }
+  }
+
+  return util::toHex(hash);
+}
 
 std::vector<std::string> readStringArray(const nlohmann::json& json, const char* keyA, const char* keyB = nullptr) {
   if (json.contains(keyA) && json.at(keyA).is_array()) {
@@ -62,8 +85,12 @@ std::string inferTaskScopeFromType(const std::string& type) {
   return "";
 }
 
+// Always true: createInferenceBackend only ever builds OnnxModelInference, so a
+// non-ONNX pack can never load and would silently no-op. Do NOT narrow this to
+// mix/master again - that let a PyTorch `.pt` analysis pack install unnoticed.
 bool requiresOnnxModelForScope(const std::string& scope) {
-  return scope == "mix" || scope == "master";
+  static_cast<void>(scope);
+  return true;
 }
 
 bool hasRequiredOutputKeysForScope(const std::string& scope, const std::vector<std::string>& keys) {
@@ -190,13 +217,23 @@ std::optional<ModelPack> ModelPackLoader::load(const std::filesystem::path& dire
     }
   }
 
+  // SHA-256 is the pack trust anchor. Manifests written before this change carry a
+  // 16-hex FNV-1a-64 digest instead, so that legacy form stays accepted for
+  // back-compat; a checksum that is neither is a corrupt or hand-edited manifest
+  // and the pack is rejected rather than trusted.
   const std::string computedChecksum = computeChecksum(modelPath);
-  if (!pack.checksum.empty() && pack.checksum != computedChecksum) {
+  if (computedChecksum.empty()) {
     return std::nullopt;
   }
 
   if (pack.checksum.empty()) {
     pack.checksum = computedChecksum;
+  } else if (util::isSha256Hex(pack.checksum)) {
+    if (pack.checksum != computedChecksum) {
+      return std::nullopt;
+    }
+  } else if (pack.checksum != computeLegacyChecksum(modelPath)) {
+    return std::nullopt;
   }
   if (!hasRequiredOutputKeysForScope(pack.taskScope, pack.expectedOutputKeys)) {
     return std::nullopt;
@@ -206,22 +243,7 @@ std::optional<ModelPack> ModelPackLoader::load(const std::filesystem::path& dire
 }
 
 std::string ModelPackLoader::computeChecksum(const std::filesystem::path& filePath) const {
-  std::ifstream in(filePath, std::ios::binary);
-  if (!in.is_open()) {
-    return "";
-  }
-
-  uint64_t hash = util::kFnv1a64OffsetBasis;
-  char buffer[4096];
-  while (in.good()) {
-    in.read(buffer, static_cast<std::streamsize>(sizeof(buffer)));
-    const auto readCount = static_cast<size_t>(in.gcount());
-    if (readCount > 0) {
-      hash = util::fnv1a64Update(hash, buffer, readCount);
-    }
-  }
-
-  return util::toHex(hash);
+  return util::fileSha256(filePath);
 }
 
 } // namespace automix::ai

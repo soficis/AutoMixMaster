@@ -22,6 +22,11 @@ struct RenderSettings {
   int processingThreads = 0;
   int renderParallelism = 0;
   bool preferHardwareAcceleration = true;
+  bool referenceMasteringEnabled = false;
+  // Experimental ITO-Master route. Not sufficient on its own: ItoMasterStrategy
+  // additionally requires the experimental toggle, CC BY-NC consent and a complete
+  // pack. Never default this on.
+  bool itoMasteringEnabled = false;
   std::string metadataPolicy = "copy_all";
   std::map<std::string, std::string> metadataTemplate;
   std::string rendererName = "PhaseLimiter";

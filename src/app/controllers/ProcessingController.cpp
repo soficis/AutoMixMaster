@@ -14,8 +14,11 @@
 #include "ai/AutoMasterStrategyAI.h"
 #include "ai/AutoMixStrategyAI.h"
 #include "ai/IModelInference.h"
+#include "ai/ItoMasterAdapter.h"
 #include "ai/OnnxModelInference.h"
+#include "automaster/ItoMasterStrategy.h"
 #include "automaster/OriginalMixReference.h"
+#include "automaster/ReferenceMatchStrategy.h"
 #include "automix/HeuristicAutoMixStrategy.h"
 #include "domain/BatchTypes.h"
 #include "engine/AudioFileIO.h"
@@ -111,6 +114,10 @@ std::unique_ptr<ai::IModelInference> createInferenceBackend(const ai::ModelPack*
 
 ProcessingController::ProcessingController(juce::ThreadPool& threadPool, Callbacks callbacks)
     : threadPool_(threadPool), callbacks_(std::move(callbacks)) {}
+
+void ProcessingController::setLicenseConsentQuery(std::function<bool(const std::string&)> query) {
+  licenseConsentQuery_ = std::move(query);
+}
 
 void ProcessingController::runAutoMix(const domain::Session& session,
                                       const std::optional<ai::ModelPack>& mixPack,
@@ -224,17 +231,20 @@ void ProcessingController::runAutoMaster(const domain::Session& session,
     std::optional<ai::ModelPack> masterPack;
     std::atomic_bool* cancelFlag;
     Callbacks callbacks;
+    std::function<bool(const std::string&)> licenseConsentQuery;
 
     AutoMasterJob(domain::Session sess, domain::RenderSettings sett,
                   domain::MasterPreset pres, std::optional<ai::ModelPack> pack,
-                  std::atomic_bool* cancel, Callbacks cb)
+                  std::atomic_bool* cancel, Callbacks cb,
+                  std::function<bool(const std::string&)> consentQuery)
         : juce::ThreadPoolJob("AutoMasterJob"),
           session(std::move(sess)),
           settings(std::move(sett)),
           preset(pres),
           masterPack(std::move(pack)),
           cancelFlag(cancel),
-          callbacks(std::move(cb)) {}
+          callbacks(std::move(cb)),
+          licenseConsentQuery(std::move(consentQuery)) {}
 
     JobStatus runJob() override {
       domain::MasterPlan masterPlan;
@@ -314,6 +324,7 @@ void ProcessingController::runAutoMaster(const domain::Session& session,
 
         if (!cancelled) {
           automaster::HeuristicAutoMasterStrategy autoMasterStrategy;
+          std::optional<automaster::ReferenceMatchStrategy> referenceMatch;
           analysis::StemAnalyzer analyzer;
           masterPlan = autoMasterStrategy.buildPlan(preset, rawMixBuffer);
           emitProgress(callbacks, 0.82);
@@ -333,6 +344,13 @@ void ProcessingController::runAutoMaster(const domain::Session& session,
                                                            originalMix,
                                                            autoMasterStrategy,
                                                            analyzer);
+
+              if (settings.referenceMasteringEnabled) {
+                automaster::ReferenceMatchStrategy strategy(automaster::measureReferenceProfile(originalMix));
+                strategy.setEnabled(true);
+                masterPlan = strategy.buildPlan(preset, rawMixBuffer);
+                referenceMatch = std::move(strategy);
+              }
             } catch (const std::exception& error) {
               reportAppend += "\nOriginal mix target skipped: " + juce::String(error.what());
             }
@@ -344,8 +362,38 @@ void ProcessingController::runAutoMaster(const domain::Session& session,
             masterInference = createInferenceBackend(&masterPack.value(), settings.gpuExecutionProvider, &backendDiagnostics);
           }
 
+          std::optional<automaster::ItoMasterStrategy> itoMaster;
+          bool itoEngaged = false;
+          if (settings.itoMasteringEnabled) {
+            const std::string packIdentity = masterPack.has_value()
+                                                ? toLower(masterPack->id + "|" + masterPack->source + "|" + masterPack->name)
+                                                : std::string{};
+            const bool packIsIto = packIdentity.find("ito-master") != std::string::npos;
+            automaster::ItoMasterStrategy::Options itoOptions;
+            itoOptions.licenseConsented =
+                packIsIto && licenseConsentQuery && licenseConsentQuery(ai::kItoMasterModelId);
+            if (packIsIto) {
+              itoOptions.packDirectory = masterPack->rootPath;
+            }
+            itoMaster.emplace(std::move(itoOptions));
+            itoEngaged = itoMaster->isAvailable();
+            if (itoEngaged) {
+              masterPlan = itoMaster->buildPlan(preset, rawMixBuffer);
+            } else {
+              masterPlan.decisionLog.push_back(
+                  "ITO-Master route inactive: needs the experimental toggle, recorded CC BY-NC consent and the "
+                  "kramp/ito-master-onnx pack selected as the master pack. Selected: " +
+                  (masterPack.has_value() ? masterPack->id : std::string("<none>")) + ".");
+            }
+          }
+
           ai::AutoMasterStrategyAI aiMaster;
-          if (masterInference != nullptr) {
+          if (masterInference != nullptr && itoEngaged) {
+            masterPlan.decisionLog.push_back(
+                "AI master parameter blend skipped: the active ITO-Master route drives its own FX chain and "
+                "does not consume the blended plan.");
+          }
+          if (masterInference != nullptr && !itoEngaged) {
             const auto mixMetrics = analyzer.analyzeBuffer(rawMixBuffer);
             masterPlan = aiMaster.buildPlan(mixMetrics, masterPlan, masterInference.get());
             if (masterPack.has_value()) {
@@ -357,8 +405,12 @@ void ProcessingController::runAutoMaster(const domain::Session& session,
           }
           emitProgress(callbacks, 0.9);
 
-          if (masterInference != nullptr) {
+          if (itoEngaged) {
+            previewMaster = itoMaster->applyPlan(rawMixBuffer, masterPlan, &previewReport);
+          } else if (masterInference != nullptr) {
             previewMaster = aiMaster.applyPlan(rawMixBuffer, masterPlan, autoMasterStrategy, &previewReport);
+          } else if (referenceMatch.has_value()) {
+            previewMaster = referenceMatch->applyPlan(rawMixBuffer, masterPlan, &previewReport);
           } else {
             previewMaster = autoMasterStrategy.applyPlan(rawMixBuffer, masterPlan, &previewReport);
           }
@@ -394,7 +446,7 @@ void ProcessingController::runAutoMaster(const domain::Session& session,
   };
 
   threadPool_.addJob(
-      new AutoMasterJob(session, settings, preset, masterPack, &cancelFlag, callbacks_),
+      new AutoMasterJob(session, settings, preset, masterPack, &cancelFlag, callbacks_, licenseConsentQuery_),
       true);
 }
 

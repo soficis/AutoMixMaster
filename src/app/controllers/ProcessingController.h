@@ -60,6 +60,11 @@ class ProcessingController {
 
   ProcessingController(juce::ThreadPool& threadPool, Callbacks callbacks);
 
+  // Injected by the app layer so this controller stays independent of
+  // ModelController. Used solely to gate the experimental ITO-Master route;
+  // when unset, no model is treated as consented.
+  void setLicenseConsentQuery(std::function<bool(const std::string&)> query);
+
   void runAutoMix(const domain::Session& session,
                   const std::optional<ai::ModelPack>& mixPack,
                   std::atomic_bool& cancelFlag);
@@ -79,6 +84,7 @@ class ProcessingController {
  private:
   juce::ThreadPool& threadPool_;
   Callbacks callbacks_;
+  std::function<bool(const std::string&)> licenseConsentQuery_;
 };
 
 } // namespace automix::app

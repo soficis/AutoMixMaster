@@ -15,6 +15,18 @@ double gainClampForOrigin(const domain::StemOrigin origin) {
   return origin == domain::StemOrigin::Separated ? 12.0 : 18.0;
 }
 
+// Bounds mirror the pack contract enforced by ModelPackLoader::hasRequiredOutputKeysForScope
+// and the value clamp in OnnxModelInference::run (global_gain_db +/-12, global_pan_bias +/-1).
+// They MUST stay identical to that runtime clamp: a consumer bound of 6 dB discarded more than
+// half of what a conforming model is allowed to emit, and nothing in the log said so. Safety is
+// still bounded downstream by the per-origin gain clamp and the confidence blend.
+constexpr double kMaxGlobalGainDeltaDb = 12.0;
+constexpr double kMaxGlobalPanBias = 1.0;
+
+// A pack may declare "stem<N>_gain_db"/"stem<N>_pan" as an optional superset of the required mix
+// keys, which is how a per-track model (one gain+pan pair per stem) plugs in.
+constexpr double kMaxPerStemGainDb = 24.0;
+
 } // namespace
 
 domain::MixPlan AutoMixStrategyAI::buildPlan(const domain::Session& session,
@@ -45,8 +57,12 @@ domain::MixPlan AutoMixStrategyAI::buildPlan(const domain::Session& session,
   }
 
   const double confidence = std::clamp(result.outputs.contains("confidence") ? result.outputs.at("confidence") : 0.5, 0.0, 1.0);
-  const double globalGainDelta = std::clamp(result.outputs.contains("global_gain_db") ? result.outputs.at("global_gain_db") : 0.0, -6.0, 6.0);
-  const double globalPanBias = std::clamp(result.outputs.contains("global_pan_bias") ? result.outputs.at("global_pan_bias") : 0.0, -0.3, 0.3);
+  const double requestedGain = result.outputs.contains("global_gain_db") ? result.outputs.at("global_gain_db") : 0.0;
+  const double requestedPan = result.outputs.contains("global_pan_bias") ? result.outputs.at("global_pan_bias") : 0.0;
+  const double globalGainDelta = std::clamp(requestedGain, -kMaxGlobalGainDeltaDb, kMaxGlobalGainDeltaDb);
+  const double globalPanBias = std::clamp(requestedPan, -kMaxGlobalPanBias, kMaxGlobalPanBias);
+  const bool outputTruncated = std::abs(requestedGain - globalGainDelta) > 1.0e-9 ||
+                               std::abs(requestedPan - globalPanBias) > 1.0e-9;
 
   for (size_t i = 0; i < output.stemDecisions.size(); ++i) {
     auto& decision = output.stemDecisions[i];
@@ -54,7 +70,7 @@ domain::MixPlan AutoMixStrategyAI::buildPlan(const domain::Session& session,
     double aiGain = decision.gainDb + globalGainDelta;
     const std::string stemGainKey = "stem" + std::to_string(i) + "_gain_db";
     if (result.outputs.contains(stemGainKey)) {
-      aiGain = std::clamp(result.outputs.at(stemGainKey), -24.0, 24.0);
+      aiGain = std::clamp(result.outputs.at(stemGainKey), -kMaxPerStemGainDb, kMaxPerStemGainDb);
     }
 
     double aiPan = decision.pan + globalPanBias;
@@ -83,6 +99,11 @@ domain::MixPlan AutoMixStrategyAI::buildPlan(const domain::Session& session,
   }
 
   output.decisionLog.push_back("AI mix strategy blended decisions with confidence=" + std::to_string(confidence));
+  if (outputTruncated) {
+    output.decisionLog.push_back("AI mix strategy clamped model output to the pack contract "
+                                 "(global_gain_db +/-12, global_pan_bias +/-1): requested gain=" +
+                                 std::to_string(requestedGain) + " pan=" + std::to_string(requestedPan));
+  }
   return output;
 }
 

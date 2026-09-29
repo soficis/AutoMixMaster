@@ -9,6 +9,7 @@
 #include <nlohmann/json.hpp>
 
 #include "ai/GitHubReleaseModelHub.h"
+#include "ai/ModelLicensePolicy.h"
 #include "util/CallbackDispatch.h"
 
 namespace automix::app {
@@ -93,6 +94,7 @@ std::string normalizeTaskScopeValue(std::string scope) {
 struct RegistryInstallSelection {
   std::string modelId;
   std::string taskScope;
+  std::string license;
   std::filesystem::path installPath;
 };
 
@@ -117,6 +119,7 @@ std::optional<RegistryInstallSelection> findRegistryInstall(const std::filesyste
     RegistryInstallSelection selection;
     selection.modelId = itemModelId;
     selection.taskScope = normalizeTaskScopeValue(item.value("taskScope", ""));
+    selection.license = item.value("license", "");
     selection.installPath = std::filesystem::path(item.value("installPath", ""));
     return selection;
   }
@@ -258,6 +261,13 @@ bool ModelController::modelRequiresLicenseConsent(const std::string& repoId) {
          nonCommercialRepoIds.end();
 }
 
+bool ModelController::modelRequiresLicenseConsent(const std::string& repoId, const std::string& licenseId) {
+  if (modelRequiresLicenseConsent(repoId)) {
+    return true;
+  }
+  return ai::ModelLicensePolicy::requiresUserConsent(licenseId);
+}
+
 bool ModelController::hasModelLicenseConsent(const std::string& modelId) const {
   if (modelId.empty()) {
     return false;
@@ -275,8 +285,12 @@ bool ModelController::hasModelLicenseConsent(const std::string& modelId) const {
 }
 
 bool ModelController::acknowledgeModelLicenseConsent(const std::string& modelId) {
+  return acknowledgeModelLicenseConsent(modelId, kNonCommercialLicenseLabel);
+}
+
+bool ModelController::acknowledgeModelLicenseConsent(const std::string& modelId, const std::string& licenseId) {
   const auto repoId = repoIdFromModelId(modelId);
-  if (repoId.empty() || !modelRequiresLicenseConsent(repoId)) {
+  if (repoId.empty() || !modelRequiresLicenseConsent(repoId, licenseId)) {
     return false;
   }
 
@@ -285,10 +299,12 @@ bool ModelController::acknowledgeModelLicenseConsent(const std::string& modelId)
     consents = nlohmann::json::array();
   }
 
+  const auto recordedLicense = licenseId.empty() ? std::string(kNonCommercialLicenseLabel) : licenseId;
   const nlohmann::json record = {
       {"modelId", modelId},
       {"repoId", repoId},
-      {"license", kNonCommercialLicenseLabel},
+      {"license", recordedLicense},
+      {"licenseUrl", ai::ModelLicensePolicy::licenseUrl(recordedLicense)},
       {"attribution", attributionForRepo(repoId)},
       {"acknowledgedAtUtc", iso8601NowUtc()},
   };
@@ -322,12 +338,13 @@ bool ModelController::activateInstalledModelForTask(const std::string& modelId, 
     return false;
   }
 
-  if (ModelController::modelRequiresLicenseConsent(repoIdFromModelId(modelId)) && !hasModelLicenseConsent(modelId)) {
+  if (ModelController::modelRequiresLicenseConsent(repoIdFromModelId(modelId), registrySelection->license) &&
+      !hasModelLicenseConsent(modelId)) {
     if (callbacks_.onStatus) {
       callbacks_.onStatus("Models: license consent required for " + modelId);
     }
     if (callbacks_.onTaskHistory) {
-      callbacks_.onTaskHistory("Model activation blocked (CC BY-NC consent not acknowledged): " + modelId);
+      callbacks_.onTaskHistory("Model activation blocked (license consent not acknowledged): " + modelId);
     }
     return false;
   }
@@ -577,19 +594,35 @@ void ModelController::installModel(const std::string& modelId, std::atomic_bool&
     return;
   }
 
-  if (ModelController::modelRequiresLicenseConsent(repoIdFromModelId(modelId)) && !hasModelLicenseConsent(modelId)) {
+  const auto discoveredLicense = selectedIt != discoveredModels_.end() ? selectedIt->license : std::string();
+  if (ModelController::modelRequiresLicenseConsent(repoIdFromModelId(modelId), discoveredLicense) &&
+      !hasModelLicenseConsent(modelId)) {
     if (callbacks_.onStatus) {
       callbacks_.onStatus("Models: license consent required for " + modelId);
     }
     if (callbacks_.onTaskHistory) {
-      callbacks_.onTaskHistory("Model install blocked (CC BY-NC consent not acknowledged): " + modelId);
+      callbacks_.onTaskHistory("Model install blocked (license consent not acknowledged): " + modelId);
     }
     if (callbacks_.onReport) {
+      const auto reason = ai::ModelLicensePolicy::consentReason(discoveredLicense);
+      // A card that declares nothing must not be reported as "not declared" when
+      // the repository is already known to be non-commercial: naming the known
+      // terms is both more accurate and what the user actually needs to see.
+      const auto reportedLicense = !discoveredLicense.empty()
+                                       ? discoveredLicense
+                                       : (ModelController::modelRequiresLicenseConsent(repoIdFromModelId(modelId))
+                                              ? std::string(kNonCommercialLicenseLabel)
+                                              : std::string());
+      const auto licenseUrl = ai::ModelLicensePolicy::licenseUrl(reportedLicense);
       std::string report = "Model install blocked for " + modelId + "\n";
-      report += "License: " + std::string(kNonCommercialLicenseLabel) + " (non-commercial use only)\n";
+      report += "License: " + (reportedLicense.empty() ? std::string("not declared") : reportedLicense) + "\n";
+      if (!licenseUrl.empty()) {
+        report += "License terms: " + std::string(licenseUrl) + "\n";
+      }
       report += "Attribution: " + attributionForRepo(repoIdFromModelId(modelId)) + "\n";
-      report += "Download is refused until you explicitly acknowledge the CC BY-NC license for this model.\n";
-      report += "Never bundle NC weights in a commercial installer/redistribution; runtime hub download under the user's license is how this stays legal.\n";
+      report += std::string(reason) + "\n";
+      report += "Download is refused until you explicitly acknowledge the license for this model.\n";
+      report += "Never bundle model weights in a commercial installer/redistribution; runtime hub download under the user's license is how this stays legal.\n";
       callbacks_.onReport(report);
     }
     emitProgress(callbacks_, 1.0);

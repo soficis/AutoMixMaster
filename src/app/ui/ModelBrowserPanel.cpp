@@ -6,6 +6,8 @@
 #include <filesystem>
 #include <sstream>
 
+#include "ai/ModelLicensePolicy.h"
+
 namespace automix::app {
 namespace {
 
@@ -249,14 +251,36 @@ ModelBrowserPanel::ModelBrowserPanel() {
     if (onInstallModel) {
       const auto modelId = modelKey(selected.value());
       const auto title = selected->displayName.empty() ? selected->repoId : selected->displayName;
-      const bool requiresConsent = ModelController::modelRequiresLicenseConsent(selected->repoId);
+      const auto& licenseId = selected->license;
+      const bool requiresConsent = ModelController::modelRequiresLicenseConsent(selected->repoId, licenseId);
+      const auto licenseUrl = ai::ModelLicensePolicy::licenseUrl(licenseId);
 
-      const juce::String dialogTitle = requiresConsent ? "License Consent Required (CC BY-NC 4.0)" : "Install Model";
-      const juce::String dialogMsg = requiresConsent
-          ? "Model '" + juce::String(title) + "' is subject to CC BY-NC 4.0 (Non-Commercial Use Only).\n\n"
-            "By installing, you acknowledge and agree that this model will be used for non-commercial purposes only."
-          : "Install model '" + juce::String(title) + "'?";
-      const juce::String btnText = requiresConsent ? "I Agree & Install" : "Install";
+      juce::String dialogTitle = "Install Model";
+      juce::String dialogMsg;
+      juce::String btnText = "Install";
+      if (requiresConsent) {
+        dialogTitle = "License Consent Required";
+        dialogMsg = "Model '" + juce::String(title) + "' has licence terms you must acknowledge before it is downloaded.\n\n"
+                    "Repository: " + juce::String(selected->repoId) + "\n"
+                    "License: " + juce::String(licenseId.empty() ? juce::String("not declared by the publisher") : juce::String(licenseId));
+        if (!licenseUrl.empty()) {
+          dialogMsg += "\nLicense terms: " + juce::String(licenseUrl);
+        }
+        if (!selected->revision.empty()) {
+          dialogMsg += "\nRevision: " + juce::String(selected->revision);
+        }
+        dialogMsg += "\n\n" + juce::String(ai::ModelLicensePolicy::consentReason(licenseId)) +
+                     "\n\nModel weights are downloaded at runtime from the publisher and are NOT part of the "
+                     "GPL-licensed AutoMixMaster distribution. Your acknowledgement is recorded against this "
+                     "model and applies to your own use of the downloaded weights.\n\n"
+                     "By installing, you acknowledge these terms and accept responsibility for how you use them.";
+        btnText = "I Agree & Install";
+      } else {
+        dialogMsg = "Install model '" + juce::String(title) + "'?";
+        if (!licenseId.empty()) {
+          dialogMsg += "\n\nLicense: " + juce::String(licenseId);
+        }
+      }
 
       requestConfirmation(
           juce::AlertWindow::QuestionIcon,

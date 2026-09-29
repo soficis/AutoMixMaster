@@ -452,6 +452,10 @@ void MainLayout::initControllers() {
       });
     };
     processingController_ = std::make_unique<ProcessingController>(backgroundPool_, std::move(cb));
+    processingController_->setLicenseConsentQuery([safe](const std::string& modelId) {
+      return safe && safe->modelController_ != nullptr &&
+             safe->modelController_->hasModelLicenseConsent(modelId);
+    });
   }
 
   // --- SessionController ---
@@ -1582,11 +1586,28 @@ void MainLayout::onModelsDialog() {
     }
     modelController_->fetchCatalog(taskOrchestrator_->cancelFlag(ActiveTask::Model), curatedOnly, searchText);
   };
-  panel->onInstallModel = [this](const std::string& modelId) {
+  // Resolves a model id to the licence the catalog reported for it, so consent
+  // can be recorded against the real terms instead of only the hardcoded
+  // non-commercial repo list. Returns an empty string when the id is not in the
+  // current catalog, which the policy treats as undeclared (consent required).
+  const auto licenseForModelId = [this](const std::string& modelId) {
+    if (modelController_ == nullptr) {
+      return std::string();
+    }
+    for (const auto& entry : modelController_->discoveredModels()) {
+      const auto key = !entry.modelId.empty() ? entry.modelId : entry.repoId;
+      if (key == modelId) {
+        return entry.license;
+      }
+    }
+    return std::string();
+  };
+
+  panel->onInstallModel = [this, licenseForModelId](const std::string& modelId) {
     if (modelController_ != nullptr &&
-        modelController_->modelRequiresLicenseConsent(modelId) &&
+        modelController_->modelRequiresLicenseConsent(modelId, licenseForModelId(modelId)) &&
         !modelController_->hasModelLicenseConsent(modelId)) {
-      modelController_->acknowledgeModelLicenseConsent(modelId);
+      modelController_->acknowledgeModelLicenseConsent(modelId, licenseForModelId(modelId));
     }
     if (!taskOrchestrator_->beginTask(ActiveTask::Model, "Installing model", juce::String(modelId),
                                       "Model install started: " + juce::String(modelId)))
@@ -1607,14 +1628,14 @@ void MainLayout::onModelsDialog() {
     }
     modelController_->uninstallModel(modelId, taskOrchestrator_->cancelFlag(ActiveTask::Model));
   };
-  panel->onUseInstalledModel = [this](const std::string& modelId) {
+  panel->onUseInstalledModel = [this, licenseForModelId](const std::string& modelId) {
     if (modelBrowserPanel_ == nullptr) {
       return;
     }
     if (modelController_ != nullptr &&
-        modelController_->modelRequiresLicenseConsent(modelId) &&
+        modelController_->modelRequiresLicenseConsent(modelId, licenseForModelId(modelId)) &&
         !modelController_->hasModelLicenseConsent(modelId)) {
-      modelController_->acknowledgeModelLicenseConsent(modelId);
+      modelController_->acknowledgeModelLicenseConsent(modelId, licenseForModelId(modelId));
     }
     const auto taskScope = modelBrowserPanel_->selectedTaskScope();
     const bool activated = modelController_->activateInstalledModelForTask(modelId, taskScope);

@@ -57,8 +57,14 @@ class ModelController {
   // (e.g. "huggingface:kramp/ito-master-onnx"); installModel and
   // activateInstalledModelForTask refuse to proceed until it is recorded.
   bool acknowledgeModelLicenseConsent(const std::string& modelId);
+  bool acknowledgeModelLicenseConsent(const std::string& modelId, const std::string& licenseId);
   bool hasModelLicenseConsent(const std::string& modelId) const;
   static bool modelRequiresLicenseConsent(const std::string& repoId);
+  // The licence-aware overload is the one that should normally be used: it also
+  // requires consent for any non-commercial or undeclared licence, not just the
+  // handful of repo ids that are hardcoded. The single-argument form is kept for
+  // callers that have no licence to hand and falls back to that hardcoded list.
+  static bool modelRequiresLicenseConsent(const std::string& repoId, const std::string& licenseId);
 
   const std::vector<ai::HubModelInfo>& discoveredModels() const;
   std::set<std::string> installedModelIds() const;

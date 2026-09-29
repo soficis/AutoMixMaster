@@ -23,7 +23,7 @@ ntml
 dumpbin_members.log
 diff_output.txt
 _codeql_detected_source_root
-docs/
+docs/*
 
 
 # === CMake ===
@@ -110,7 +110,7 @@ config.ini
 CLAUDE.md
 
 # === Documentation (all docs except README) ===
-docs/
+docs/*
 *.md
 !README*.md
 *.pdf
@@ -129,5 +129,13 @@ assets/**/modelhub/**/*.onnx
 assets/**/modelhub/**/*.pt
 assets/**/modelhub/**/*.bin
 assets/**/modelhub/**/*.safetensors
+
+# === Tracked licensing audit ===
+# Must stay last: git honours the LAST matching pattern, so the docs/* line
+# re-ignores the whole directory (undoing the case-insensitive !README*.md
+# match above) and the two negations then re-include only these files.
+docs/*
+!docs/model-licensing-audit.md
+!docs/model-licensing-audit.json
 
 

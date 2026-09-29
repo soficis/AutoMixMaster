@@ -112,6 +112,7 @@ add_library(automix_core
   src/automaster/HeuristicAutoMasterStrategy.cpp
   src/automaster/ItoMasterStrategy.cpp
   src/automaster/OriginalMixReference.cpp
+  src/automaster/ReferenceMatchStrategy.cpp
   src/renderers/BuiltInRenderer.cpp
   src/renderers/BundledToolDiscovery.cpp
   src/renderers/ExternalLimiterRenderer.cpp
@@ -152,6 +153,8 @@ add_library(automix_core
 target_include_directories(automix_core PUBLIC src)
 
 set(AUTOMIX_HAS_NATIVE_ORT OFF)
+set(AUTOMIX_HAS_EP_PLUGIN OFF)
+set(AUTOMIX_HAS_EP_CONTEXT OFF)
 if(ENABLE_ONNX)
   find_path(ONNXRUNTIME_INCLUDE_DIR
     NAMES onnxruntime_cxx_api.h
@@ -162,6 +165,33 @@ if(ENABLE_ONNX)
     target_include_directories(automix_core PUBLIC ${ONNXRUNTIME_INCLUDE_DIR})
     target_link_libraries(automix_core PUBLIC ${ONNXRUNTIME_LIBRARY})
     set(AUTOMIX_HAS_NATIVE_ORT ON)
+
+    # Feature-detect the optional APIs rather than parsing a version string out of
+    # the headers. ONNX Runtime does not expose a reliable single version macro, and
+    # a header either declares an entry point or it does not, which is exact where a
+    # parsed version is only a guess.
+    file(GLOB _ort_api_headers "${ONNXRUNTIME_INCLUDE_DIR}/onnxruntime/core/session/onnxruntime_c*_api.h")
+    foreach(_ort_header IN LISTS _ort_api_headers)
+      file(STRINGS "${_ort_header}" _ort_header_text)
+      if(_ort_header_text MATCHES "RegisterExecutionProviderLibrary")
+        set(AUTOMIX_HAS_EP_PLUGIN ON)
+      endif()
+      if(_ort_header_text MATCHES "OrtCompileApi")
+        set(AUTOMIX_HAS_EP_CONTEXT ON)
+      endif()
+    endforeach()
+
+    if(AUTOMIX_HAS_EP_PLUGIN)
+      target_compile_definitions(automix_core PUBLIC AUTOMIX_HAS_EP_PLUGIN=1)
+    else()
+      message(WARNING "ONNX Runtime headers do not declare the plugin execution-provider API (1.23+). GPU plugins such as CUDA cannot be loaded at runtime; built-in providers and CPU are unaffected.")
+    endif()
+
+    if(AUTOMIX_HAS_EP_CONTEXT)
+      target_compile_definitions(automix_core PUBLIC AUTOMIX_HAS_EP_CONTEXT=1)
+    else()
+      message(WARNING "ONNX Runtime headers do not declare OrtCompileApi (1.22+). Pre-compiled EPContext model caches are unavailable.")
+    endif()
   else()
     message(WARNING "ENABLE_ONNX is ON but native ONNX Runtime headers/library were not found. Falling back to deterministic ONNX adapter.")
   endif()

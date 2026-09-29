@@ -317,7 +317,8 @@ std::vector<double> defaultWeights(const std::vector<double>& features,
 
 std::vector<double> weightsFromInference(const InferenceResult& result,
                                          const std::vector<double>& fallback,
-                                         const std::vector<domain::StemRole>& roles) {
+                                         const std::vector<domain::StemRole>& roles,
+                                         bool* appliedModelWeights) {
   auto weights = fallback;
   bool anyExplicitWeight = false;
 
@@ -364,6 +365,9 @@ std::vector<double> weightsFromInference(const InferenceResult& result,
     }
   }
 
+  if (appliedModelWeights != nullptr) {
+    *appliedModelWeights = anyExplicitWeight;
+  }
   if (!anyExplicitWeight) {
     return fallback;
   }
@@ -634,10 +638,18 @@ OverlapAddResult runModelBackedOverlapAdd(const engine::AudioBuffer& mixBuffer,
 
       const auto inferenceResult = inference.run(request);
       if (inferenceResult.usedModel) {
-        weights = weightsFromInference(inferenceResult, fallbackWeights, result.stemRoles);
-        confidence = findOutputValue(inferenceResult, {"confidence", "separator_confidence"}).value_or(0.7);
-        result.usedModel = true;
-        ++modelFrames;
+        // usedModel only means the backend returned a result, not that it produced
+        // per-stem weights: a real audio-to-audio separator (Demucs, BS-Roformer,
+        // Open-Unmix) and the deterministic adapter both return outputs that map to
+        // no weight key, in which case defaultWeights() produced the stem mix. Only
+        // report model-backed separation when a model weight was actually applied.
+        bool appliedModelWeights = false;
+        weights = weightsFromInference(inferenceResult, fallbackWeights, result.stemRoles, &appliedModelWeights);
+        if (appliedModelWeights) {
+          confidence = findOutputValue(inferenceResult, {"confidence", "separator_confidence"}).value_or(0.7);
+          result.usedModel = true;
+          ++modelFrames;
+        }
       }
 
       const double weightSum = std::accumulate(weights.begin(), weights.end(), 0.0);

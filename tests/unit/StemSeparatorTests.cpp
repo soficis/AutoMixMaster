@@ -23,7 +23,7 @@ automix::engine::AudioBuffer makeTone(const double sampleRate, const int samples
 
 } // namespace
 
-TEST_CASE("Stem separator uses model-backed overlap-add when model metadata is present", "[ai][separator]") {
+TEST_CASE("Stem separator reports heuristic separation when the model emits no per-stem weights", "[ai][separator]") {
   const std::filesystem::path tempRoot = std::filesystem::temp_directory_path() / "automix_separator_model_test";
   const auto modelDir = tempRoot / "model";
   const auto outputDir = tempRoot / "output";
@@ -55,7 +55,11 @@ TEST_CASE("Stem separator uses model-backed overlap-add when model metadata is p
 
   const auto result = separator.separate(mixPath, outputDir);
   REQUIRE(result.success);
-  REQUIRE(result.usedModel);
+  // A model that returns no stem<N>_weight / <role>_weight output contributed
+  // nothing, so the stems come from the heuristic and the result must not claim
+  // model-backed separation.
+  REQUIRE_FALSE(result.usedModel);
+  REQUIRE(result.logMessage.find("no usable frame outputs") != std::string::npos);
   REQUIRE(result.stems.size() == 4);
   REQUIRE(result.generatedFiles.size() == 4);
   REQUIRE(result.stemVariantCount == 4);

@@ -138,6 +138,66 @@ AutoMixMaster is designed to benefit from **GPU acceleration** via ONNX Runtime 
 - GPU acceleration matters most: DirectML needs a **DirectX 12** GPU and CUDA needs an **NVIDIA CUDA-capable** GPU ([DirectML](https://onnxruntime.ai/docs/execution-providers/DirectML-ExecutionProvider.html), [CUDA](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html)).
 - Demucs notes roughly **3 GB minimum** and around **7 GB typical** GPU memory, so **8 GB+ VRAM** is a safer real-world target; CPU-only runs work but are slower ([Demucs README](https://github.com/facebookresearch/demucs/blob/main/README.md)).
 
+### ONNX Runtime
+
+ONNX Runtime is an **optional** dependency. When it is not found at configure time the build
+falls back to a deterministic adapter and every model-dependent feature degrades to a
+heuristic — it does not fail the build. See [docs/ito-master-validation.md](docs/ito-master-validation.md).
+
+| | |
+|---|---|
+| Validated against | **ORT 1.30.x** (1.30.0, 2026-09-10) |
+| Minimum for the optional GPU paths | **1.22** |
+| Release cadence | roughly monthly — pin a minor series, not a patch |
+
+The build locates ONNX Runtime with `find_path`/`find_library` and applies **no** version
+constraint, so any installed SDK is used. Pin deliberately if you are validating a release.
+
+#### Provider status (as of 1.30.x)
+
+| Provider | Status | Notes |
+|---|---|---|
+| **CPU** | always available | The baseline. Every GPU path falls back here on OOM or device loss, so the app never loses inference capability. |
+| **CUDA** | current | Default packages target **CUDA 13.0** since 1.27. CUDA 12.8 packages are deprecated but still published through 1.30. cuDNN is optional at runtime from 1.28. |
+| **DirectML** | maintenance mode | The `Microsoft.ML.OnnxRuntime.DirectML` NuGet is **frozen at 1.24.4** and caps at **opset ≤ 20**. It will not gain newer opsets, so prefer the options below for new work. |
+| **CoreML** | current | Also covers the **Apple Neural Engine** — there is no separate ANE provider. ANE-specific work goes through CoreML. |
+| **OpenVINO** | split | Legacy wheel pinned at 1.24.1; the plugin `onnxruntime-ep-openvino` 1.7.0 requires ORT ≥ 1.23. |
+| **Windows ML** | GA (2025-09-23) | The recommended path for new Windows work. C++ needs the **self-contained** NuGet; framework-dependent C/C++ packages are not published. |
+| **WebGPU** | preview | Native plugin EP, v0.4.0. |
+
+AutoMixMaster probes available providers and walks its own priority chain — **ANE → CoreML →
+CUDA → OpenVINO → DirectML → CPU** (`src/ai/GpuProvider.h`). If session creation or inference
+fails, the provider is recorded as failed and the chain continues, so a broken or missing GPU
+runtime degrades to CPU instead of failing the render.
+
+> **fp16 caveat:** the CPU execution provider does not run fp16 graphs. Quantize to int8 (QDQ
+> format) for CPU-only deployment; 16-bit and 4-bit quantization additionally require **opset ≥ 21**.
+
+#### Optional runtime capabilities
+
+Two further runtime paths are detected at configure time and are **off unless the installed
+ONNX Runtime exposes the matching API**. The provider priority chain above is unchanged either
+way, and both features default to off.
+
+| Capability | Compile guard | Minimum ORT | Status |
+|---|---|---|---|
+| CUDA provider supplied as a plugin library | `AUTOMIX_HAS_EP_PLUGIN` | 1.23 | Policy implemented; the `RegisterExecutionProviderLibrary` call is not yet wired |
+| Per-GPU compiled-model cache (EPContext) | `AUTOMIX_HAS_EP_CONTEXT` | 1.22 | Policy implemented; the `OrtCompileApi` call is not yet wired |
+
+`src/ai/GpuProvider.h` holds the deciding logic for both — `parseOrtVersion`,
+`supportsEpPlugin`, `supportsEpContext`, `decidePluginEpAttempt` and
+`compiledModelCacheKey` — as pure functions, so it is covered by the test suite even on a
+build with no ONNX Runtime SDK present. The cache key covers the model digest, the provider,
+the GPU architecture, the driver version and the ORT version, so recompiling for a different
+card or driver can never reuse another card's artifact. A model digest that is not a valid
+64-character SHA-256 yields no key at all, because a key that cannot distinguish two models
+would alias their caches.
+
+To finish the wiring, the guarded code should ask `decidePluginEpAttempt(...)` and, when it
+returns `attempt == false`, log its `reason` and continue down the existing priority chain;
+`Ort::GetAvailableProviders()` already covers every built-in provider.
+
+
 ---
 
 ## Build + Install
@@ -309,4 +369,54 @@ Model weights are **not bundled** into the installer or executable binaries. Use
 > **Non-Commercial Notice**: Models licensed under **CC-BY-NC 4.0** (such as Meta Demucs, Denoiser, and ITO-Master weights) are restricted to personal, educational, and non-commercial evaluation use. Commercial workflows can use open-source MIT-licensed models (e.g. Whisper, CLAP) or the built-in deterministic heuristic DSP engines. User consent gating is enforced prior to model download and execution.
 
 > **Model Licensing Audit**: For complete machine-checkable model license metadata and audit reports, see [docs/model-licensing-audit.md](docs/model-licensing-audit.md) and [docs/model-licensing-audit.json](docs/model-licensing-audit.json).
+
+#### Mix-Scope Model Contract
+
+No curated `mix` model ships today — the AI mix path is fully wired (`AutoMixStrategyAI`), so it activates as soon as a valid mix pack is installed, and otherwise falls back to the deterministic heuristic. A downloadable mix model must satisfy all of the following:
+
+| Requirement | Value | Enforced by |
+| :--- | :--- | :--- |
+| Model file | `.onnx` (**all** scopes) | `ModelPackLoader` |
+| Manifest metadata | non-empty `license`, `source`, `feature_schema_version` | `ModelPackLoader` |
+| `feature_schema_version` | `1.0.0` | `FeatureSchemaV1::isCompatible` |
+| Required output keys | `confidence`, `global_gain_db` (±12 dB), `global_pan_bias` (±1.0) | `ModelPackLoader` + `OnnxModelInference` |
+| Optional per-stem keys | `stem<N>_gain_db` (±24 dB), `stem<N>_pan` (±1.0) — a superset of the required keys | `AutoMixStrategyAI` |
+| Input features | **66 floats per stem, concatenated** — `input_feature_count` must equal `66 × stem count` exactly | `OnnxModelInference::run` |
+| `allowed_tasks` | must include `mix_parameters` | `OnnxModelInference::run` |
+
+Two consequences worth knowing before authoring a pack:
+
+- **The stem count is baked into the model's input width.** Because features are concatenated per stem, a pack trained for 4 stems (`input_feature_count: 264`) is rejected outright on a 3-stem session. A model intended for varying stem counts must accept a padded or per-stem input, not a fixed concatenation.
+- **The leading public model is not plug-and-play.** `csteinmetz1/automix-toolkit` (Apache-2.0) is the best-licensed downloadable mixer — it predicts per-track gain and pan, which maps cleanly onto the `stem<N>_gain_db` / `stem<N>_pan` keys — but its published weights are PyTorch `.ckpt` checkpoints and its input is an audio encoder (log-mel/STFT), not the 66-float feature vector. Using it requires an ONNX export **and** a host-side audio-encoder frontend, so it is deliberately absent from the curated list rather than listed as broken.
+
+#### Model Inference Contract (all scopes)
+
+`IModelInference` is a **features-in, scalars-out** interface. A request carries one flat `std::vector<double>` (`InferenceRequest::features`); a response carries flat named scalars (`InferenceResult::outputs`). There is no audio-tensor path through it. These six tasks are the complete set:
+
+| Task | Input | Output keys | Consumer |
+| :--- | :--- | :--- | :--- |
+| `mix_parameters` | 66 floats × stem count | `confidence`, `global_gain_db`, `global_pan_bias` (+ optional `stem<N>_*`) | `AutoMixStrategyAI` |
+| `master_parameters` | 66 floats (the mix buffer) | `confidence`, `target_lufs`, `pre_gain_db`, `limiter_ceiling_db`, `glue_ratio` | `AutoMasterStrategyAI` |
+| `role_classifier` | 66 floats per stem | `prob_vocals`, `prob_bass`, `prob_drums`, `prob_fx` | `StemRoleClassifierAI` |
+| `stem_separation` | per-4096-sample-frame feature vector | `stem<N>_weight` \| `source<N>_weight` \| `mask_<N>` \| `<role>_weight` | `StemSeparator` |
+| `mix_master_override` | all stems' features, concatenated | `dryWet`, `targetLufs`, `preGainDb` (legacy) | `ModelStrategy` |
+| `ito_fxencoder`, `ito_predictor` | audio tensors `[1,2,N]` → `[1,2048]` → `[1,46]` | 46 normalized chain parameters | `ItoMasterModelRunner` |
+
+**Consequence: a model whose input is raw audio, a complex STFT, or a multi-tensor bundle cannot be used through this interface.** That excludes essentially the whole published audio ecosystem — Demucs/HTDemucs, BS-Roformer and Mel-Band Roformer, Open-Unmix, Spleeter, Whisper, CLAP, PANNs, CED, Basic Pitch, CREPE, skey, beat-this, chordmini — regardless of license. Installing one yields a pack that validates and downloads, then either fails the `features.size() != input_feature_count` check or receives a feature vector where it expects audio.
+
+This applies to the three **already-curated** separation models (`rysertio/Demucs-onnx`, `StemSplitio/htdemucs-ft-onnx`, `StemSplitio/htdemucs-6s-onnx`): the separator feeds them a per-frame feature vector and reads back per-stem weights, so with no weight key in the response it applies its own heuristic. `StemSeparator` now reports that case honestly — `SeparationResult::usedModel` is `false` and the log says the fallback weights were used — rather than claiming "Model-backed overlap-add separation completed".
+
+The verified-later candidates below are held back by that single missing frontend, not by their licenses (licenses confirmed against the Hugging Face model API; all ungated):
+
+| Model | License | Why it is not curated yet |
+| :--- | :--- | :--- |
+| `xycld/BS-RoFormer-ONNX` | MIT | consumes a complex STFT; needs a tensor-level audio input |
+| `musetric/skey-onnx` | MIT | expects 22.05 kHz audio, not the 66-float vector |
+| `musetric/chordmini-onnx` | MIT | expects a 144-bin log-CQT the host does not compute |
+| `musetric/beat-this-onnx` | MIT | expects a 128-bin log-mel the host does not compute |
+| `mispeech/ced-base` | Apache-2.0 | expects 16 kHz waveform input |
+| Basic Pitch `nmp.onnx` | Apache-2.0 | expects a 43844-sample CQT input |
+
+**The unblock is one interface, not a bigger catalog.** `ItoMasterModelRunner` already drives a real audio→audio→parameters graph in-process, so the pattern is proven; generalising it into a tensor-level audio interface (multi-input/multi-output tensors alongside `IModelInference`) is what would make the entire download ecosystem reachable, and is the reason adding more curated ids before then only adds download size.
+
 

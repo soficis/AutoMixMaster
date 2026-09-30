@@ -439,22 +439,28 @@ std::optional<PhaseLimiterBinaryInfo> resolveFromAutoDownload() {
   return std::nullopt;
 }
 
+// Ordered by priority: AUTOMIX_ASSET_ROOT is an override, so it is searched
+// first. (A std::set here once sorted roots lexicographically, which let the
+// executable's own tree win whenever its path sorted before the override.)
 std::vector<std::filesystem::path> defaultRoots() {
-  std::set<std::filesystem::path> roots;
-  roots.insert(std::filesystem::current_path());
+  std::vector<std::filesystem::path> candidates;
+  if (const auto assetRoot = readEnvironment("AUTOMIX_ASSET_ROOT"); assetRoot.has_value()) {
+    candidates.emplace_back(assetRoot.value());
+  }
+  candidates.push_back(std::filesystem::current_path());
 
   const juce::File executable = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
   const std::filesystem::path executableDir(executable.getParentDirectory().getFullPathName().toStdString());
-  roots.insert(executableDir);
-  roots.insert(executableDir / ".." / "Resources");
-  if (const auto assetRoot = readEnvironment("AUTOMIX_ASSET_ROOT"); assetRoot.has_value()) {
-    roots.insert(assetRoot.value());
-  }
+  candidates.push_back(executableDir);
+  candidates.push_back(executableDir / ".." / "Resources");
 
+  std::set<std::filesystem::path> seen;
   std::vector<std::filesystem::path> output;
-  output.reserve(roots.size());
-  for (const auto& root : roots) {
-    output.push_back(root);
+  output.reserve(candidates.size());
+  for (const auto& root : candidates) {
+    if (seen.insert(root).second) {
+      output.push_back(root);
+    }
   }
   return output;
 }

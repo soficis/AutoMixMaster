@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "models": [
+    {
+      "id": "rysertio/Demucs-onnx",
+      "license": "MIT",
+      "commercialUsable": true,
+      "attributionRequired": false,
+      "flagged": false,
+      "notes": "Demucs ONNX port; MIT license."
+    },
+    {
+      "id": "onnx-community/whisper-tiny.en",
+      "license": "MIT",
+      "commercialUsable": true,
+      "attributionRequired": false,
+      "flagged": false,
+      "notes": "onnx-community export of OpenAI Whisper tiny.en; MIT license inherited."
+    },
+    {
+      "id": "onnx-community/whisper-small.en",
+      "license": "MIT",
+      "commercialUsable": true,
+      "attributionRequired": false,
+      "flagged": false,
+      "notes": "onnx-community export of OpenAI Whisper small.en; MIT license inherited."
+    },
+    {
+      "id": "onnx-community/Speech-Emotion-Classification-ONNX",
+      "license": "unverified",
+      "commercialUsable": false,
+      "attributionRequired": false,
+      "flagged": true,
+      "notes": "No license declared on HF card (checked 2026-07-31); wav2vec2-based, base prithivMLmods/Speech-Emotion-Classification. Verify before commercial ship."
+    },
+    {
+      "id": "onnx-community/Musical-Instrument-Classification-ONNX",
+      "license": "MIT",
+      "commercialUsable": true,
+      "attributionRequired": false,
+      "flagged": false,
+      "notes": "HF card declares license:mit (checked 2026-07-31)."
+    },
+    {
+      "id": "onnx-community/Musical-genres-Classification-Hubert-V1-ONNX",
+      "license": "unverified",
+      "commercialUsable": false,
+      "attributionRequired": false,
+      "flagged": true,
+      "notes": "No license declared on HF card (checked 2026-07-31); HuBERT-derived, base SeyedAli/Musical-genres-Classification-Hubert-V1. onnx-community HuBERT re-distributions are typically CC BY-NC 4.0; verify before commercial ship."
+    },
+    {
+      "id": "openai/whisper-tiny",
+      "license": "MIT",
+      "commercialUsable": true,
+      "attributionRequired": false,
+      "flagged": false,
+      "notes": "OpenAI Whisper tiny; MIT license."
+    },
+    {
+      "id": "laion/clap-htsat-unfused",
+      "license": "CC BY 4.0",
+      "commercialUsable": true,
+      "attributionRequired": true,
+      "flagged": true,
+      "notes": "CC BY 4.0 per LAION research repo; HF card metadata currently lists apache-2.0 (checked 2026-07-31). Attribution required; commercially usable with attribution."
+    },
+    {
+      "id": "pranjal-pravesh/PANNs_CNN14_ONNX",
+      "license": "MIT",
+      "commercialUsable": true,
+      "attributionRequired": false,
+      "flagged": false,
+      "notes": "PANNs CNN14 ONNX port; MIT license."
+    },
+    {
+      "id": "SonyCSLParis/music2latent",
+      "license": "CC BY-NC 4.0",
+      "commercialUsable": false,
+      "attributionRequired": true,
+      "flagged": true,
+      "notes": "Non-commercial; user opt-in download only, never bundled in a commercial installer."
+    },
+    {
+      "id": "StemSplitio/htdemucs-ft-onnx",
+      "license": "MIT",
+      "commercialUsable": true,
+      "attributionRequired": false,
+      "flagged": false,
+      "notes": "Demucs 4-stem ONNX port; MIT license."
+    },
+    {
+      "id": "StemSplitio/htdemucs-6s-onnx",
+      "license": "MIT",
+      "commercialUsable": true,
+      "attributionRequired": false,
+      "flagged": false,
+      "notes": "Demucs 6-stem ONNX port; MIT license."
+    },
+    {
+      "id": "kramp/ito-master-onnx",
+      "license": "CC BY-NC 4.0",
+      "commercialUsable": false,
+      "attributionRequired": true,
+      "flagged": true,
+      "assets": [
+        "fxencoder.onnx",
+        "mastering_tcn.onnx",
+        "config.json"
+      ],
+      "attribution": "ITO-Master, Koo et al., Sony Research (github.com/SonyResearch/ITO-Master); ONNX export by kramp (huggingface.co/kramp/ito-master-onnx)",
+      "notes": "ITO-Master ONNX; CC BY-NC 4.0 confirmed on HF card (checked 2026-07-31). Multi-file pack (fxencoder.onnx + mastering_tcn.onnx + config.json) consumed by the mastering-assistant route. User opt-in download only, never bundled in a commercial installer/redistribution; runtime hub download under the user's license keeps it legal."
+    },
+    {
+      "id": "xycld/BS-RoFormer-ONNX",
+      "license": "MIT",
+      "commercialUsable": true,
+      "attributionRequired": false,
+      "flagged": false,
+      "assets": [
+        "bs_roformer_ep317_sdr12.9755_quantized_uint8.onnx"
+      ],
+      "attribution": "BS-RoFormer, Lu et al., arXiv 2309.02612; ONNX export by xycld (huggingface.co/xycld/BS-RoFormer-ONNX)",
+      "notes": "BS-RoFormer vocal separation ONNX; MIT confirmed on HF card (cardData.license and license:mit tag, checked 2026-09-30). Catalog installs the single-file uint8-quantized build (~166 MB); the fp32 build needs a ~640 MB external-data sidecar and is not the default. Graph outputs vocals only; instrumental is the residual mix - vocals. Download-only, never bundled."
+    }
+  ]
+}

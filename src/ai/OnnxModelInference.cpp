@@ -433,7 +433,7 @@ bool OnnxModelInference::loadModel(const std::filesystem::path& modelPath) {
 
     if (profilingEnabled_) {
       nativeState->profilingPrefix = makeProfilePrefix(modelPath_);
-      nativeState->sessionOptions->EnableProfiling(nativeState->profilingPrefix.string().c_str());
+      nativeState->sessionOptions->EnableProfiling(nativeState->profilingPrefix.c_str());
     }
 
     try {
@@ -515,7 +515,10 @@ bool OnnxModelInference::loadModel(const std::filesystem::path& modelPath) {
       gpuOomCount_.fetch_add(1);
       gpuRecoveryCount_.fetch_add(1);
     }
-    {
+    // CPU is the floor resolution always returns, so a CPU session that fails
+    // to open is a model problem (unreadable or corrupt file), not a provider
+    // failure worth recording.
+    if (activeExecutionProvider_ != gpu::kProviderCpu) {
       std::scoped_lock lock(failedProvidersMutex_);
       failedProviders_.push_back(activeExecutionProvider_);
     }
@@ -908,6 +911,14 @@ void OnnxModelInference::recordProviderFailure(const std::string& provider,
   }
 }
 
+void OnnxModelInference::pinExecutionProvidersForTesting(std::vector<std::string> providers) {
+  availableExecutionProviders_ = providers;
+  pinnedProviders_ = std::move(providers);
+  if (loaded_) {
+    activeExecutionProvider_ = resolveExecutionProvider();
+  }
+}
+
 void OnnxModelInference::setGraphOptimizationEnabled(const bool enabled) { graphOptimizationEnabled_ = enabled; }
 
 void OnnxModelInference::setWarmupEnabled(const bool enabled) { warmupEnabled_ = enabled; }
@@ -978,12 +989,16 @@ std::string OnnxModelInference::resolveExecutionProvider() const {
 
   // Probe runtime providers and walk the priority chain
   std::vector<std::string> runtimeProviders;
+  if (pinnedProviders_.has_value()) {
+    runtimeProviders = *pinnedProviders_;
+  } else {
 #if AUTOMIX_HAS_NATIVE_ORT
-  try {
-    runtimeProviders = Ort::GetAvailableProviders();
-  } catch (...) {
-  }
+    try {
+      runtimeProviders = Ort::GetAvailableProviders();
+    } catch (...) {
+    }
 #endif
+  }
 
   // If runtime probe succeeded, use it; otherwise fall back to metadata list
   const auto& probeProviders = runtimeProviders.empty()

@@ -13,8 +13,10 @@
 #include <juce_core/juce_core.h>
 #include <nlohmann/json.hpp>
 
+#include "ai/BsRoformerPack.h"
 #include "ai/ItoMasterAdapter.h"
 #include "ai/ModelCatalogValidator.h"
+#include "ai/OnnxTensorInference.h"
 #include "util/Sha256.h"
 #include "util/StringUtils.h"
 
@@ -453,6 +455,18 @@ void appendInstallLog(const std::filesystem::path& root,
   out << event.dump() << "\n";
 }
 
+std::string primaryFileForRepo(const std::string& repoId, const std::vector<std::string>& files, bool* hasOnnxOut) {
+  auto primary = pickPrimaryFile(files, hasOnnxOut);
+  if (repoId == kBsRoformerRepoId) {
+    // Pinned by name (see kBsRoformerQuantizedFile). If the repo ever drops the
+    // file, the entry becomes undiscoverable instead of installing the fp32
+    // graph without its sidecar.
+    const bool hasQuantized = std::find(files.begin(), files.end(), kBsRoformerQuantizedFile) != files.end();
+    primary = hasQuantized ? kBsRoformerQuantizedFile : "";
+  }
+  return primary;
+}
+
 std::vector<std::string> curatedModelIds() {
   return {
       "rysertio/Demucs-onnx",
@@ -468,6 +482,7 @@ std::vector<std::string> curatedModelIds() {
       "StemSplitio/htdemucs-ft-onnx",
       "StemSplitio/htdemucs-6s-onnx",
       "kramp/ito-master-onnx",
+      "xycld/BS-RoFormer-ONNX",  // == kBsRoformerRepoId; a literal because licensing tests parse this list
   };
 }
 
@@ -586,7 +601,7 @@ std::optional<HubModelInfo> HuggingFaceModelHub::modelInfo(const std::string& mo
     }
   }
 
-  info.primaryFile = pickPrimaryFile(info.files, &info.hasOnnx);
+  info.primaryFile = primaryFileForRepo(info.repoId, info.files, &info.hasOnnx);
   info.useCase = HuggingFaceModelHub::inferUseCase(info.repoId, info.tags, "");
   const auto compatibility = validateCatalogModel(info);
   info.compatible = compatibility.compatible;
@@ -869,8 +884,22 @@ HubInstallResult HuggingFaceModelHub::installModel(const std::string& modelIdOrR
   result.metadataPath = installPath / "modelhub.json";
   writeJson(result.metadataPath, metadata);
 
+  std::optional<TensorContract> tensorContract;
+  if (info->repoId == kBsRoformerRepoId) {
+    std::string probeError;
+    tensorContract = resolveInstalledTensorContract(bsRoformerCatalogContract(), primaryPath, probeError);
+    if (!tensorContract.has_value()) {
+      std::filesystem::remove(primaryPath, error);
+      result.message = "Downloaded model does not match its tensor contract: " + probeError;
+      appendInstallLog(destinationRoot, info.value(), result);
+      return result;
+    }
+  }
+
   std::string manifestError;
-  if (!writeTurnkeyModelPackManifest(installPath, info.value(), result, compatibility, &manifestError)) {
+  if (!writeTurnkeyModelPackManifest(installPath, info.value(), result, compatibility,
+                                     tensorContract.has_value() ? &tensorContract.value() : nullptr,
+                                     &manifestError)) {
     std::filesystem::remove(primaryPath, error);
     result.message = "Failed writing turnkey model pack metadata: " + manifestError;
     appendInstallLog(destinationRoot, info.value(), result);

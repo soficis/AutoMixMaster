@@ -40,6 +40,11 @@ class OnnxModelInference final : public IModelInference {
 
   void recordProviderFailure(const std::string& provider, ProviderFailureKind kind);
 
+  // Test seam: replaces both the manifest provider list and the runtime probe,
+  // then re-resolves. Lets the provider-recovery bookkeeping be exercised on a
+  // machine whose ONNX Runtime has no GPU provider.
+  void pinExecutionProvidersForTesting(std::vector<std::string> providers);
+
   [[nodiscard]] std::string activeExecutionProvider() const;
   [[nodiscard]] std::string backendDiagnostics() const;
   [[nodiscard]] std::vector<std::filesystem::path> profilingArtifacts() const;
@@ -75,6 +80,7 @@ class OnnxModelInference final : public IModelInference {
   std::vector<std::string> outputNames_;
   std::vector<std::string> allowedTasks_;
   std::vector<std::string> availableExecutionProviders_;
+  std::optional<std::vector<std::string>> pinnedProviders_;
   std::string requestedExecutionProvider_ = "auto";
   std::string activeExecutionProvider_ = "cpu";
   std::string preferredPrecision_ = "auto";

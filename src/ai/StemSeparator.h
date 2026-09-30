@@ -1,6 +1,8 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -14,6 +16,13 @@ class StemSeparator final {
     std::optional<int> targetStemCount;
     std::optional<size_t> gpuMemoryBudgetMb;
     std::optional<int> maxStreams;
+    // Set from RenderSettings::tensorSeparationEnabled. When the model root holds
+    // a pack with a tensor_contract, separation runs through SeparationRunner;
+    // any failure falls back to the existing path. Off: behaviour is unchanged.
+    bool useTensorModel = false;
+    // Tensor path only, called from the separating thread. JUCE-free so the
+    // caller owns any message-thread marshalling.
+    std::function<void(int done, int total)> tensorProgress;
   };
 
   struct SeparationQaMetrics {
@@ -36,6 +45,9 @@ class StemSeparator final {
   explicit StemSeparator(std::filesystem::path modelRoot = "assets/models/stem-separator");
 
   [[nodiscard]] bool isModelAvailable() const;
+  // True when the model root is a pack carrying a tensor_contract whose model
+  // file exists. Says nothing about whether ONNX Runtime can open it.
+  [[nodiscard]] bool isTensorModelAvailable() const;
   SeparationResult separate(const std::filesystem::path& mixPath,
                             const std::filesystem::path& outputDir,
                             const SeparationOptions& options = {}) const;

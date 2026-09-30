@@ -700,7 +700,7 @@ HubInstallResult GitHubReleaseModelHub::installModel(const std::string& modelId,
   writeJson(result.metadataPath, metadata);
 
   std::string manifestError;
-  if (!writeTurnkeyModelPackManifest(installPath, info, result, compatibility, &manifestError)) {
+  if (!writeTurnkeyModelPackManifest(installPath, info, result, compatibility, nullptr, &manifestError)) {
     std::filesystem::remove(primaryPath, error);
     result.message = "Failed writing turnkey model pack metadata: " + manifestError;
     appendInstallLog(destinationRoot, info, result);

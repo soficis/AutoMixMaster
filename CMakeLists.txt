@@ -108,6 +108,7 @@ add_library(automix_core
   src/analysis/ArtifactRiskEstimator.cpp
   src/analysis/StemHealthAssistant.cpp
   src/analysis/StemAnalyzer.cpp
+  src/analysis/SpectrogramFrontEnd.cpp
   src/automix/HeuristicAutoMixStrategy.cpp
   src/automaster/HeuristicAutoMasterStrategy.cpp
   src/automaster/ItoMasterStrategy.cpp
@@ -144,6 +145,9 @@ add_library(automix_core
   src/ai/GpuCapabilityDetector.cpp
   src/ai/StemSeparator.cpp
   src/ai/StemRoleClassifierAI.cpp
+  src/ai/TensorTypes.cpp
+  src/ai/SeparationRunner.cpp
+  src/ai/OnnxTensorInference.cpp
   src/util/StringUtils.cpp
   src/util/LameDownloader.cpp
   src/util/MetadataPolicy.cpp
@@ -170,7 +174,11 @@ if(ENABLE_ONNX)
     # the headers. ONNX Runtime does not expose a reliable single version macro, and
     # a header either declares an entry point or it does not, which is exact where a
     # parsed version is only a guess.
-    file(GLOB _ort_api_headers "${ONNXRUNTIME_INCLUDE_DIR}/onnxruntime/core/session/onnxruntime_c*_api.h")
+    # The official release archives ship a flat include/ directory; source-tree
+    # installs nest the same headers under onnxruntime/core/session/.
+    file(GLOB _ort_api_headers
+      "${ONNXRUNTIME_INCLUDE_DIR}/onnxruntime_c*_api.h"
+      "${ONNXRUNTIME_INCLUDE_DIR}/onnxruntime/core/session/onnxruntime_c*_api.h")
     foreach(_ort_header IN LISTS _ort_api_headers)
       file(STRINGS "${_ort_header}" _ort_header_text)
       if(_ort_header_text MATCHES "RegisterExecutionProviderLibrary")
@@ -401,6 +409,7 @@ if(BUILD_TESTING)
     tests/unit/OfflineRenderPipelineTests.cpp
     tests/unit/OnnxModelInferenceTests.cpp
     tests/unit/StemSeparatorTests.cpp
+    tests/unit/TensorInferenceTests.cpp
     tests/unit/ModelBenchmarkTests.cpp
     tests/unit/GpuBenchmarkTests.cpp
     tests/regression/RegressionHarness.cpp

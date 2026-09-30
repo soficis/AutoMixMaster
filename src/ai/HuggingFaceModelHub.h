@@ -92,4 +92,11 @@ class HuggingFaceModelHub {
 // license-coverage tests and downstream hub tooling.
 std::vector<std::string> curatedModelIds();
 
+// The repo file an install downloads as the pack's model file; empty when the
+// repo offers nothing installable. Generic preference order, except for repos
+// whose correct file cannot be inferred from names (BS-RoFormer, spec D4).
+std::string primaryFileForRepo(const std::string& repoId,
+                               const std::vector<std::string>& files,
+                               bool* hasOnnxOut = nullptr);
+
 } // namespace automix::ai

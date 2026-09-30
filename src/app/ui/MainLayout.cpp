@@ -1164,7 +1164,8 @@ void MainLayout::importFiles(std::vector<juce::File> files) {
       useSeparation,
       sessionManager_.session().preferredStemCount,
       taskOrchestrator_->cancelFlag(ActiveTask::Import),
-      std::move(separationModelRoot));
+      std::move(separationModelRoot),
+      sessionManager_.session().renderSettings.tensorSeparationEnabled);
 }
 
 bool MainLayout::startAiSeparationBeforeAutoMixIfNeeded() {

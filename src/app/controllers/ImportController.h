@@ -36,7 +36,8 @@ class ImportController {
                    bool useSeparation,
                    int preferredStemCount,
                    std::atomic_bool& cancelFlag,
-                   std::optional<std::filesystem::path> separationModelRoot = std::nullopt);
+                   std::optional<std::filesystem::path> separationModelRoot = std::nullopt,
+                   bool useTensorModel = false);
 
  private:
   juce::ThreadPool& threadPool_;

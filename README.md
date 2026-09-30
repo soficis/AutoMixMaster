@@ -400,9 +400,9 @@ Two consequences worth knowing before authoring a pack:
 | `role_classifier` | 66 floats per stem | `prob_vocals`, `prob_bass`, `prob_drums`, `prob_fx` | `StemRoleClassifierAI` |
 | `stem_separation` | per-4096-sample-frame feature vector | `stem<N>_weight` \| `source<N>_weight` \| `mask_<N>` \| `<role>_weight` | `StemSeparator` |
 | `mix_master_override` | all stems' features, concatenated | `dryWet`, `targetLufs`, `preGainDb` (legacy) | `ModelStrategy` |
-| `ito_fxencoder`, `ito_predictor` | audio tensors `[1,2,N]` → `[1,2048]` → `[1,46]` | 46 normalized chain parameters | `ItoMasterModelRunner` |
+| `ito_fxencoder`, `ito_predictor` | the first N stereo samples flattened channel-major into one `features` vector (encoder); the same vector with the encoder's 2048 outputs appended to it (predictor) — fed positionally, never bound by name | 2048-dim embedding, then 46 normalized chain parameters | `ItoMasterModelRunner` |
 
-**Consequence: a model whose input is raw audio, a complex STFT, or a multi-tensor bundle cannot be used through this interface.** That excludes essentially the whole published audio ecosystem — Demucs/HTDemucs, BS-Roformer and Mel-Band Roformer, Open-Unmix, Spleeter, Whisper, CLAP, PANNs, CED, Basic Pitch, CREPE, skey, beat-this, chordmini — regardless of license. Installing one yields a pack that validates and downloads, then either fails the `features.size() != input_feature_count` check or receives a feature vector where it expects audio.
+**Consequence: a model whose output is an audio-shaped tensor, or whose input needs audio semantics, cannot be used through this interface.** The wall is not the number of graph inputs — `xycld/BS-RoFormer-ONNX`, for example, has exactly one input and one output. It is two things the contract has no words for: (1) **output rank and volume** — BS-RoFormer returns a rank-5 `[1, 1, 2050, 801, 2]` float tensor (~3.3 M values), and `InferenceResult::outputs` is a `map<string, double>` that cannot carry a tensor at any rank; (2) **audio semantics on the way in** — `features` is a flat vector with no shape, no axis meaning, no channel identity, no phase and no STFT front-end, so there is no way to say "801 frames × 1025 bins × 2 channels × real/imag". That excludes essentially the whole published audio ecosystem — Demucs/HTDemucs, BS-Roformer and Mel-Band Roformer, Open-Unmix, Spleeter, Whisper, CLAP, PANNs, CED, Basic Pitch, CREPE, skey, beat-this, chordmini — regardless of license. Installing one yields a pack that validates and downloads, then either fails the `features.size() != input_feature_count` check or receives a feature vector where it expects audio.
 
 This applies to the three **already-curated** separation models (`rysertio/Demucs-onnx`, `StemSplitio/htdemucs-ft-onnx`, `StemSplitio/htdemucs-6s-onnx`): the separator feeds them a per-frame feature vector and reads back per-stem weights, so with no weight key in the response it applies its own heuristic. `StemSeparator` now reports that case honestly — `SeparationResult::usedModel` is `false` and the log says the fallback weights were used — rather than claiming "Model-backed overlap-add separation completed".
 
@@ -410,13 +410,13 @@ The verified-later candidates below are held back by that single missing fronten
 
 | Model | License | Why it is not curated yet |
 | :--- | :--- | :--- |
-| `xycld/BS-RoFormer-ONNX` | MIT | consumes a complex STFT; needs a tensor-level audio input |
+| `xycld/BS-RoFormer-ONNX` | MIT | emits a real-valued rank-5 mask tensor (real/imag on the trailing axis) that the caller multiplies against a host-side STFT; needs a tensor-level interface and an STFT front-end |
 | `musetric/skey-onnx` | MIT | expects 22.05 kHz audio, not the 66-float vector |
 | `musetric/chordmini-onnx` | MIT | expects a 144-bin log-CQT the host does not compute |
 | `musetric/beat-this-onnx` | MIT | expects a 128-bin log-mel the host does not compute |
 | `mispeech/ced-base` | Apache-2.0 | expects 16 kHz waveform input |
 | Basic Pitch `nmp.onnx` | Apache-2.0 | expects a 43844-sample CQT input |
 
-**The unblock is one interface, not a bigger catalog.** `ItoMasterModelRunner` already drives a real audio→audio→parameters graph in-process, so the pattern is proven; generalising it into a tensor-level audio interface (multi-input/multi-output tensors alongside `IModelInference`) is what would make the entire download ecosystem reachable, and is the reason adding more curated ids before then only adds download size.
+**The unblock is one interface, not a bigger catalog.** `ItoMasterModelRunner` already drives a real audio→audio→parameters graph in-process, so the pattern is proven; generalising it into a tensor-level audio interface (shaped, named float32 tensors in and out, plus a host-side STFT, alongside `IModelInference`) is what would make the entire download ecosystem reachable, and is the reason adding more curated ids before then only adds download size.
 
 

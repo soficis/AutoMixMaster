@@ -151,6 +151,7 @@ add_library(automix_core
   src/ai/OnnxExternalData.cpp
   src/ai/GpuMemory.cpp
   src/ai/GpuRuntimePack.cpp
+  src/ai/ModelStorage.cpp
   src/util/StringUtils.cpp
   src/util/LameDownloader.cpp
   src/util/MetadataPolicy.cpp

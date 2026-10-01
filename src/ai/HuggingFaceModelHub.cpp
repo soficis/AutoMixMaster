@@ -17,6 +17,7 @@
 #include "ai/GpuMemory.h"
 #include "ai/ItoMasterAdapter.h"
 #include "ai/ModelCatalogValidator.h"
+#include "ai/ModelStorage.h"
 #include "ai/OnnxExternalData.h"
 #include "ai/OnnxTensorInference.h"
 #include "util/Sha256.h"
@@ -839,7 +840,7 @@ HubInstallResult HuggingFaceModelHub::installModel(const std::string& modelIdOrR
   }
 
   result.taskScope = compatibility.taskScope;
-  const auto destinationRoot = options.destinationRoot.empty() ? std::filesystem::path("assets/modelhub") : options.destinationRoot;
+  const auto destinationRoot = options.destinationRoot.empty() ? defaultModelHubRoot() : options.destinationRoot;
   const auto installKey = sanitizeRepoId(info->modelId.empty() ? info->repoId : info->modelId);
   const auto installPath = destinationRoot / installKey;
   const auto primaryPath = installPath / std::filesystem::path(info->primaryFile).filename();

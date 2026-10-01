@@ -15,6 +15,7 @@
 #include "app/ui/VerificationEngine.h"
 #include "ai/GpuRuntimePack.h"
 #include "ai/HuggingFaceModelHub.h"
+#include "ai/ModelStorage.h"
 #include "ai/OnnxTensorInference.h"
 #include "renderers/RendererPipeline.h"
 #include "util/FileUtils.h"
@@ -70,6 +71,24 @@ MainLayout::MainLayout() {
   // A GPU runtime removed last run may still have files on disk (they were
   // locked while loaded); finish that before anything can preload them.
   ai::GpuRuntimePack::completePendingRemoval();
+
+  // Downloaded models used to live in a working-directory-relative
+  // assets/modelhub; move them (with their install registry and licence
+  // consents) to the per-user location once. The outcome is reported once the
+  // task history exists.
+  const auto modelHubMigration = ai::migrateModelHub(ai::legacyModelHubRoot(), ai::defaultModelHubRoot());
+  if (modelHubMigration.attempted) {
+    juce::MessageManager::callAsync([safe = juce::Component::SafePointer<MainLayout>(this), modelHubMigration] {
+      if (safe == nullptr || safe->taskOrchestrator_ == nullptr) {
+        return;
+      }
+      safe->taskOrchestrator_->appendHistory(
+          modelHubMigration.error.empty()
+              ? "Moved " + juce::String(modelHubMigration.movedPacks) + " downloaded model(s) to " +
+                    juce::String(ai::defaultModelHubRoot().wstring().c_str())
+              : "Model folder migration incomplete (will retry next start): " + juce::String(modelHubMigration.error));
+    });
+  }
 
   // 1. Create UI components
   headerBar_ = std::make_unique<HeaderBar>();
@@ -1909,7 +1928,7 @@ void MainLayout::updateRendererChainPreview() {
 // ─────────────────────────────────────────────────────────────────
 
 void MainLayout::refreshModelPacks() {
-  modelManager_.setRootPaths({std::filesystem::path("ModelPacks"), std::filesystem::path("assets/modelhub")});
+  modelManager_.setRootPaths({ai::defaultModelHubRoot(), std::filesystem::path("ModelPacks")});
   const auto packs = modelManager_.scan();
 
   const auto pickDefaultForScope = [&](const std::string& scope) -> std::optional<std::string> {

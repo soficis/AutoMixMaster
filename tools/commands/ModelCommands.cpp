@@ -11,6 +11,7 @@
 #include "ai/GpuRuntimePack.h"
 #include "ai/HuggingFaceModelHub.h"
 #include "ai/ModelPackLoader.h"
+#include "ai/ModelStorage.h"
 #include "ai/OnnxModelInference.h"
 #include "ai/OnnxTensorInference.h"
 #include "ai/StemSeparator.h"
@@ -399,7 +400,7 @@ int commandModelInstall(const CommandArgs& args) {
   }
 
   automix::ai::HubInstallOptions options;
-  options.destinationRoot = argValue(args, "--dest").value_or("assets/modelhub");
+  options.destinationRoot = argValue(args, "--dest").value_or(automix::ai::defaultModelHubRoot().string());
   options.overwrite = hasFlag(args, "--force");
   options.downloadReadme = !hasFlag(args, "--no-readme");
   if (const auto tokenEnvArg = argValue(args, "--token-env"); tokenEnvArg.has_value()) {
@@ -439,7 +440,7 @@ int commandModelInstall(const CommandArgs& args) {
 }
 
 int commandModelHealth(const CommandArgs& args) {
-  const std::filesystem::path root = argValue(args, "--root").value_or("assets/modelhub");
+  const std::filesystem::path root = argValue(args, "--root").value_or(automix::ai::defaultModelHubRoot().string());
   const auto registryPath = root / "install_registry.json";
   const auto registry = loadJsonFile(registryPath);
   if (!registry.has_value() || !registry->is_array()) {
@@ -623,7 +624,7 @@ int commandGpuRuntime(const std::vector<std::string>& args) {
     return removed.removedNow ? 0 : 3;
   }
   if (action == "upgrade-models") {
-    const std::filesystem::path hub = argValue(args, "--hub").value_or("assets/modelhub");
+    const std::filesystem::path hub = argValue(args, "--hub").value_or(automix::ai::defaultModelHubRoot().string());
     const auto upgraded = automix::ai::upgradeBsRoformerForGpu(hub);
     std::cout << (upgraded.has_value() ? upgraded->message : std::string("Nothing to upgrade.")) << "\n";
     return !upgraded.has_value() || upgraded->success ? 0 : 1;

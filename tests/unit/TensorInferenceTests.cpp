@@ -23,6 +23,7 @@
 #include "ai/ModelCatalogValidator.h"
 #include "ai/ModelLicensePolicy.h"
 #include "ai/ModelPackLoader.h"
+#include "ai/ModelStorage.h"
 #include "ai/OnnxExternalData.h"
 #include "ai/OnnxTensorInference.h"
 #include "ai/SeparationRunner.h"
@@ -1549,4 +1550,77 @@ TEST_CASE("Vocal model GPU upgrade leaves non-matching packs alone", "[ai][gpu][
   std::ofstream(root / "already_gpu" / "model.json") << R"({"model_file": "bs_roformer_ep317_sdr12.9755.onnx"})";
   REQUIRE_FALSE(ai::upgradeBsRoformerForGpu(root).has_value());
   std::filesystem::remove_all(root);
+}
+TEST_CASE("Tests use an isolated model hub, never the user's profile", "[ai][model-storage]") {
+  REQUIRE(ai::defaultModelHubRoot() == std::filesystem::temp_directory_path() / "automix_tests_modelhub");
+}
+
+TEST_CASE("Legacy model hub migrates with its registry and licence consents", "[ai][model-storage]") {
+  const auto base = std::filesystem::temp_directory_path() / "automix_modelhub_migration";
+  std::filesystem::remove_all(base);
+  const auto legacy = base / "assets" / "modelhub";
+  const auto target = base / "LocalAppData" / "modelhub";
+  const auto writeText = [](const std::filesystem::path& path, const std::string& text) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream(path, std::ios::binary) << text;
+  };
+  const auto readJson = [](const std::filesystem::path& path) {
+    std::ifstream in(path);
+    return nlohmann::json::parse(in);
+  };
+
+  writeText(legacy / "packA" / "model.json", "{}");
+  writeText(legacy / "packB" / "model.json", R"({"from": "legacy"})");
+  writeText(legacy / "install_registry.json",
+            R"([{"modelId": "huggingface:a", "installPath": "assets/modelhub/packA"},
+                {"modelId": "huggingface:b", "installPath": "C:\\old\\place\\packB\\"}])");
+  writeText(legacy / "license_consents.json", R"([{"modelId": "huggingface:a", "license": "CC BY-NC 4.0"}])");
+  writeText(legacy / "install_log.jsonl", "{\"event\": \"legacy\"}\n");
+  // The target already has its own packB and records: those must win.
+  writeText(target / "packB" / "model.json", R"({"from": "target"})");
+  writeText(target / "install_registry.json",
+            nlohmann::json::array({{{"modelId", "huggingface:b"}, {"installPath", (target / "packB").string()}}}).dump());
+  writeText(target / "license_consents.json", R"([{"modelId": "huggingface:c", "license": "unknown"}])");
+  writeText(target / "install_log.jsonl", "{\"event\": \"target\"}\n");
+
+  const auto migration = ai::migrateModelHub(legacy, target);
+  INFO(migration.error);
+  REQUIRE(migration.attempted);
+  REQUIRE(migration.error.empty());
+  REQUIRE(migration.movedPacks == 1);
+  REQUIRE(migration.keptInPlace == std::vector<std::string>{"packB"});
+  REQUIRE(std::filesystem::exists(target / "packA" / "model.json"));
+  REQUIRE_FALSE(std::filesystem::exists(legacy / "packA"));
+  REQUIRE(readJson(target / "packB" / "model.json").at("from") == "target");
+
+  const auto registry = readJson(target / "install_registry.json");
+  REQUIRE(registry.size() == 2);
+  for (const auto& entry : registry) {
+    const auto id = entry.at("modelId").get<std::string>();
+    INFO(id);
+    REQUIRE(std::filesystem::path(entry.at("installPath").get<std::string>()) ==
+            target / (id == "huggingface:a" ? "packA" : "packB"));
+  }
+  const auto consents = readJson(target / "license_consents.json");
+  REQUIRE(consents.size() == 2);  // c from the target, a carried over from the legacy hub
+  std::ifstream log(target / "install_log.jsonl");
+  const std::string logText((std::istreambuf_iterator<char>(log)), std::istreambuf_iterator<char>());
+  REQUIRE(logText.find("target") != std::string::npos);
+  REQUIRE(logText.find("legacy") != std::string::npos);
+  REQUIRE(std::filesystem::exists(legacy / "MIGRATED.txt"));
+
+  REQUIRE_FALSE(ai::migrateModelHub(legacy, target).attempted);  // once only
+  REQUIRE_FALSE(ai::migrateModelHub(base / "missing", target).attempted);
+  log.close();
+  std::filesystem::remove_all(base);
+}
+
+TEST_CASE("Hub containment check refuses look-alike and escaping paths", "[ai][model-storage]") {
+  const auto hub = std::filesystem::temp_directory_path() / "automix_contain" / "modelhub";
+  REQUIRE(ai::isInsideDirectory(hub / "huggingface_x", hub));
+  REQUIRE(ai::isInsideDirectory(hub / "a" / "b", hub));
+  REQUIRE_FALSE(ai::isInsideDirectory(hub, hub));
+  REQUIRE_FALSE(ai::isInsideDirectory(hub.parent_path() / "modelhub2" / "x", hub));
+  REQUIRE_FALSE(ai::isInsideDirectory(hub / ".." / "elsewhere", hub));
+  REQUIRE_FALSE(ai::isInsideDirectory(std::filesystem::temp_directory_path(), hub));
 }

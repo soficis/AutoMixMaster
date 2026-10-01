@@ -14,6 +14,7 @@
 #include <nlohmann/json.hpp>
 
 #include "ai/ModelCatalogValidator.h"
+#include "ai/ModelStorage.h"
 #include "util/Sha256.h"
 #include "util/StringUtils.h"
 
@@ -636,7 +637,7 @@ HubInstallResult GitHubReleaseModelHub::installModel(const std::string& modelId,
   result.taskScope = compatibility.taskScope;
   result.revision = info.revision;
 
-  const auto destinationRoot = options.destinationRoot.empty() ? std::filesystem::path("assets/modelhub") : options.destinationRoot;
+  const auto destinationRoot = options.destinationRoot.empty() ? defaultModelHubRoot() : options.destinationRoot;
   const auto installKey = sanitizePathToken(info.modelId.empty() ? info.repoId : info.modelId);
   const auto installPath = destinationRoot / installKey;
   const auto primaryPath = installPath / std::filesystem::path(info.primaryFile).filename();

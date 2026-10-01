@@ -177,7 +177,11 @@ TEST_CASE("Preview bridge meter targets round-trip without torn reads", "[audioi
       const float peak = leftPeak.load(std::memory_order_relaxed);
       seenLevels.push_back(level);
       seenPeaks.push_back(peak);
-      if (level < 0.0f || level > 1.0f || peak < 0.0f || peak > 2.0f)
+      // The reader can run before the writer's first store, so the initial
+      // -60 is a legitimate read; anything else outside the written range is not.
+      const bool levelOk = level == -60.0f || (level >= 0.0f && level <= 1.0f);
+      const bool peakOk = peak == -60.0f || (peak >= 0.0f && peak <= 2.0f);
+      if (!levelOk || !peakOk)
         readerOk.store(false);
     }
   });

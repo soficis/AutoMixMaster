@@ -511,6 +511,9 @@ std::optional<ModelPack> ModelPackLoader::load(const std::filesystem::path& dire
     pack.defaultInterOpThreads.reset();
   }
   pack.enableProfiling = json.value("enableProfiling", json.value("enable_profiling", false));
+  if (json.contains("gpu_memory_mb") && json.at("gpu_memory_mb").is_number_unsigned()) {
+    pack.gpuMemoryMb = json.at("gpu_memory_mb").get<std::uint64_t>();
+  }
 
   if (pack.featureSchemaVersion.empty() && json.contains("feature_schema") && json.at("feature_schema").is_object()) {
     pack.featureSchemaVersion = json.at("feature_schema").value("version", "");

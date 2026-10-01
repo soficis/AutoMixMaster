@@ -14,6 +14,7 @@
 #include <nlohmann/json.hpp>
 
 #include "ai/BsRoformerPack.h"
+#include "ai/GpuMemory.h"
 #include "ai/ItoMasterAdapter.h"
 #include "ai/ModelCatalogValidator.h"
 #include "ai/OnnxExternalData.h"
@@ -621,8 +622,12 @@ std::optional<HubModelInfo> HuggingFaceModelHub::modelInfo(const std::string& mo
   }
 
   // The GPU probe opens a real session once per process; only repos with a
-  // GPU variant pay for it.
-  const bool preferGpuBuild = info.repoId == kBsRoformerRepoId && gpuTensorSessionAvailable();
+  // GPU variant pay for it. fp32 also needs a device big enough to hold it:
+  // on a smaller card it spills into shared memory and runs slower than CPU.
+  std::string gpuProvider;
+  const bool preferGpuBuild = info.repoId == kBsRoformerRepoId && gpuTensorSessionAvailable(&gpuProvider) &&
+                              gpuProvider == "cuda" &&
+                              gpuFitsModel(queryCudaDeviceMemory(), kBsRoformerFp32GpuMemoryMb * 1024 * 1024);
   info.primaryFile = primaryFileForRepo(info.repoId, info.files, &info.hasOnnx, preferGpuBuild);
   info.useCase = HuggingFaceModelHub::inferUseCase(info.repoId, info.tags, "");
   const auto compatibility = validateCatalogModel(info);

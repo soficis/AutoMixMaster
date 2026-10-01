@@ -149,6 +149,7 @@ add_library(automix_core
   src/ai/SeparationRunner.cpp
   src/ai/OnnxTensorInference.cpp
   src/ai/OnnxExternalData.cpp
+  src/ai/GpuMemory.cpp
   src/util/StringUtils.cpp
   src/util/LameDownloader.cpp
   src/util/MetadataPolicy.cpp

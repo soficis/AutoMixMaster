@@ -99,6 +99,10 @@ struct ModelPack {
   std::vector<std::string> outputNames;
   // Absent for scalar-only packs; existing packs load unchanged.
   std::optional<TensorContract> tensorContract;
+  // Device memory the model needs while running on a GPU (MiB). When free
+  // memory is below it, GPU execution would spill into system memory, so
+  // callers run on CPU instead. Absent: no known requirement.
+  std::optional<std::uint64_t> gpuMemoryMb;
   std::filesystem::path rootPath;
 };
 

@@ -269,8 +269,11 @@ bool writeTurnkeyModelPackManifest(const std::filesystem::path& installPath,
         "License: " + kItoMasterLicense + ". Attribution: " + kItoMasterAttribution;
   }
   if (model.repoId == kBsRoformerRepoId) {
-    manifest["intended_use"] =
-        modelFileName == kBsRoformerFp32File ? kBsRoformerFp32IntendedUse : kBsRoformerIntendedUse;
+    const bool fp32 = modelFileName == kBsRoformerFp32File;
+    manifest["intended_use"] = fp32 ? kBsRoformerFp32IntendedUse : kBsRoformerIntendedUse;
+    if (fp32) {
+      manifest["gpu_memory_mb"] = kBsRoformerFp32GpuMemoryMb;
+    }
   }
 
   const auto manifestPath = installPath / "model.json";

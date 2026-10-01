@@ -16,6 +16,7 @@
 #include <nlohmann/json.hpp>
 
 #include "ai/BsRoformerPack.h"
+#include "ai/GpuMemory.h"
 #include "ai/ITensorInference.h"
 #include "ai/ModelCatalogValidator.h"
 #include "ai/ModelLicensePolicy.h"
@@ -1276,3 +1277,97 @@ TEST_CASE("GPU probe agrees with the build", "[ai][tensor][gpu]") {
   }
 #endif
 }
+TEST_CASE("GPU memory policy for the fp32 model", "[ai][tensor][gpu]") {
+  constexpr std::uint64_t MiB = 1024 * 1024;
+  const std::uint64_t need = ai::kBsRoformerFp32GpuMemoryMb * MiB;
+  const auto card = [](std::uint64_t freeMiB, std::uint64_t totalMiB) {
+    return std::optional<ai::GpuMemoryInfo>(ai::GpuMemoryInfo{freeMiB * 1024 * 1024, totalMiB * 1024 * 1024});
+  };
+  // Install: judged on total size. 12 GB cards report just under 12 GiB.
+  REQUIRE(ai::gpuFitsModel(card(14000, 16311), need));
+  REQUIRE(ai::gpuFitsModel(card(10000, 12282), need));
+  REQUIRE_FALSE(ai::gpuFitsModel(card(7000, 8188), need));
+  REQUIRE_FALSE(ai::gpuFitsModel(std::nullopt, need));  // unknown size: keep the CPU build
+  // Run time: judged on what is free right now.
+  REQUIRE(ai::gpuHasRoomNow(card(14000, 16311), need));
+  REQUIRE_FALSE(ai::gpuHasRoomNow(card(9000, 16311), need));  // e.g. a game holding 7 GB
+  REQUIRE(ai::gpuHasRoomNow(std::nullopt, need));  // unknown: try, the CPU retry covers it
+}
+
+TEST_CASE("fp32 pack records its GPU memory need; quantized does not", "[ai][tensor][gpu][catalog]") {
+  const auto root = std::filesystem::temp_directory_path() / "automix_gpu_memory_manifest";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+  for (const std::string file : {std::string(ai::kBsRoformerFp32File), std::string(ai::kBsRoformerQuantizedFile)}) {
+    {
+      std::ofstream model(root / file, std::ios::binary);
+      model << "not a real graph";
+    }
+    ai::HubModelInfo info;
+    info.repoId = ai::kBsRoformerRepoId;
+    info.modelId = ai::kBsRoformerRepoId;
+    info.license = "mit";
+    ai::HubInstallResult install;
+    install.primaryFilePath = root / file;
+    ai::ModelCompatibilityResult compatibility;
+    compatibility.compatible = true;
+    compatibility.taskScope = "separation";
+    compatibility.packType = "separation_model";
+    const auto contract = ai::bsRoformerCatalogContract();
+    std::string error;
+    REQUIRE(ai::writeTurnkeyModelPackManifest(root, info, install, compatibility, &contract, &error));
+    const auto pack = ai::ModelPackLoader().load(root);
+    REQUIRE(pack.has_value());
+    INFO(file);
+    if (file == ai::kBsRoformerFp32File) {
+      REQUIRE(pack->gpuMemoryMb == std::optional<std::uint64_t>(ai::kBsRoformerFp32GpuMemoryMb));
+    } else {
+      REQUIRE_FALSE(pack->gpuMemoryMb.has_value());
+    }
+  }
+  std::filesystem::remove_all(root);
+}
+
+#ifdef AUTOMIX_HAS_NATIVE_ORT
+
+TEST_CASE("Separation runs on CPU when the GPU lacks free memory for the model", "[ai][tensor][gpu][native]") {
+  const auto memory = ai::queryCudaDeviceMemory();
+  const char* expectCuda = std::getenv("AUTOMIX_EXPECT_CUDA");
+  if (expectCuda != nullptr && std::string(expectCuda) == "1") {
+    REQUIRE(memory.has_value());
+    REQUIRE(memory->totalBytes > memory->freeBytes);
+  }
+  if (!memory.has_value()) {
+    SKIP("No CUDA runtime loadable here; the memory gate cannot engage");
+  }
+
+  const auto tempRoot = std::filesystem::temp_directory_path() / "automix_gpu_memory_gate";
+  std::filesystem::remove_all(tempRoot);
+  std::filesystem::create_directories(tempRoot);
+  const auto mixPath = tempRoot / "mix.wav";
+  automix::util::WavWriter writer;
+  writer.write(mixPath, makeTestSignal(2, 100000, 44100.0), 24);
+  const auto fixture = std::filesystem::path(AUTOMIX_SOURCE_DIR) / "tests" / "fixtures" / "tensor" / "identity_mask.onnx";
+  const auto packRoot = writeTensorPack(tempRoot / "pack", &fixture);
+  {
+    // Declare a need no device has.
+    std::ifstream in(packRoot / "model.json");
+    auto manifest = nlohmann::json::parse(in);
+    in.close();
+    manifest["gpu_memory_mb"] = memory->totalBytes / (1024 * 1024) + 1;
+    std::ofstream(packRoot / "model.json") << manifest.dump(2);
+  }
+
+  ai::StemSeparator separator(packRoot);
+  ai::StemSeparator::SeparationOptions options;
+  options.useTensorModel = true;
+  const auto result = separator.separate(mixPath, tempRoot / "out", options);
+  INFO(result.logMessage);
+  REQUIRE(result.success);
+  REQUIRE(result.usedModel);
+  REQUIRE(result.logMessage.find("MiB free but the model needs") != std::string::npos);
+  REQUIRE(result.logMessage.find(" on cpu.") != std::string::npos);
+  std::filesystem::remove_all(tempRoot);
+}
+
+#endif

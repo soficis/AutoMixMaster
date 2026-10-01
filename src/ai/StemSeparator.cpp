@@ -14,6 +14,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "ai/GpuMemory.h"
 #include "ai/ModelPackLoader.h"
 #include "ai/OnnxModelInference.h"
 #include "ai/OnnxTensorInference.h"
@@ -1048,7 +1049,19 @@ StemSeparator::SeparationResult runTensorSeparation(const std::filesystem::path&
   SeparationRunner::Result separated;
   std::string provider;
   std::string gpuFailure;
-  for (const auto& requested : {options.executionProvider, std::string("cpu")}) {
+  auto firstProvider = options.executionProvider;
+  if (firstProvider != "cpu" && pack->gpuMemoryMb.has_value()) {
+    // Not enough free device memory means the run would spill into shared
+    // system memory, which measured slower than running on CPU outright.
+    const auto requiredBytes = *pack->gpuMemoryMb * 1024 * 1024;
+    const auto memory = queryCudaDeviceMemory();
+    if (!gpuHasRoomNow(memory, requiredBytes)) {
+      firstProvider = "cpu";
+      gpuFailure = "GPU has " + std::to_string(memory->freeBytes / (1024 * 1024)) + " MiB free but the model needs " +
+                   std::to_string(*pack->gpuMemoryMb) + " MiB; ran on cpu. ";
+    }
+  }
+  for (const auto& requested : {firstProvider, std::string("cpu")}) {
     OnnxTensorInference inference;
     inference.setTensorContract(pack->tensorContract);
     inference.setExecutionProvider(requested);

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include "ai/ModelPackLoader.h"
 
 namespace automix::ai {
@@ -19,6 +21,10 @@ inline constexpr const char* kBsRoformerQuantizedFile = "bs_roformer_ep317_sdr12
 // The installer inlines the sidecar (inlineExternalData) because ONNX Runtime
 // cannot load this export with its weights external.
 inline constexpr const char* kBsRoformerFp32File = "bs_roformer_ep317_sdr12.9755.onnx";
+// Device memory the fp32 build needs while separating: measured peak 9442 MiB
+// above baseline (RTX 5060 Ti, CUDA 13, per-run arena shrinkage), rounded up to
+// 10 GiB. Written into the pack manifest as gpu_memory_mb.
+inline constexpr std::uint64_t kBsRoformerFp32GpuMemoryMb = 10240;
 inline constexpr const char* kBsRoformerIntendedUse =
     "Vocal separation (BS-RoFormer). The graph produces vocals only; the instrumental stem is the "
     "residual mix - vocals, not a second separation. Quantized build: quality versus fp32 is not "

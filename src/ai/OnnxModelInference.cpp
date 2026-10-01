@@ -25,6 +25,7 @@
 
 #if AUTOMIX_HAS_NATIVE_ORT
 #include <onnxruntime_cxx_api.h>
+#include "ai/OrtSessionProviders.h"
 #endif
 
 namespace automix::ai {
@@ -167,47 +168,7 @@ std::string makeProfilePrefix(const std::filesystem::path& modelPath) {
 }
 
 void appendExecutionProvider(Ort::SessionOptions& options, const std::string& provider) {
-  const auto normalized = canonicalProviderName(provider);
-  if (normalized == "cpu" || normalized == "auto" || normalized.empty()) {
-    return;
-  }
-
-  std::unordered_map<std::string, std::string> providerOptions;
-  if (normalized == gpu::kProviderCuda) {
-    // CUDA provider with default device ID 0
-    providerOptions["device_id"] = "0";
-    providerOptions["cudnn_conv_algo_search"] = "DEFAULT";
-    options.AppendExecutionProvider("CUDA", providerOptions);
-    return;
-  }
-  if (normalized == gpu::kProviderDirectMl) {
-    // DirectML provider on default device
-    providerOptions["device_id"] = "0";
-    options.AppendExecutionProvider("DML", providerOptions);
-    return;
-  }
-  if (normalized == gpu::kProviderCoreMl) {
-    providerOptions["ModelFormat"] = "MLProgram";
-    options.AppendExecutionProvider("CoreML", providerOptions);
-    return;
-  }
-  if (normalized == gpu::kProviderAne) {
-    // Apple Neural Engine via CoreML with ANE override
-    providerOptions["ModelFormat"] = "MLProgram";
-    providerOptions["ANEUnits"] = "256";
-    options.AppendExecutionProvider("CoreML", providerOptions);
-    return;
-  }
-  if (normalized == gpu::kProviderOpenVino) {
-    // OpenVINO provider for Intel NPU / GPU
-    providerOptions["device_type"] = "CPU_FP32";
-    options.AppendExecutionProvider("OpenVINO", providerOptions);
-    return;
-  }
-  if (normalized == "tensorrt") {
-    options.AppendExecutionProvider("Tensorrt", providerOptions);
-    return;
-  }
+  appendOrtExecutionProvider(options, canonicalProviderName(provider));
 }
 
 std::vector<std::string> discoverAvailableRuntimeProviders() {
@@ -515,10 +476,15 @@ bool OnnxModelInference::loadModel(const std::filesystem::path& modelPath) {
       gpuOomCount_.fetch_add(1);
       gpuRecoveryCount_.fetch_add(1);
     }
-    // CPU is the floor resolution always returns, so a CPU session that fails
-    // to open is a model problem (unreadable or corrupt file), not a provider
-    // failure worth recording.
-    if (activeExecutionProvider_ != gpu::kProviderCpu) {
+    // A session that fails to open because of the model itself (missing,
+    // unparseable or invalid file) would fail on every provider; recording the
+    // GPU provider as failed would wrongly steer later resolution off it. CPU is
+    // the floor resolution always returns, so it is never recorded either.
+    const auto* ortError = dynamic_cast<const Ort::Exception*>(&errorException);
+    const auto code = ortError != nullptr ? ortError->GetOrtErrorCode() : ORT_FAIL;
+    const bool modelProblem = code == ORT_NO_SUCHFILE || code == ORT_NO_MODEL || code == ORT_INVALID_PROTOBUF ||
+                              code == ORT_INVALID_GRAPH || code == ORT_MODEL_LOADED;
+    if (activeExecutionProvider_ != gpu::kProviderCpu && !modelProblem) {
       std::scoped_lock lock(failedProvidersMutex_);
       failedProviders_.push_back(activeExecutionProvider_);
     }

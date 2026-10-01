@@ -4,6 +4,8 @@
 
 #include <juce_core/juce_core.h>
 
+#include "ai/GpuRuntimePack.h"
+
 namespace automix::ai {
 namespace {
 
@@ -17,6 +19,7 @@ using CudaMemGetInfo = int (*)(std::size_t* freeBytes, std::size_t* totalBytes);
 } // namespace
 
 std::optional<GpuMemoryInfo> queryCudaDeviceMemory() {
+  GpuRuntimePack::preload();  // a per-user CUDA runtime, if installed
 #if defined(_WIN32)
   const char* candidates[] = {"cudart64_13.dll", "cudart64_12.dll", "cudart64_110.dll"};
 #elif defined(__APPLE__)

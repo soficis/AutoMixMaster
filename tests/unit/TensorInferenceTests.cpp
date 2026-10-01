@@ -13,10 +13,12 @@
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
+#include <juce_core/juce_core.h>
 #include <nlohmann/json.hpp>
 
 #include "ai/BsRoformerPack.h"
 #include "ai/GpuMemory.h"
+#include "ai/GpuRuntimePack.h"
 #include "ai/ITensorInference.h"
 #include "ai/ModelCatalogValidator.h"
 #include "ai/ModelLicensePolicy.h"
@@ -1371,3 +1373,105 @@ TEST_CASE("Separation runs on CPU when the GPU lacks free memory for the model",
 }
 
 #endif
+namespace {
+
+void writeZip(const std::filesystem::path& path, const std::vector<std::pair<std::string, std::string>>& entries) {
+  juce::ZipFile::Builder builder;
+  for (const auto& [name, content] : entries) {
+    builder.addEntry(new juce::MemoryInputStream(content.data(), content.size(), true), 0, name, juce::Time());
+  }
+  std::filesystem::remove(path);
+  juce::FileOutputStream out(juce::File(juce::String(path.wstring().c_str())));
+  REQUIRE(builder.writeToStream(out, nullptr));
+}
+
+} // namespace
+
+TEST_CASE("GPU runtime pack pins every archive", "[ai][gpu][runtime-pack]") {
+  const auto& archives = ai::GpuRuntimePack::archives();
+#if defined(_WIN32)
+  REQUIRE(archives.size() == 4);
+#endif
+  for (const auto& archive : archives) {
+    INFO(archive.name);
+    REQUIRE(archive.url.rfind("https://files.pythonhosted.org/", 0) == 0);
+    REQUIRE(archive.url.size() > archive.name.size());
+    REQUIRE(archive.url.compare(archive.url.size() - archive.name.size(), archive.name.size(), archive.name) == 0);
+    REQUIRE(archive.sha256.size() == 64);
+    REQUIRE(archive.sha256.find_first_not_of("0123456789abcdef") == std::string::npos);
+    REQUIRE(archive.bytes > 0);
+  }
+  REQUIRE_FALSE(ai::GpuRuntimePack::version().empty());
+}
+
+TEST_CASE("GPU runtime pack extracts only libraries and refuses escaping entries", "[ai][gpu][runtime-pack]") {
+  const auto root = std::filesystem::temp_directory_path() / "automix_runtime_pack_extract";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+
+  writeZip(root / "good.whl", {{"nvidia/cu13/bin/x64/cudart64_13.dll", "runtime"},
+                               {"nvidia/cu13/include/cuda.h", "header"},
+                               {"nvidia_cuda_runtime-13.4.92.dist-info/LICENSE.txt", "licence"},
+                               {"nvidia/cudnn/bin/cudnn64_9.DLL", "cudnn"}});
+  std::vector<std::string> extracted;
+  REQUIRE(ai::GpuRuntimePack::extractLibraries(root / "good.whl", root / "bin", extracted).empty());
+  std::sort(extracted.begin(), extracted.end());
+  REQUIRE(extracted == std::vector<std::string>{"cudart64_13.dll", "cudnn64_9.DLL"});
+  REQUIRE(readBytes(root / "bin" / "cudart64_13.dll") == std::vector<char>{'r', 'u', 'n', 't', 'i', 'm', 'e'});
+  REQUIRE_FALSE(std::filesystem::exists(root / "bin" / "cuda.h"));
+
+  writeZip(root / "evil.whl", {{"../../outside.dll", "payload"}});
+  extracted.clear();
+  const auto failure = ai::GpuRuntimePack::extractLibraries(root / "evil.whl", root / "bin", extracted);
+  REQUIRE(failure.find("escapes the archive") != std::string::npos);
+  REQUIRE(extracted.empty());
+  REQUIRE_FALSE(std::filesystem::exists(root.parent_path() / "outside.dll"));
+  std::filesystem::remove_all(root);
+}
+
+TEST_CASE("GPU runtime pack never marks a failed or cancelled install as installed", "[ai][gpu][runtime-pack]") {
+  if (ai::GpuRuntimePack::archives().empty()) {
+    SKIP("No GPU runtime pack on this platform");
+  }
+  const auto root = std::filesystem::temp_directory_path() / "automix_runtime_pack_install";
+  std::filesystem::remove_all(root);
+
+  // A download whose bytes do not match the pinned hash is discarded.
+  const ai::GpuRuntimePack::Fetcher wrongBytes = [](const std::string&, const std::filesystem::path& destination,
+                                                     const std::function<bool(std::uint64_t)>& progress) {
+    std::ofstream(destination, std::ios::binary) << "not the wheel";
+    progress(13);
+    return std::string();
+  };
+  const auto mismatch = ai::GpuRuntimePack::install(root, nullptr, wrongBytes);
+  REQUIRE_FALSE(mismatch.success);
+  REQUIRE(mismatch.message.find("SHA-256 mismatch") != std::string::npos);
+  REQUIRE_FALSE(ai::GpuRuntimePack::isInstalled(root));
+  REQUIRE_FALSE(std::filesystem::exists(root / "downloads" / ai::GpuRuntimePack::archives().front().name));
+
+  // Cancelling mid-download stops at once and leaves nothing marked installed.
+  int fetches = 0;
+  const ai::GpuRuntimePack::Fetcher slow = [&](const std::string&, const std::filesystem::path&,
+                                               const std::function<bool(std::uint64_t)>& progress) {
+    ++fetches;
+    return progress(1) ? std::string() : std::string("cancelled");
+  };
+  const auto cancelled = ai::GpuRuntimePack::install(
+      root, [](std::uint64_t, std::uint64_t) { return false; }, slow);
+  REQUIRE(cancelled.cancelled);
+  REQUIRE_FALSE(cancelled.success);
+  REQUIRE(fetches == 1);
+  REQUIRE_FALSE(ai::GpuRuntimePack::isInstalled(root));
+
+  // A marker for another pack version is not trusted.
+  std::filesystem::create_directories(root / "bin");
+  std::ofstream(root / "bin" / "cudart64_13.dll") << "x";
+  std::ofstream(root / "runtime.json") << R"({"version": "older", "libraries": ["cudart64_13.dll"]})";
+  REQUIRE_FALSE(ai::GpuRuntimePack::isInstalled(root));
+  std::ofstream(root / "runtime.json", std::ios::trunc)
+      << nlohmann::json{{"version", ai::GpuRuntimePack::version()}, {"libraries", {"cudart64_13.dll"}}}.dump();
+  REQUIRE(ai::GpuRuntimePack::isInstalled(root));
+  std::filesystem::remove(root / "bin" / "cudart64_13.dll");
+  REQUIRE_FALSE(ai::GpuRuntimePack::isInstalled(root));  // a listed library went missing
+  std::filesystem::remove_all(root);
+}

@@ -150,6 +150,7 @@ add_library(automix_core
   src/ai/OnnxTensorInference.cpp
   src/ai/OnnxExternalData.cpp
   src/ai/GpuMemory.cpp
+  src/ai/GpuRuntimePack.cpp
   src/util/StringUtils.cpp
   src/util/LameDownloader.cpp
   src/util/MetadataPolicy.cpp
@@ -157,6 +158,10 @@ add_library(automix_core
 )
 
 target_include_directories(automix_core PUBLIC src)
+if(WIN32)
+  # GpuRuntimePack reads adapter memory through DXGI to decide whether to offer CUDA.
+  target_link_libraries(automix_core PRIVATE dxgi)
+endif()
 
 set(AUTOMIX_HAS_NATIVE_ORT OFF)
 set(AUTOMIX_HAS_EP_PLUGIN OFF)

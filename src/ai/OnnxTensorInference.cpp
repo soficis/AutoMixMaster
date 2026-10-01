@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <exception>
+#include <mutex>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -17,6 +18,7 @@
 #endif
 
 #include "ai/GpuProvider.h"
+#include "ai/GpuRuntimePack.h"
 
 #if AUTOMIX_HAS_NATIVE_ORT
 #include <onnxruntime_cxx_api.h>
@@ -157,9 +159,31 @@ std::string identityProbeModel() {
 
 } // namespace
 
+bool runtimeReportsProvider(const std::string& provider) {
+#if AUTOMIX_HAS_NATIVE_ORT
+  try {
+    const auto wanted = gpu::canonicalProviderName(provider);
+    for (const auto& reported : Ort::GetAvailableProviders()) {
+      if (gpu::canonicalProviderName(reported) == wanted) {
+        return true;
+      }
+    }
+  } catch (...) {
+  }
+#else
+  (void)provider;
+#endif
+  return false;
+}
 bool gpuTensorSessionAvailable(std::string* providerOut) {
 #if AUTOMIX_HAS_NATIVE_ORT
-  static const std::string provider = [] {
+  // Only success is cached: a GPU runtime pack installed later in this
+  // process must be able to turn a failed probe into a working one.
+  static std::mutex mutex;
+  static std::string cached;
+  const std::scoped_lock lock(mutex);
+  GpuRuntimePack::preload();
+  const std::string provider = cached.empty() ? [] {
     std::vector<std::string> runtimeProviders;
     try {
       runtimeProviders = Ort::GetAvailableProviders();
@@ -180,7 +204,8 @@ bool gpuTensorSessionAvailable(std::string* providerOut) {
       }
     }
     return std::string();
-  }();
+  }() : cached;
+  cached = provider;
   if (providerOut != nullptr) {
     *providerOut = provider;
   }
@@ -238,6 +263,9 @@ bool OnnxTensorInference::loadModel(const std::filesystem::path& modelPath) {
   try {
     runtimeProviders = Ort::GetAvailableProviders();
   } catch (...) {
+  }
+  if (gpu::canonicalProviderName(requestedProvider_) != gpu::kProviderCpu) {
+    GpuRuntimePack::preload();  // CUDA libraries installed per user, if any
   }
   const auto candidates = tensorProviderCandidates(requestedProvider_, runtimeProviders);
 

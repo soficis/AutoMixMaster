@@ -13,6 +13,8 @@
 #include "app/ui/TaskOrchestrator.h"
 #include "app/ui/TransportBar.h"
 #include "app/ui/VerificationEngine.h"
+#include "ai/GpuRuntimePack.h"
+#include "ai/OnnxTensorInference.h"
 #include "renderers/RendererPipeline.h"
 #include "util/FileUtils.h"
 
@@ -523,6 +525,7 @@ void MainLayout::initComboBoxes() {
 // ─────────────────────────────────────────────────────────────────
 
 MainLayout::~MainLayout() {
+  gpuRuntimeCancel_->store(true);
   taskOrchestrator_->cancelAll();
   stopTimer();
   audioDeviceManager_.removeAudioCallback(this);
@@ -1051,8 +1054,11 @@ void MainLayout::wireControlDeckCallbacks() {
     controlDeck_->getTensorSeparationToggle().setEnabled(enabled);
   };
   controlDeck_->getTensorSeparationToggle().onClick = [this] {
-    sessionManager_.session().renderSettings.tensorSeparationEnabled =
-        controlDeck_->getTensorSeparationToggle().getToggleState();
+    const bool enabled = controlDeck_->getTensorSeparationToggle().getToggleState();
+    sessionManager_.session().renderSettings.tensorSeparationEnabled = enabled;
+    if (enabled) {
+      offerGpuRuntimeIfUseful();
+    }
   };
   controlDeck_->getBatchRecursiveToggle().onClick = [this] {
     const bool enabled = controlDeck_->getBatchRecursiveToggle().getToggleState();
@@ -2230,6 +2236,69 @@ domain::RenderSettings MainLayout::buildCurrentRenderSettings(const std::string&
 std::vector<renderers::ExternalRendererConfig> MainLayout::loadConfiguredExternalRenderers() {
   auto onError = [this](const juce::String& msg) { taskOrchestrator_->appendHistory(msg); };
   return automix::app::detail::loadConfiguredExternalRenderers(onError);
+}
+
+
+
+void MainLayout::offerGpuRuntimeIfUseful() {
+  if (gpuRuntimeOffered_ || gpuRuntimeInstalling_) {
+    return;
+  }
+  // The fp32 vocal model needs 10 GiB of device memory plus desktop headroom;
+  // offering ~1 GB of CUDA libraries to a smaller card would buy nothing.
+  constexpr std::uint64_t kMinimumAdapterBytes = (10240ull + 1536ull) * 1024 * 1024;
+  if (!ai::runtimeReportsProvider("cuda") || !ai::GpuRuntimePack::shouldOffer(kMinimumAdapterBytes)) {
+    return;
+  }
+  gpuRuntimeOffered_ = true;
+  const auto megabytes = ai::GpuRuntimePack::downloadBytes() / (1024 * 1024);
+  const juce::String message =
+      "Your NVIDIA GPU can run the vocal model about 8x faster than the CPU.\n\n"
+      "This needs NVIDIA's CUDA libraries (CUDA runtime, cuBLAS, cuFFT, cuDNN): a one-time download of about " +
+      juce::String(static_cast<juce::int64>(megabytes)) +
+      " MB from NVIDIA's packages on pypi.org, installed for your user only. They are NVIDIA software under "
+      "NVIDIA's own licence terms and are not part of AutoMixMaster.\n\n"
+      "Without them, separation keeps working on the CPU.";
+  juce::AlertWindow::showOkCancelBox(
+      juce::AlertWindow::QuestionIcon, "Enable GPU acceleration?", message, "Download", "Not now", nullptr,
+      juce::ModalCallbackFunction::create([safe = juce::Component::SafePointer<MainLayout>(this)](int result) {
+        if (safe != nullptr && result == 1) {
+          safe->installGpuRuntime();
+        }
+      }));
+}
+
+void MainLayout::installGpuRuntime() {
+  gpuRuntimeInstalling_ = true;
+  taskOrchestrator_->appendHistory("Downloading the GPU runtime (NVIDIA CUDA libraries)...");
+  juce::Thread::launch([safe = juce::Component::SafePointer<MainLayout>(this), cancel = gpuRuntimeCancel_] {
+    int lastDecile = -1;
+    const auto result = ai::GpuRuntimePack::install(
+        ai::GpuRuntimePack::defaultRoot(), [&](std::uint64_t done, std::uint64_t total) {
+          const int percent = total > 0 ? static_cast<int>(done * 100 / total) : 0;
+          if (percent / 10 != lastDecile) {
+            lastDecile = percent / 10;
+            juce::MessageManager::callAsync([safe, percent] {
+              if (safe != nullptr) {
+                safe->taskOrchestrator_->appendHistory("GPU runtime download " + juce::String(percent) + "%");
+              }
+            });
+          }
+          return !cancel->load();
+        });
+    juce::MessageManager::callAsync([safe, result] {
+      if (safe == nullptr) {
+        return;
+      }
+      safe->gpuRuntimeInstalling_ = false;
+      safe->taskOrchestrator_->appendHistory(juce::String(result.message));
+      if (result.success) {
+        safe->taskOrchestrator_->appendHistory(
+            "GPU acceleration is ready. If the vocal model was installed before this, reinstall it from Models to get "
+            "its GPU build.");
+      }
+    });
+  });
 }
 
 } // namespace automix::app

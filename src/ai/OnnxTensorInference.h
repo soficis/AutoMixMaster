@@ -26,6 +26,10 @@ std::vector<std::string> tensorProviderCandidates(const std::string& requested,
 // provider that opened. Always false without native ONNX Runtime.
 bool gpuTensorSessionAvailable(std::string* providerOut = nullptr);
 
+// Whether this ONNX Runtime build contains `provider` (e.g. "cuda") at all,
+// regardless of whether its own libraries are present. False without native ORT.
+bool runtimeReportsProvider(const std::string& provider);
+
 // ONNX Runtime backend for tensor graphs. Without the native SDK
 // (AUTOMIX_HAS_NATIVE_ORT undefined) it is a deterministic no-op: every load
 // fails with a diagnostic and nothing ever reports usedModel == true. There is

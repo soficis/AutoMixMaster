@@ -119,7 +119,19 @@ resolves it.
       second separation.
 
 
-6. Third-party build dependencies
+6. Optional GPU runtime (NVIDIA CUDA libraries)
+-----------------------------------------------
+
+GPU acceleration of the vocal model uses NVIDIA's CUDA runtime, cuBLAS, cuFFT
+and cuDNN. AutoMixMaster does NOT ship or re-host them. On a machine with a
+suitable NVIDIA GPU the application offers a one-time, opt-in download of
+NVIDIA's own redistributable packages from pypi.org (pinned by SHA-256),
+installed for the current user under %LOCALAPPDATA%\AutoMixMaster\gpu-runtime.
+They are NVIDIA software, governed by NVIDIA's licence terms (the CUDA Toolkit
+EULA and the cuDNN Software License Agreement), not by this project's licence.
+Declining the download leaves every feature working on the CPU.
+
+7. Third-party build dependencies
 ---------------------------------
 
 The application links against ONNX Runtime (MIT), JUCE (AGPLv3 or

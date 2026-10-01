@@ -281,6 +281,15 @@ private:
   // Stores the folder path to export into after mastering completes.
   std::string pendingPipelineExportFolder_;
   bool pendingAutoMixAfterSeparationImport_ = false;
+
+  // GPU runtime pack (NVIDIA CUDA libraries, downloaded on demand). Offered at
+  // most once per run; the cancel flag is shared with the download thread so
+  // closing the window stops it without a dangling pointer.
+  void offerGpuRuntimeIfUseful();
+  void installGpuRuntime();
+  bool gpuRuntimeOffered_ = false;
+  bool gpuRuntimeInstalling_ = false;
+  std::shared_ptr<std::atomic_bool> gpuRuntimeCancel_ = std::make_shared<std::atomic_bool>(false);
   bool skipNextAutoMixSeparationCheck_ = false;
 
   // Controllers

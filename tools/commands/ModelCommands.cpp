@@ -8,9 +8,11 @@
 #include <unordered_set>
 
 #include "ai/FeatureSchema.h"
+#include "ai/GpuRuntimePack.h"
 #include "ai/HuggingFaceModelHub.h"
 #include "ai/ModelPackLoader.h"
 #include "ai/OnnxModelInference.h"
+#include "ai/OnnxTensorInference.h"
 #include "ai/StemSeparator.h"
 #include "renderers/ExternalLimiterRenderer.h"
 #include "util/LameDownloader.h"
@@ -572,6 +574,44 @@ int commandSeparate(const std::vector<std::string>& args) {
   return result.success ? 0 : 1;
 }
 
+// gpu-runtime status|install [--root <dir>]
+// The per-user NVIDIA CUDA libraries the CUDA execution provider loads.
+int commandGpuRuntime(const std::vector<std::string>& args) {
+  namespace pack = automix::ai::GpuRuntimePack;
+  const bool wantsInstall = std::find(args.begin(), args.end(), "install") != args.end();
+  const bool wantsStatus = std::find(args.begin(), args.end(), "status") != args.end();
+  const std::string action = wantsInstall ? "install" : (wantsStatus || args.size() <= 1 ? "status" : "");
+  const std::filesystem::path root = argValue(args, "--root").value_or(pack::defaultRoot().string());
+  if (action == "status") {
+    const auto adapter = pack::largestNvidiaAdapterBytes();
+    std::cout << "GPU runtime " << pack::version() << " at " << root.string() << "\n"
+              << "  installed: " << (pack::isInstalled(root) ? "yes" : "no") << "\n"
+              << "  largest NVIDIA adapter: "
+              << (adapter.has_value() ? std::to_string(*adapter / (1024 * 1024)) + " MiB" : std::string("none")) << "\n"
+              << "  runtime build has CUDA: " << (automix::ai::runtimeReportsProvider("cuda") ? "yes" : "no") << "\n"
+              << "  preload: " << (pack::preload(root) ? "ok" : "not loaded") << "\n";
+    std::string provider;
+    const bool gpu = automix::ai::gpuTensorSessionAvailable(&provider);
+    std::cout << "  GPU tensor session: " << (gpu ? provider : std::string("unavailable")) << "\n";
+    return 0;
+  }
+  if (action == "install") {
+    int lastDecile = -1;
+    const auto result = pack::install(root, [&](std::uint64_t done, std::uint64_t total) {
+      const int percent = total > 0 ? static_cast<int>(done * 100 / total) : 0;
+      if (percent / 10 != lastDecile) {
+        lastDecile = percent / 10;
+        std::cout << "  " << percent << "%\n" << std::flush;
+      }
+      return true;
+    });
+    std::cout << result.message << "\n";
+    return result.success ? 0 : 1;
+  }
+  std::cerr << "Usage: gpu-runtime status|install [--root <dir>]\n";
+  return 2;
+}
+
 } // namespace
 
 void registerModelCommands(automix::devtools::CommandRegistry& registry) {
@@ -587,4 +627,5 @@ void registerModelCommands(automix::devtools::CommandRegistry& registry) {
   registry.add("model-install", commandModelInstall);
   registry.add("model-health", commandModelHealth);
   registry.add("separate", commandSeparate);
+  registry.add("gpu-runtime", commandGpuRuntime);
 }

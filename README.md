@@ -197,6 +197,32 @@ To finish the wiring, the guarded code should ask `decidePluginEpAttempt(...)` a
 returns `attempt == false`, log its `reason` and continue down the existing priority chain;
 `Ort::GetAvailableProviders()` already covers every built-in provider.
 
+#### GPU acceleration for the vocal model (Windows + NVIDIA)
+
+The BS-RoFormer vocal model runs on CUDA when three things are true: the build links the
+**CUDA build of ONNX Runtime**, the user has installed the **GPU runtime pack**, and the GPU
+has room for the model. Otherwise it runs on the CPU, with the reason in the log.
+
+- **GPU runtime pack.** NVIDIA's CUDA runtime, cuBLAS, cuFFT and cuDNN (~1 GB download,
+  ~1.3 GB on disk) are not shipped. When *Vocal Model* is switched on, or from *Settings →
+  GPU acceleration*, the app offers a one-time download of NVIDIA's own redistributable
+  packages from pypi.org, pinned by SHA-256, into
+  `%LOCALAPPDATA%\AutoMixMaster\gpu-runtime\<version>`. No admin rights, no system CUDA, no
+  PATH changes; the libraries are preloaded by full path. *Settings* can remove it again.
+  It is offered only for an NVIDIA GPU with ≥ 11.5 GiB of memory and driver **580 or newer**
+  (CUDA 13). `automix_dev_tools gpu-runtime status|install|remove|upgrade-models` does the
+  same from the command line.
+- **Model build.** Where a CUDA session opens and the GPU totals ≥ 11.5 GiB, the catalog
+  installs BS-RoFormer's **fp32** build (its external weights are folded into one file at
+  install time, because ONNX Runtime 1.30 cannot load that export otherwise); elsewhere the
+  smaller **quantized** build, which is faster on CPU but gains nothing on a GPU. Installing
+  the runtime pack upgrades an already-installed quantized model automatically.
+- **Memory.** fp32 needs 10 GiB of free GPU memory while it runs (measured peak 9.2 GiB).
+  With less free, it runs on the CPU rather than spill into shared memory, which is slower.
+
+Measured on an RTX 5060 Ti (16 GB) for a 196 s track: fp32 on CUDA **66–91 s**, quantized on
+CPU 687 s, quantized on CUDA no faster than CPU.
+
 
 ---
 
@@ -215,6 +241,22 @@ cmake -S . -B build -G "Visual Studio 18 2026" -A x64
 ```bash
 cmake --build build --config Release --parallel
 ```
+
+#### Windows release package
+
+`packaging/windows/build-release.ps1` configures a fresh build directory against an ONNX
+Runtime SDK, builds, runs the tests and writes a portable ZIP with CPack. Use the CUDA build
+of ONNX Runtime so the package can use the GPU:
+
+```powershell
+powershell -File packaging\windows\build-release.ps1 -OnnxRuntimeDir C:\lib\onnxruntime-win-x64-gpu_cuda13-1.30.0
+```
+
+The ZIP holds the app, its assets and the ONNX Runtime DLLs (the CUDA provider adds ~190 MB).
+It never contains model weights or NVIDIA's CUDA libraries: the install step fails if any
+`.onnx` file or `cudart`/`cublas`/`cudnn`/`cufft` library is present. For a developer build
+that runs on CUDA without the runtime pack, point `-DAUTOMIX_CUDA_RUNTIME_DIR` at a folder of
+those DLLs; they are copied next to the executables, never into the package.
 
 ### Ubuntu Linux (24.04+)
 

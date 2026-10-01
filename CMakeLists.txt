@@ -334,12 +334,30 @@ target_compile_definitions(AutoMixMasterApp PRIVATE
   JUCE_USE_CURL=0
 )
 
+# Only PhaseLimiter's real content is staged. Its folder also collects renderer
+# scratch audio (tmp/, many GB) and stray downloaded models (assets/), which
+# must never be copied next to the app or into a package.
+set(AUTOMIX_PHASELIMITER_DIRS bin resource licenses)
+set(AUTOMIX_PHASELIMITER_FILES LICENSE README.md)
 if(EXISTS "${CMAKE_SOURCE_DIR}/assets/phaselimiter")
+  set(_automix_pl_commands)
+  foreach(_dir IN LISTS AUTOMIX_PHASELIMITER_DIRS)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/assets/phaselimiter/${_dir}")
+      list(APPEND _automix_pl_commands COMMAND ${CMAKE_COMMAND} -E copy_directory
+           "${CMAKE_SOURCE_DIR}/assets/phaselimiter/${_dir}"
+           "$<TARGET_FILE_DIR:AutoMixMasterApp>/assets/phaselimiter/${_dir}")
+    endif()
+  endforeach()
+  foreach(_file IN LISTS AUTOMIX_PHASELIMITER_FILES)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/assets/phaselimiter/${_file}")
+      list(APPEND _automix_pl_commands COMMAND ${CMAKE_COMMAND} -E copy_if_different
+           "${CMAKE_SOURCE_DIR}/assets/phaselimiter/${_file}"
+           "$<TARGET_FILE_DIR:AutoMixMasterApp>/assets/phaselimiter/${_file}")
+    endif()
+  endforeach()
   add_custom_command(TARGET AutoMixMasterApp POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:AutoMixMasterApp>/assets"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_SOURCE_DIR}/assets/phaselimiter"
-            "$<TARGET_FILE_DIR:AutoMixMasterApp>/assets/phaselimiter"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:AutoMixMasterApp>/assets/phaselimiter"
+    ${_automix_pl_commands}
     COMMENT "Copying bundled PhaseLimiter assets next to AutoMixMaster executable"
     VERBATIM
   )
@@ -492,4 +510,71 @@ if(WIN32 AND AUTOMIX_HAS_NATIVE_ORT)
       endif()
     endforeach()
   endif()
+endif()
+
+# ── Release packaging (Windows: portable ZIP via CPack) ──────────────────────
+# cmake --install <build> --config Release --component application --prefix <dir>
+# or: cpack -C Release. Only the "application" component is packaged: the
+# fetched dependencies (JUCE, nlohmann_json, libebur128) install headers and
+# libraries of their own that do not belong in an app package.
+# Ships the app, its assets and the ONNX Runtime build it was linked against
+# (use the CUDA build for GPU support). Never ships NVIDIA's CUDA libraries -
+# users fetch those on demand (GpuRuntimePack) - nor any model weights.
+if(WIN32)
+  install(TARGETS AutoMixMasterApp RUNTIME DESTINATION . COMPONENT application)
+  if(AUTOMIX_HAS_NATIVE_ORT)
+    get_filename_component(_ort_pkg_dir "${ONNXRUNTIME_LIBRARY}" DIRECTORY)
+    # Core runtime plus the CUDA provider when present; the TensorRT provider
+    # is left out (it needs TensorRT itself, which nothing here uses).
+    foreach(_ort_dll onnxruntime.dll onnxruntime_providers_shared.dll onnxruntime_providers_cuda.dll)
+      if(EXISTS "${_ort_pkg_dir}/${_ort_dll}")
+        install(FILES "${_ort_pkg_dir}/${_ort_dll}" DESTINATION . COMPONENT application)
+      endif()
+    endforeach()
+  endif()
+  foreach(_dir IN LISTS AUTOMIX_PHASELIMITER_DIRS)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/assets/phaselimiter/${_dir}")
+      install(DIRECTORY "${CMAKE_SOURCE_DIR}/assets/phaselimiter/${_dir}" DESTINATION assets/phaselimiter COMPONENT application)
+    endif()
+  endforeach()
+  foreach(_file IN LISTS AUTOMIX_PHASELIMITER_FILES)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/assets/phaselimiter/${_file}")
+      install(FILES "${CMAKE_SOURCE_DIR}/assets/phaselimiter/${_file}" DESTINATION assets/phaselimiter COMPONENT application)
+    endif()
+  endforeach()
+  if(EXISTS "${CMAKE_SOURCE_DIR}/assets/limiters")
+    install(DIRECTORY "${CMAKE_SOURCE_DIR}/assets/limiters" DESTINATION assets COMPONENT application)
+  endif()
+  foreach(_doc NOTICE LICENSE README.md)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/${_doc}")
+      install(FILES "${CMAKE_SOURCE_DIR}/${_doc}" DESTINATION . COMPONENT application)
+    endif()
+  endforeach()
+  # Hard guard for NOTICE's promises: fail the install if a model file or an
+  # NVIDIA CUDA library got into the package.
+  install(CODE [[
+    file(GLOB_RECURSE _automix_forbidden
+      "${CMAKE_INSTALL_PREFIX}/*.onnx" "${CMAKE_INSTALL_PREFIX}/*.onnx.data"
+      "${CMAKE_INSTALL_PREFIX}/cudart*.dll" "${CMAKE_INSTALL_PREFIX}/cublas*.dll"
+      "${CMAKE_INSTALL_PREFIX}/cudnn*.dll" "${CMAKE_INSTALL_PREFIX}/cufft*.dll")
+    if(_automix_forbidden)
+      message(FATAL_ERROR "Package must not contain model weights or NVIDIA CUDA libraries: ${_automix_forbidden}")
+    endif()
+  ]] COMPONENT application)
+
+  set(CPACK_GENERATOR ZIP)
+  set(CPACK_PACKAGE_NAME "AutoMixMaster")
+  set(CPACK_PACKAGE_VENDOR "AutoMixMaster")
+  if(AUTOMIX_HAS_NATIVE_ORT AND EXISTS "${_ort_pkg_dir}/onnxruntime_providers_cuda.dll")
+    set(CPACK_PACKAGE_FILE_NAME "AutoMixMaster-${PROJECT_VERSION}-win64-cuda")
+  else()
+    set(CPACK_PACKAGE_FILE_NAME "AutoMixMaster-${PROJECT_VERSION}-win64")
+  endif()
+  set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY ON)
+  # Component mode is what makes CPack honour CPACK_COMPONENTS_ALL; grouped
+  # into one archive it still yields a single ZIP.
+  set(CPACK_COMPONENTS_ALL application)
+  set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
+  set(CPACK_COMPONENTS_GROUPING ALL_COMPONENTS_IN_ONE)
+  include(CPack)
 endif()

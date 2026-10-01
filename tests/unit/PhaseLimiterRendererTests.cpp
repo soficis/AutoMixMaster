@@ -1,9 +1,11 @@
 #include <cmath>
 #include <filesystem>
+#include <string>
 
 #include <catch2/catch_test_macros.hpp>
 
 #include "domain/Session.h"
+#include "renderers/PhaseLimiterDiscovery.h"
 #include "renderers/PhaseLimiterRenderer.h"
 #include "util/WavWriter.h"
 
@@ -66,5 +68,65 @@ TEST_CASE("PhaseLimiter renderer never crashes and always returns a valid render
   REQUIRE(std::filesystem::exists(result.reportPath));
   REQUIRE(result.logs.empty() == false);
 
+  std::filesystem::remove_all(tempDir);
+}
+
+TEST_CASE("A selected PhaseLimiter really renders and leaves no scratch behind", "[phaselimiter][renderer]") {
+  automix::renderers::PhaseLimiterRenderer renderer;
+  if (!renderer.isAvailable()) {
+    SKIP("No complete PhaseLimiter install found");
+  }
+  const auto installRoot = automix::renderers::PhaseLimiterDiscovery{}.find()->installRoot;
+  const auto countEntries = [](const std::filesystem::path& dir) {
+    std::error_code error;
+    std::size_t count = 0;
+    if (std::filesystem::is_directory(dir, error)) {
+      for ([[maybe_unused]] const auto& entry : std::filesystem::directory_iterator(dir, error)) {
+        ++count;
+      }
+    }
+    return count;
+  };
+
+  const std::filesystem::path tempDir = std::filesystem::temp_directory_path() / "automix_phaselimiter_real_render";
+  std::filesystem::remove_all(tempDir);
+  std::filesystem::create_directories(tempDir);
+  automix::util::WavWriter writer;
+  writer.write(tempDir / "bass.wav", makeTone(44100.0, 44100, 110.0, 0.40), 24);
+  writer.write(tempDir / "lead.wav", makeTone(44100.0, 44100, 660.0, 0.20), 24);
+  automix::domain::Session session;
+  automix::domain::Stem bass;
+  bass.id = "bass";
+  bass.name = "Bass";
+  bass.filePath = (tempDir / "bass.wav").string();
+  automix::domain::Stem lead;
+  lead.id = "lead";
+  lead.name = "Lead";
+  lead.filePath = (tempDir / "lead.wav").string();
+  session.stems = {bass, lead};
+
+  automix::domain::RenderSettings settings;
+  settings.rendererName = "PhaseLimiter";
+  settings.outputPath = (tempDir / "out.wav").string();
+
+  const auto scratchBase = std::filesystem::temp_directory_path() / "automix_phaselimiter";
+  const auto workingDirectory = std::filesystem::current_path();
+  const auto scratchBefore = countEntries(scratchBase);
+  const auto legacyBefore = countEntries(installRoot / "tmp");
+
+  const auto result = renderer.render(session, settings, {}, nullptr);
+  std::string logs;
+  for (const auto& line : result.logs) {
+    logs += line + "\n";
+  }
+  INFO(logs);
+  REQUIRE(result.success);
+  REQUIRE(result.rendererName == "PhaseLimiter");  // not "PhaseLimiter (fallback BuiltIn)"
+  REQUIRE(logs.find("fallback") == std::string::npos);
+  REQUIRE(std::filesystem::exists(settings.outputPath));
+
+  REQUIRE(countEntries(scratchBase) <= scratchBefore);            // its own run is gone
+  REQUIRE(countEntries(installRoot / "tmp") <= legacyBefore);     // nothing new in the install
+  REQUIRE(std::filesystem::current_path() == workingDirectory);   // no process-wide cwd change
   std::filesystem::remove_all(tempDir);
 }

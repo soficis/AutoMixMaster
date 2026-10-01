@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <thread>
 #include <vector>
@@ -43,28 +44,61 @@ bool pathExists(const std::filesystem::path& path) {
   return std::filesystem::exists(path, error);
 }
 
-class CurrentWorkingDirectoryGuard final {
+// Per-render scratch space under the OS temp directory, removed on every way
+// out of render(). It used to live in installRoot/tmp and was cleaned only on
+// success, so each failed run leaked its input WAV and work directory (13 GB on
+// one machine) - and installRoot is read-only in a Program Files install.
+class ScratchDirectory final {
  public:
-  explicit CurrentWorkingDirectoryGuard(const std::filesystem::path& path)
-      : previous_(std::filesystem::current_path()), changed_(false) {
+  explicit ScratchDirectory(std::filesystem::path path) : path_(std::move(path)) {
     std::error_code error;
-    std::filesystem::current_path(path, error);
-    changed_ = !error;
+    std::filesystem::create_directories(path_ / "work", error);
   }
-
-  ~CurrentWorkingDirectoryGuard() {
-    if (!changed_) {
-      return;
-    }
+  ~ScratchDirectory() {
     std::error_code error;
-    std::filesystem::current_path(previous_, error);
+    std::filesystem::remove_all(path_, error);
   }
+  ScratchDirectory(const ScratchDirectory&) = delete;
+  ScratchDirectory& operator=(const ScratchDirectory&) = delete;
+  [[nodiscard]] const std::filesystem::path& path() const { return path_; }
 
  private:
-  std::filesystem::path previous_;
-  bool changed_ = false;
+  std::filesystem::path path_;
 };
 
+std::filesystem::path scratchBase() { return std::filesystem::temp_directory_path() / "automix_phaselimiter"; }
+
+bool startsWith(const std::string& text, const std::string& prefix) { return text.rfind(prefix, 0) == 0; }
+
+// Once per process: remove what earlier versions leaked into installRoot/tmp
+// (only their own file patterns, never anything else there) and scratch runs
+// of ours older than a day, which only a crash leaves behind.
+void sweepLeftoverScratch(const std::filesystem::path& installRoot) {
+  static std::once_flag once;
+  std::call_once(once, [&installRoot] {
+    std::error_code error;
+    const auto legacy = installRoot / "tmp";
+    if (std::filesystem::is_directory(legacy, error)) {
+      for (const auto& entry : std::filesystem::directory_iterator(legacy, error)) {
+        const auto name = entry.path().filename().string();
+        const bool leaked = (startsWith(name, "input_") && entry.path().extension() == ".wav") ||
+                            (startsWith(name, "phase_output_") && entry.path().extension() == ".wav") ||
+                            (startsWith(name, "work_") && entry.is_directory(error));
+        if (leaked) {
+          std::filesystem::remove_all(entry.path(), error);
+        }
+      }
+    }
+    const auto cutoff = std::filesystem::file_time_type::clock::now() - std::chrono::hours(24);
+    if (std::filesystem::is_directory(scratchBase(), error)) {
+      for (const auto& entry : std::filesystem::directory_iterator(scratchBase(), error)) {
+        if (entry.is_directory(error) && std::filesystem::last_write_time(entry.path(), error) < cutoff) {
+          std::filesystem::remove_all(entry.path(), error);
+        }
+      }
+    }
+  });
+}
 std::string uniqueSuffix() {
   const auto value = std::chrono::high_resolution_clock::now().time_since_epoch().count();
   return std::to_string(value);
@@ -115,8 +149,8 @@ void drainProcessOutput(juce::ChildProcess& process, std::string& outputCapture)
 } // namespace
 
 bool PhaseLimiterRenderer::isAvailable() const {
-  PhaseLimiterDiscovery discovery;
-  return discovery.find().has_value();
+  const auto found = PhaseLimiterDiscovery{}.find();
+  return found.has_value() && isCompleteInstall(*found);
 }
 
 RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
@@ -133,6 +167,11 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
     if (!binaryInfo.has_value()) {
       return fallbackToBuiltIn(session, settings, onProgress, cancelFlag,
                                "PhaseLimiter binary not found in assets");
+    }
+    if (!isCompleteInstall(*binaryInfo)) {
+      return fallbackToBuiltIn(session, settings, onProgress, cancelFlag,
+                               "PhaseLimiter install is incomplete: missing " +
+                                   pathToUtf8(masteringReferencePath(*binaryInfo)));
     }
 
     engine::OfflineRenderPipeline pipeline;
@@ -184,33 +223,30 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
       std::filesystem::create_directories(outputPath.parent_path());
     }
 
-    const auto suffix = uniqueSuffix();
-    const std::filesystem::path tempRoot = binaryInfo->installRoot / "tmp";
-    const std::filesystem::path tempWorkDir = tempRoot / ("work_" + suffix);
-    const std::filesystem::path tempInputPath = tempRoot / ("input_" + suffix + ".wav");
-    const std::filesystem::path tempPhaseOutputPath = tempRoot / ("phase_output_" + suffix + ".wav");
-    const std::filesystem::path relativeTempWorkDir = std::filesystem::path("tmp") / ("work_" + suffix);
-    const std::filesystem::path relativeTempInputPath = std::filesystem::path("tmp") / ("input_" + suffix + ".wav");
-    const std::filesystem::path relativeTempPhaseOutputPath =
-        std::filesystem::path("tmp") / ("phase_output_" + suffix + ".wav");
-    std::filesystem::create_directories(tempWorkDir);
+    sweepLeftoverScratch(binaryInfo->installRoot);
+    const ScratchDirectory scratch(scratchBase() / uniqueSuffix());
+    const std::filesystem::path tempWorkDir = scratch.path() / "work";
+    const std::filesystem::path tempInputPath = scratch.path() / "input.wav";
+    const std::filesystem::path tempPhaseOutputPath = scratch.path() / "phase_output.wav";
 
     util::WavWriter writer;
     writer.write(tempInputPath, rawMix, kPhaseLimiterBitDepth);
 
-    CurrentWorkingDirectoryGuard workingDirectory(binaryInfo->installRoot);
-
+    // Absolute paths throughout: no process-wide working-directory change,
+    // which raced with parallel renders.
     juce::StringArray command;
     command.add(pathToUtf8(binaryInfo->executablePath));
-    command.add("-input=" + pathToUtf8(relativeTempInputPath));
-    command.add("-output=" + pathToUtf8(relativeTempPhaseOutputPath));
+    command.add("-input=" + pathToUtf8(tempInputPath));
+    command.add("-output=" + pathToUtf8(tempPhaseOutputPath));
+    command.add("-mastering_reference_file=" + pathToUtf8(masteringReferencePath(*binaryInfo)));
+    command.add("-sound_quality2_cache=" + pathToUtf8(soundQualityCachePath(*binaryInfo)));
     command.add("-disable_input_encode=true");
     command.add("-output_format=wav");
     command.add("-sample_rate=44100");
     command.add("-bit_depth=" + std::to_string(std::clamp(settings.outputBitDepth, 16, 24)));
     command.add("-ceiling=" + std::to_string(plan.limiterCeilingDb));
     command.add("-mastering=true");
-    command.add("-tmp=" + pathToUtf8(relativeTempWorkDir));
+    command.add("-tmp=" + pathToUtf8(tempWorkDir));
 
     juce::ChildProcess process;
     if (!process.start(command)) {
@@ -330,10 +366,6 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
       out << report.dump(2);
     }
 
-    std::error_code ignore;
-    std::filesystem::remove(tempInputPath, ignore);
-    std::filesystem::remove_all(tempWorkDir, ignore);
-    std::filesystem::remove(tempPhaseOutputPath, ignore);
 
     RenderResult result;
     result.success = true;

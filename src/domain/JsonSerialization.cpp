@@ -123,7 +123,7 @@ void from_json(const Json& j, RenderSettings& value) {
     value.metadataPolicy = "copy_all";
   }
   value.metadataTemplate = j.value("metadataTemplate", std::map<std::string, std::string>{});
-  value.rendererName = j.value("rendererName", "PhaseLimiter");
+  value.rendererName = j.value("rendererName", "BuiltIn");
   value.rendererChainEnabled = j.value("rendererChainEnabled", false);
   value.rendererChainMode = j.value("rendererChainMode", "logical_all");
   if (value.rendererChainMode != "logical_all" && value.rendererChainMode != "master_then_rsgain") {
@@ -339,6 +339,16 @@ void from_json(const Json& j, Session& value) {
     value.renderSettings = j.at("renderSettings").get<RenderSettings>();
   } else {
     value.renderSettings = RenderSettings{};
+  }
+  // Schema 3 made PhaseLimiter opt-in. Earlier sessions stored "PhaseLimiter"
+  // as the default rather than a choice, and every such render fell back to
+  // BuiltIn (the renderer never ran correctly before schema 3), so BuiltIn is
+  // exactly what those sessions have been producing.
+  if (value.schemaVersion < 3) {
+    if (value.renderSettings.rendererName == "PhaseLimiter") {
+      value.renderSettings.rendererName = "BuiltIn";
+    }
+    value.schemaVersion = 3;
   }
 
   if (j.contains("mixPlan") && !j.at("mixPlan").is_null()) {

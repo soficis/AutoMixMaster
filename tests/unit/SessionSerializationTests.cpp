@@ -8,7 +8,7 @@
 
 TEST_CASE("Session serialization round trip preserves required fields", "[session]") {
   automix::domain::Session session;
-  session.schemaVersion = 2;
+  session.schemaVersion = 3;
   session.sessionName = "round_trip";
   session.originalMixPath = "C:/audio/original_mix.wav";
   session.residualBlend = 7.5;
@@ -54,7 +54,7 @@ TEST_CASE("Session serialization round trip preserves required fields", "[sessio
   const automix::domain::Json json = session;
   const auto decoded = json.get<automix::domain::Session>();
 
-  REQUIRE(decoded.schemaVersion == 2);
+  REQUIRE(decoded.schemaVersion == 3);
   REQUIRE(decoded.sessionName == "round_trip");
   REQUIRE(decoded.originalMixPath.has_value());
   REQUIRE(decoded.originalMixPath.value() == "C:/audio/original_mix.wav");
@@ -160,4 +160,23 @@ TEST_CASE("Render settings normalize unsupported renderer chain modes", "[sessio
   const auto decoded = json.get<automix::domain::Session>();
   REQUIRE(decoded.renderSettings.rendererChainEnabled == true);
   REQUIRE(decoded.renderSettings.rendererChainMode == "logical_all");
+}
+
+TEST_CASE("Sessions from before PhaseLimiter became opt-in load with BuiltIn", "[session][serialization]") {
+  // Schema 2 wrote rendererName "PhaseLimiter" as the default, and every such
+  // render fell back to BuiltIn, so BuiltIn reproduces what those sessions got.
+  const nlohmann::json legacy = {{"schemaVersion", 2}, {"renderSettings", {{"rendererName", "PhaseLimiter"}}}};
+  const auto migrated = legacy.get<automix::domain::Session>();
+  REQUIRE(migrated.renderSettings.rendererName == "BuiltIn");
+  REQUIRE(migrated.schemaVersion == 3);
+
+  const nlohmann::json legacyOther = {{"schemaVersion", 2}, {"renderSettings", {{"rendererName", "SoX"}}}};
+  REQUIRE(legacyOther.get<automix::domain::Session>().renderSettings.rendererName == "SoX");
+
+  // From schema 3 on, PhaseLimiter in a session is an explicit choice and stays.
+  const nlohmann::json chosen = {{"schemaVersion", 3}, {"renderSettings", {{"rendererName", "PhaseLimiter"}}}};
+  REQUIRE(chosen.get<automix::domain::Session>().renderSettings.rendererName == "PhaseLimiter");
+
+  REQUIRE(automix::domain::Session{}.schemaVersion == 3);
+  REQUIRE(automix::domain::RenderSettings{}.rendererName == "BuiltIn");
 }

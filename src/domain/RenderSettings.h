@@ -33,7 +33,9 @@ struct RenderSettings {
   bool tensorSeparationEnabled = false;
   std::string metadataPolicy = "copy_all";
   std::map<std::string, std::string> metadataTemplate;
-  std::string rendererName = "PhaseLimiter";
+  // PhaseLimiter is opt-in: selecting it (here or as a custom chain stage) is
+  // the only way it runs, including in the logical_all chain.
+  std::string rendererName = "BuiltIn";
   bool rendererChainEnabled = false;
   std::string rendererChainMode = "logical_all";
   std::vector<std::string> rendererChain;

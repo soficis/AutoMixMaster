@@ -2,6 +2,7 @@
 #include "commands/DevToolsUtils.h"
 
 #include <algorithm>
+#include <chrono>
 #include <fstream>
 #include <iostream>
 #include <unordered_set>
@@ -10,6 +11,7 @@
 #include "ai/HuggingFaceModelHub.h"
 #include "ai/ModelPackLoader.h"
 #include "ai/OnnxModelInference.h"
+#include "ai/StemSeparator.h"
 #include "renderers/ExternalLimiterRenderer.h"
 #include "util/LameDownloader.h"
 
@@ -510,6 +512,58 @@ int commandModelHealth(const CommandArgs& args) {
   return failed == 0 ? 0 : 1;
 }
 
+// separate --mix <file> --out <dir> [--pack <dir>] [--tensor] [--json]
+// Runs StemSeparator exactly as single-mix import does, outside the UI.
+int commandSeparate(const std::vector<std::string>& args) {
+  const auto mixArg = argValue(args, "--mix");
+  const auto outArg = argValue(args, "--out");
+  if (!mixArg.has_value() || !outArg.has_value()) {
+    std::cerr << "Usage: separate --mix <file> --out <dir> [--pack <dir>] [--tensor] [--json]\n";
+    return 2;
+  }
+
+  automix::ai::StemSeparator separator(argValue(args, "--pack").value_or("assets/models/stem-separator"));
+  automix::ai::StemSeparator::SeparationOptions options;
+  options.useTensorModel = hasFlag(args, "--tensor");
+  const bool jsonOutput = hasFlag(args, "--json");
+  if (options.useTensorModel && !jsonOutput) {
+    options.tensorProgress = [](const int done, const int total) {
+      std::cout << "  chunk " << done << "/" << total << "\n" << std::flush;
+    };
+  }
+
+  const auto started = std::chrono::steady_clock::now();
+  const auto result = separator.separate(*mixArg, *outArg, options);
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+
+  nlohmann::json stems = nlohmann::json::array();
+  for (const auto& stem : result.stems) {
+    stems.push_back({{"name", stem.name}, {"path", stem.filePath}, {"role", automix::domain::toString(stem.role)}});
+  }
+  const nlohmann::json payload = {
+      {"success", result.success},
+      {"usedModel", result.usedModel},
+      {"seconds", seconds},
+      {"stems", stems},
+      {"energyLeakage", result.qaMetrics.energyLeakage},
+      {"residualDistortion", result.qaMetrics.residualDistortion},
+      {"transientRetention", result.qaMetrics.transientRetention},
+      {"log", result.logMessage},
+  };
+  if (jsonOutput) {
+    std::cout << payload.dump(2) << "\n";
+  } else {
+    std::cout << "Separation: success=" << (result.success ? "yes" : "no")
+              << " usedModel=" << (result.usedModel ? "yes" : "no") << " seconds=" << seconds << "\n";
+    for (const auto& stem : result.stems) {
+      std::cout << "  " << automix::domain::toString(stem.role) << " -> " << stem.filePath << "\n";
+    }
+    std::cout << "  " << result.logMessage << "\n";
+  }
+  return result.success ? 0 : 1;
+}
+
 } // namespace
 
 void registerModelCommands(automix::devtools::CommandRegistry& registry) {
@@ -524,4 +578,5 @@ void registerModelCommands(automix::devtools::CommandRegistry& registry) {
   registry.add("model-browse", commandModelBrowse);
   registry.add("model-install", commandModelInstall);
   registry.add("model-health", commandModelHealth);
+  registry.add("separate", commandSeparate);
 }

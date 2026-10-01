@@ -25,6 +25,7 @@
 #include "ai/StemSeparator.h"
 #include "ai/TensorTypes.h"
 #include "analysis/SpectrogramFrontEnd.h"
+#include "domain/JsonSerialization.h"
 #include "domain/RenderSettings.h"
 #include "engine/AudioBuffer.h"
 #include "engine/AudioFileIO.h"
@@ -764,6 +765,19 @@ TEST_CASE("Native tensor inference names a missing external-data sidecar", "[ai]
 TEST_CASE("Tensor separation defaults off", "[tensor][settings]") {
   const automix::domain::RenderSettings settings;
   REQUIRE_FALSE(settings.tensorSeparationEnabled);
+}
+
+TEST_CASE("Tensor separation flag persists per session and stays off for older sessions", "[tensor][settings]") {
+  automix::domain::RenderSettings enabled;
+  enabled.tensorSeparationEnabled = true;
+  const nlohmann::json saved = enabled;
+  REQUIRE(saved.at("tensorSeparationEnabled") == true);
+  REQUIRE(saved.get<automix::domain::RenderSettings>().tensorSeparationEnabled);
+
+  // A session written before the toggle existed has no key at all.
+  auto legacy = nlohmann::json(automix::domain::RenderSettings{});
+  legacy.erase("tensorSeparationEnabled");
+  REQUIRE_FALSE(legacy.get<automix::domain::RenderSettings>().tensorSeparationEnabled);
 }
 
 namespace {

@@ -1046,7 +1046,13 @@ void MainLayout::wireControlDeckCallbacks() {
     sessionManager_.session().residualBlend = controlDeck_->getResidualBlendSlider().getValue();
   };
   controlDeck_->getSeparatedStemsToggle().onClick = [this] {
-    sessionManager_.session().aiStemsEnabled = controlDeck_->getSeparatedStemsToggle().getToggleState();
+    const bool enabled = controlDeck_->getSeparatedStemsToggle().getToggleState();
+    sessionManager_.session().aiStemsEnabled = enabled;
+    controlDeck_->getTensorSeparationToggle().setEnabled(enabled);
+  };
+  controlDeck_->getTensorSeparationToggle().onClick = [this] {
+    sessionManager_.session().renderSettings.tensorSeparationEnabled =
+        controlDeck_->getTensorSeparationToggle().getToggleState();
   };
   controlDeck_->getBatchRecursiveToggle().onClick = [this] {
     const bool enabled = controlDeck_->getBatchRecursiveToggle().getToggleState();
@@ -2088,6 +2094,9 @@ void MainLayout::applySessionUiSelections() {
 
   controlDeck_->getResidualBlendSlider().setValue(std::clamp(session.residualBlend, 0.0, 10.0), juce::dontSendNotification);
   controlDeck_->getSeparatedStemsToggle().setToggleState(session.aiStemsEnabled, juce::dontSendNotification);
+  controlDeck_->getTensorSeparationToggle().setToggleState(session.renderSettings.tensorSeparationEnabled,
+                                                           juce::dontSendNotification);
+  controlDeck_->getTensorSeparationToggle().setEnabled(session.aiStemsEnabled);
   controlDeck_->getBatchRecursiveToggle().setToggleState(session.batchRecursiveEnabled, juce::dontSendNotification);
   controlDeck_->getRendererChainToggle().setToggleState(
       session.renderSettings.rendererChainEnabled,
@@ -2101,6 +2110,7 @@ void MainLayout::syncSessionUiSelections() {
   auto& session = sessionManager_.session();
   session.residualBlend = controlDeck_->getResidualBlendSlider().getValue();
   session.aiStemsEnabled = controlDeck_->getSeparatedStemsToggle().getToggleState();
+  session.renderSettings.tensorSeparationEnabled = controlDeck_->getTensorSeparationToggle().getToggleState();
   session.batchRecursiveEnabled = controlDeck_->getBatchRecursiveToggle().getToggleState();
 
   if (const auto renderer = selectionState_.rendererIdForCombo(controlDeck_->getRendererBox().getSelectedId()); renderer.has_value()) {

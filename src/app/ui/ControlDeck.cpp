@@ -30,6 +30,11 @@ ControlDeck::ControlDeck() {
   batchButton_.setTooltip("Batch Process");
   exportButton_.setTooltip("Export (Ctrl+E)");
   separatedStemsToggle_.setTooltip("Split a single imported full mix into stems using the active Separation model pack.");
+  tensorSeparationToggle_.setTooltip(
+      "Use a vocal-separation model pack (e.g. BS-RoFormer) when AI Stem Separation runs. Produces vocals plus an "
+      "instrumental that is the residual (mix - vocals), not a second separation. Takes minutes on CPU; falls back to "
+      "the standard separator if the pack cannot run.");
+  tensorSeparationToggle_.setEnabled(false);
   batchRecursiveToggle_.setTooltip("Include subfolders when scanning batch input");
   rendererChainToggle_.setTooltip("Run renderers in a staged chain");
   rendererChainModeBox_.setTooltip("Renderer chain strategy");
@@ -155,6 +160,7 @@ ControlDeck::ControlDeck() {
   addAndMakeVisible(platformPresetLabel_);
   addAndMakeVisible(platformPresetBox_);
   addAndMakeVisible(separatedStemsToggle_);
+  addAndMakeVisible(tensorSeparationToggle_);
   addAndMakeVisible(separationModelStatusLabel_);
   addAndMakeVisible(advancedToggle_);
 
@@ -224,6 +230,7 @@ void ControlDeck::resized() {
   platformPresetBox_.setBounds(settingsRow2.removeFromLeft(140).reduced(1));
   settingsRow2.removeFromLeft(spacing::gapSmall);
   separatedStemsToggle_.setBounds(settingsRow2.removeFromLeft(180).reduced(1));
+  tensorSeparationToggle_.setBounds(settingsRow2.removeFromLeft(120).reduced(1));
   settingsRow2.removeFromLeft(spacing::gapSmall);
   separationModelStatusLabel_.setBounds(settingsRow2.reduced(1));
 

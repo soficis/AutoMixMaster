@@ -42,6 +42,7 @@ public:
   juce::ComboBox& getRendererChainModeBox() { return rendererChainModeBox_; }
   juce::Slider& getResidualBlendSlider() { return residualBlendSlider_; }
   juce::ToggleButton& getSeparatedStemsToggle() { return separatedStemsToggle_; }
+  juce::ToggleButton& getTensorSeparationToggle() { return tensorSeparationToggle_; }
   juce::ToggleButton& getBatchRecursiveToggle() { return batchRecursiveToggle_; }
   void setRendererChainPreviewText(const juce::String& text);
   void setSeparationModelStatus(const juce::String& text, bool ready);
@@ -78,6 +79,7 @@ private:
   juce::Label blendLabel_{"", "Residual Blend"};
   juce::Slider residualBlendSlider_;
   juce::ToggleButton separatedStemsToggle_{"AI Stem Separation"};
+  juce::ToggleButton tensorSeparationToggle_{"Vocal Model"};
   juce::Label separationModelStatusLabel_{"", "Separation model: none"};
   juce::ToggleButton batchRecursiveToggle_{"Recursive Batch"};
 

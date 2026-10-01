@@ -847,7 +847,11 @@ void ModelController::uninstallModel(const std::string& modelId, std::atomic_boo
             std::error_code error;
             // The path comes from install_registry.json: only ever delete inside
             // the hub, whatever that file says.
-            const bool outsideHub = !installPath.empty() && !ai::isInsideDirectory(installPath, hubRoot);
+            // A stale entry whose directory is already gone (e.g. an unmigrated
+            // legacy path) is only unregistered, so it cannot get stuck.
+            const bool outsideHub = !installPath.empty() && !ai::isInsideDirectory(installPath, hubRoot) &&
+                                    std::filesystem::exists(installPath, error);
+            error.clear();
             if (outsideHub) {
               detail = "Refusing to remove '" + installPath.string() + "': it is outside the model hub " + hubRoot.string();
             } else if (!installPath.empty() && std::filesystem::exists(installPath, error)) {

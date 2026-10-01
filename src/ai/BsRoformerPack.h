@@ -15,8 +15,9 @@ inline constexpr const char* kBsRoformerRepoId = "xycld/BS-RoFormer-ONNX";
 inline constexpr const char* kBsRoformerQuantizedFile = "bs_roformer_ep317_sdr12.9755_quantized_uint8.onnx";
 // The fp32 graph with its weights in "<name>.data". Installed instead of the
 // quantized build where a GPU session opens: the quantized build's integer ops
-// have no CUDA kernels and gain nothing on a GPU (measured: no faster than CPU),
-// while fp32 on an RTX 5060 Ti separated a 196 s track in 91 s vs 687 s on CPU.
+// have no CUDA kernels (ORT inserts ~870 Memcpy nodes), so on CUDA it took
+// 303-504 s for a 196 s track, while fp32 on an RTX 5060 Ti took 73-91 s
+// (quantized on CPU: 687 s).
 // On CPU fp32 is ~45% slower than quantized, so CPU-only machines keep that.
 // The installer inlines the sidecar (inlineExternalData) because ONNX Runtime
 // cannot load this export with its weights external.

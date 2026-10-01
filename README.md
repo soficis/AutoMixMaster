@@ -215,13 +215,13 @@ has room for the model. Otherwise it runs on the CPU, with the reason in the log
 - **Model build.** Where a CUDA session opens and the GPU totals ≥ 11.5 GiB, the catalog
   installs BS-RoFormer's **fp32** build (its external weights are folded into one file at
   install time, because ONNX Runtime 1.30 cannot load that export otherwise); elsewhere the
-  smaller **quantized** build, which is faster on CPU but gains nothing on a GPU. Installing
+  smaller **quantized** build, which is faster on CPU but 4-7x slower than fp32 on a GPU. Installing
   the runtime pack upgrades an already-installed quantized model automatically.
 - **Memory.** fp32 needs 10 GiB of free GPU memory while it runs (measured peak 9.2 GiB).
   With less free, it runs on the CPU rather than spill into shared memory, which is slower.
 
 Measured on an RTX 5060 Ti (16 GB) for a 196 s track: fp32 on CUDA **66–91 s**, quantized on
-CPU 687 s, quantized on CUDA no faster than CPU.
+CPU 687 s, quantized on CUDA 303–504 s.
 
 
 ---

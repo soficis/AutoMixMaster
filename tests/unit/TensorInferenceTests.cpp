@@ -36,6 +36,13 @@
 #include "util/WavWriter.h"
 #include "TorchStftGolden.h"
 
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace ai = automix::ai;
 namespace analysis = automix::analysis;
 namespace engine = automix::engine;
@@ -1412,7 +1419,8 @@ TEST_CASE("GPU runtime pack extracts only libraries and refuses escaping entries
   writeZip(root / "good.whl", {{"nvidia/cu13/bin/x64/cudart64_13.dll", "runtime"},
                                {"nvidia/cu13/include/cuda.h", "header"},
                                {"nvidia_cuda_runtime-13.4.92.dist-info/LICENSE.txt", "licence"},
-                               {"nvidia/cudnn/bin/cudnn64_9.DLL", "cudnn"}});
+                               {"nvidia/cudnn/bin/cudnn64_9.DLL", "cudnn"},
+                               {"nvidia/cu13/bin/x64/nvblas64_13.dll", "never loaded by ORT"}});
   std::vector<std::string> extracted;
   REQUIRE(ai::GpuRuntimePack::extractLibraries(root / "good.whl", root / "bin", extracted).empty());
   std::sort(extracted.begin(), extracted.end());
@@ -1473,5 +1481,72 @@ TEST_CASE("GPU runtime pack never marks a failed or cancelled install as install
   REQUIRE(ai::GpuRuntimePack::isInstalled(root));
   std::filesystem::remove(root / "bin" / "cudart64_13.dll");
   REQUIRE_FALSE(ai::GpuRuntimePack::isInstalled(root));  // a listed library went missing
+  std::filesystem::remove_all(root);
+}
+TEST_CASE("NVIDIA driver version is read from the Windows driver version", "[ai][gpu][runtime-pack]") {
+  const auto umd = [](std::uint64_t a, std::uint64_t b, std::uint64_t c, std::uint64_t d) {
+    return (a << 48) | (b << 32) | (c << 16) | d;
+  };
+  REQUIRE(ai::GpuRuntimePack::nvidiaDriverVersion(umd(32, 0, 16, 1074)) == std::pair<int, int>{610, 74});  // this machine
+  REQUIRE(ai::GpuRuntimePack::nvidiaDriverVersion(umd(32, 0, 15, 8088)) == std::pair<int, int>{580, 88});
+  REQUIRE(ai::GpuRuntimePack::nvidiaDriverVersion(umd(32, 0, 15, 6094)) == std::pair<int, int>{560, 94});
+  REQUIRE(ai::GpuRuntimePack::nvidiaDriverVersion(umd(31, 0, 15, 3742)) == std::pair<int, int>{537, 42});
+  REQUIRE(ai::GpuRuntimePack::kMinimumDriverMajor == 580);
+}
+
+TEST_CASE("GPU runtime pack removal refuses foreign folders and finishes locked removals at startup",
+          "[ai][gpu][runtime-pack]") {
+  const auto base = std::filesystem::temp_directory_path() / "automix_runtime_pack_remove";
+  std::filesystem::remove_all(base);
+
+  // Not a pack: wrong folder name.
+  const auto foreign = base / "Documents";
+  std::filesystem::create_directories(foreign / "bin");
+  const auto refused = ai::GpuRuntimePack::uninstall(foreign);
+  REQUIRE_FALSE(refused.removedNow);
+  REQUIRE(refused.message.find("Refusing") != std::string::npos);
+  REQUIRE(std::filesystem::exists(foreign / "bin"));
+
+  // A pack whose files are free goes at once.
+  const auto root = base / ai::GpuRuntimePack::version();
+  std::filesystem::create_directories(root / "bin");
+  std::ofstream(root / "bin" / "cudart64_13.dll") << "x";
+  std::ofstream(root / "runtime.json") << "{}";
+  REQUIRE(ai::GpuRuntimePack::uninstall(root).removedNow);
+  REQUIRE_FALSE(std::filesystem::exists(root));
+
+#if defined(_WIN32)
+  // A library in use cannot be deleted on Windows: the pack is disabled now
+  // and removed at the next start.
+  std::filesystem::create_directories(root / "bin");
+  std::ofstream(root / "bin" / "cudnn64_9.dll") << "x";
+  std::ofstream(root / "runtime.json") << "{}";
+  {
+    HANDLE locked = CreateFileW((root / "bin" / "cudnn64_9.dll").c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(locked != INVALID_HANDLE_VALUE);
+    const auto deferred = ai::GpuRuntimePack::uninstall(root);
+    CloseHandle(locked);
+    REQUIRE_FALSE(deferred.removedNow);
+    REQUIRE_FALSE(std::filesystem::exists(root / "runtime.json"));  // disabled at once
+    REQUIRE_FALSE(ai::GpuRuntimePack::isInstalled(root));
+  }
+  ai::GpuRuntimePack::completePendingRemoval(root);
+  REQUIRE_FALSE(std::filesystem::exists(root));
+#endif
+  std::filesystem::remove_all(base);
+}
+
+TEST_CASE("Vocal model GPU upgrade leaves non-matching packs alone", "[ai][gpu][catalog]") {
+  const auto root = std::filesystem::temp_directory_path() / "automix_gpu_upgrade_scan";
+  std::filesystem::remove_all(root);
+  REQUIRE_FALSE(ai::upgradeBsRoformerForGpu(root).has_value());  // no hub at all
+  std::filesystem::create_directories(root / "other_model");
+  std::ofstream(root / "other_model" / "modelhub.json") << R"({"repoId": "someone/else"})";
+  std::ofstream(root / "other_model" / "model.json") << R"({"model_file": "bs_roformer_ep317_sdr12.9755_quantized_uint8.onnx"})";
+  std::filesystem::create_directories(root / "already_gpu");
+  std::ofstream(root / "already_gpu" / "modelhub.json") << R"({"repoId": "xycld/BS-RoFormer-ONNX"})";
+  std::ofstream(root / "already_gpu" / "model.json") << R"({"model_file": "bs_roformer_ep317_sdr12.9755.onnx"})";
+  REQUIRE_FALSE(ai::upgradeBsRoformerForGpu(root).has_value());
   std::filesystem::remove_all(root);
 }

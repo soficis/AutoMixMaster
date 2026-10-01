@@ -457,6 +457,57 @@ void appendInstallLog(const std::filesystem::path& root,
   out << event.dump() << "\n";
 }
 
+bool bsRoformerGpuBuildQualifies() {
+  // The probe opens a real session (once per process when it succeeds). fp32
+  // also needs a device big enough to hold it: on a smaller card it spills into
+  // shared memory and runs slower than the CPU.
+  std::string gpuProvider;
+  return gpuTensorSessionAvailable(&gpuProvider) && gpuProvider == "cuda" &&
+         gpuFitsModel(queryCudaDeviceMemory(), kBsRoformerFp32GpuMemoryMb * 1024 * 1024);
+}
+
+std::optional<HubInstallResult> upgradeBsRoformerForGpu(const std::filesystem::path& destinationRoot) {
+  std::error_code error;
+  if (!std::filesystem::is_directory(destinationRoot, error) || error) {
+    return std::nullopt;
+  }
+  for (const auto& entry : std::filesystem::directory_iterator(destinationRoot, error)) {
+    const auto hubMetadataPath = entry.path() / "modelhub.json";
+    if (!entry.is_directory(error) || !std::filesystem::is_regular_file(hubMetadataPath, error)) {
+      continue;
+    }
+    nlohmann::json hubMetadata;
+    nlohmann::json manifest;
+    try {
+      std::ifstream hubIn(hubMetadataPath);
+      hubMetadata = nlohmann::json::parse(hubIn);
+      std::ifstream manifestIn(entry.path() / "model.json");
+      manifest = nlohmann::json::parse(manifestIn);
+    } catch (...) {
+      continue;
+    }
+    if (hubMetadata.value("repoId", "") != kBsRoformerRepoId ||
+        manifest.value("model_file", "") != kBsRoformerQuantizedFile) {
+      continue;
+    }
+    if (!bsRoformerGpuBuildQualifies()) {
+      return std::nullopt;
+    }
+    HubInstallOptions options;
+    options.destinationRoot = destinationRoot;
+    options.overwrite = true;
+    options.downloadReadme = false;
+    auto result = HuggingFaceModelHub().installModel(kBsRoformerRepoId, options);
+    if (result.success && result.primaryFilePath.filename() != kBsRoformerQuantizedFile) {
+      // The pack keeps its id and directory; only the superseded CPU build goes.
+      std::filesystem::remove(entry.path() / kBsRoformerQuantizedFile, error);
+      result.message = "Vocal model switched to its GPU build.";
+    }
+    return result;
+  }
+  return std::nullopt;
+}
+
 std::string primaryFileForRepo(const std::string& repoId,
                                const std::vector<std::string>& files,
                                bool* hasOnnxOut,
@@ -621,13 +672,8 @@ std::optional<HubModelInfo> HuggingFaceModelHub::modelInfo(const std::string& mo
     }
   }
 
-  // The GPU probe opens a real session once per process; only repos with a
-  // GPU variant pay for it. fp32 also needs a device big enough to hold it:
-  // on a smaller card it spills into shared memory and runs slower than CPU.
-  std::string gpuProvider;
-  const bool preferGpuBuild = info.repoId == kBsRoformerRepoId && gpuTensorSessionAvailable(&gpuProvider) &&
-                              gpuProvider == "cuda" &&
-                              gpuFitsModel(queryCudaDeviceMemory(), kBsRoformerFp32GpuMemoryMb * 1024 * 1024);
+  // Only repos with a GPU variant pay for the probe.
+  const bool preferGpuBuild = info.repoId == kBsRoformerRepoId && bsRoformerGpuBuildQualifies();
   info.primaryFile = primaryFileForRepo(info.repoId, info.files, &info.hasOnnx, preferGpuBuild);
   info.useCase = HuggingFaceModelHub::inferUseCase(info.repoId, info.tags, "");
   const auto compatibility = validateCatalogModel(info);

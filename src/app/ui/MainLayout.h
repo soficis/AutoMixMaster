@@ -287,6 +287,13 @@ private:
   // closing the window stops it without a dangling pointer.
   void offerGpuRuntimeIfUseful();
   void installGpuRuntime();
+  void upgradeVocalModelForGpu();
+  void onGpuRuntimeButton();
+  juce::String gpuRuntimeStatusText() const;
+  juce::String gpuRuntimeButtonText() const;
+  // The fp32 vocal model needs 10 GiB of device memory plus desktop headroom;
+  // offering ~1 GB of CUDA libraries to a smaller card would buy nothing.
+  static constexpr std::uint64_t kGpuRuntimeMinimumAdapterBytes = (10240ull + 1536ull) * 1024 * 1024;
   bool gpuRuntimeOffered_ = false;
   bool gpuRuntimeInstalling_ = false;
   std::shared_ptr<std::atomic_bool> gpuRuntimeCancel_ = std::make_shared<std::atomic_bool>(false);

@@ -574,20 +574,29 @@ int commandSeparate(const std::vector<std::string>& args) {
   return result.success ? 0 : 1;
 }
 
-// gpu-runtime status|install [--root <dir>]
+// gpu-runtime status|install|remove|upgrade-models [--root <dir>] [--hub <dir>]
 // The per-user NVIDIA CUDA libraries the CUDA execution provider loads.
 int commandGpuRuntime(const std::vector<std::string>& args) {
   namespace pack = automix::ai::GpuRuntimePack;
-  const bool wantsInstall = std::find(args.begin(), args.end(), "install") != args.end();
-  const bool wantsStatus = std::find(args.begin(), args.end(), "status") != args.end();
-  const std::string action = wantsInstall ? "install" : (wantsStatus || args.size() <= 1 ? "status" : "");
+  const auto has = [&args](const char* word) { return std::find(args.begin(), args.end(), word) != args.end(); };
+  const std::string action = has("install")          ? "install"
+                             : has("remove")         ? "remove"
+                             : has("upgrade-models") ? "upgrade-models"
+                             : (has("status") || args.size() <= 1) ? "status"
+                                                                    : "";
   const std::filesystem::path root = argValue(args, "--root").value_or(pack::defaultRoot().string());
   if (action == "status") {
-    const auto adapter = pack::largestNvidiaAdapterBytes();
+    const auto adapter = pack::largestNvidiaAdapter();
+    const auto driver = adapter.has_value() && adapter->driverMajor.has_value()
+                            ? std::to_string(*adapter->driverMajor) + "." +
+                                  (*adapter->driverMinor < 10 ? "0" : "") + std::to_string(*adapter->driverMinor)
+                            : std::string("unknown");
     std::cout << "GPU runtime " << pack::version() << " at " << root.string() << "\n"
               << "  installed: " << (pack::isInstalled(root) ? "yes" : "no") << "\n"
               << "  largest NVIDIA adapter: "
-              << (adapter.has_value() ? std::to_string(*adapter / (1024 * 1024)) + " MiB" : std::string("none")) << "\n"
+              << (adapter.has_value() ? std::to_string(adapter->dedicatedBytes / (1024 * 1024)) + " MiB, driver " + driver
+                                      : std::string("none"))
+              << " (CUDA 13 needs >= " << pack::kMinimumDriverMajor << ")\n"
               << "  runtime build has CUDA: " << (automix::ai::runtimeReportsProvider("cuda") ? "yes" : "no") << "\n"
               << "  preload: " << (pack::preload(root) ? "ok" : "not loaded") << "\n";
     std::string provider;
@@ -608,7 +617,18 @@ int commandGpuRuntime(const std::vector<std::string>& args) {
     std::cout << result.message << "\n";
     return result.success ? 0 : 1;
   }
-  std::cerr << "Usage: gpu-runtime status|install [--root <dir>]\n";
+  if (action == "remove") {
+    const auto removed = pack::uninstall(root);
+    std::cout << removed.message << "\n";
+    return removed.removedNow ? 0 : 3;
+  }
+  if (action == "upgrade-models") {
+    const std::filesystem::path hub = argValue(args, "--hub").value_or("assets/modelhub");
+    const auto upgraded = automix::ai::upgradeBsRoformerForGpu(hub);
+    std::cout << (upgraded.has_value() ? upgraded->message : std::string("Nothing to upgrade.")) << "\n";
+    return !upgraded.has_value() || upgraded->success ? 0 : 1;
+  }
+  std::cerr << "Usage: gpu-runtime status|install|remove|upgrade-models [--root <dir>] [--hub <dir>]\n";
   return 2;
 }
 

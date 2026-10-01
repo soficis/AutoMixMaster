@@ -240,8 +240,12 @@ TEST_CASE("OnnxModelInference OOM failure triggers recovery counters and CPU re-
 
   const auto modelPath = createDummyModel(tempDir);
   createDummyMetadataWithGpu(modelPath);
+  // Load on CPU: these tests simulate GPU failures, so a real GPU attempt at
+  // load (which fails wherever CUDA's libraries are absent) must not pre-mark it.
+  inference.setExecutionProviderPreference("cpu");
   REQUIRE(inference.loadModel(modelPath));
   inference.pinExecutionProvidersForTesting({"cuda", "cpu"});
+  inference.setExecutionProviderPreference("auto");
 
   // Setup proves the GPU provider is actually selectable before any failure:
   // the recovery assertions are only meaningful if resolution picks "cuda".
@@ -286,8 +290,12 @@ TEST_CASE("OnnxModelInference device-lost failure triggers recovery counters and
 
   const auto modelPath = createDummyModel(tempDir);
   createDummyMetadataWithGpu(modelPath);
+  // Load on CPU: these tests simulate GPU failures, so a real GPU attempt at
+  // load (which fails wherever CUDA's libraries are absent) must not pre-mark it.
+  inference.setExecutionProviderPreference("cpu");
   REQUIRE(inference.loadModel(modelPath));
   inference.pinExecutionProvidersForTesting({"cuda", "cpu"});
+  inference.setExecutionProviderPreference("auto");
   REQUIRE(inference.activeExecutionProvider() == "cuda");
 
   // When: a GPU device-lost failure is simulated on the active provider.
@@ -321,8 +329,12 @@ TEST_CASE("OnnxModelInference resolution skips failed provider on later re-resol
 
   const auto modelPath = createDummyModel(tempDir);
   createDummyMetadataWithGpu(modelPath);
+  // Load on CPU: these tests simulate GPU failures, so a real GPU attempt at
+  // load (which fails wherever CUDA's libraries are absent) must not pre-mark it.
+  inference.setExecutionProviderPreference("cpu");
   REQUIRE(inference.loadModel(modelPath));
   inference.pinExecutionProvidersForTesting({"cuda", "cpu"});
+  inference.setExecutionProviderPreference("auto");
   REQUIRE(inference.activeExecutionProvider() == "cuda");
 
   // Given: the GPU provider has failed once and resolution fell back to CPU.
@@ -349,8 +361,12 @@ TEST_CASE("OnnxModelInference repeated failure counts each recovery but records 
 
   const auto modelPath = createDummyModel(tempDir);
   createDummyMetadataWithGpu(modelPath);
+  // Load on CPU: these tests simulate GPU failures, so a real GPU attempt at
+  // load (which fails wherever CUDA's libraries are absent) must not pre-mark it.
+  inference.setExecutionProviderPreference("cpu");
   REQUIRE(inference.loadModel(modelPath));
   inference.pinExecutionProvidersForTesting({"cuda", "cpu"});
+  inference.setExecutionProviderPreference("auto");
   REQUIRE(inference.activeExecutionProvider() == "cuda");
 
   // When: the same provider fails twice.
@@ -378,8 +394,12 @@ TEST_CASE("OnnxModelInference non-recoverable failure marks provider failed with
 
   const auto modelPath = createDummyModel(tempDir);
   createDummyMetadataWithGpu(modelPath);
+  // Load on CPU: these tests simulate GPU failures, so a real GPU attempt at
+  // load (which fails wherever CUDA's libraries are absent) must not pre-mark it.
+  inference.setExecutionProviderPreference("cpu");
   REQUIRE(inference.loadModel(modelPath));
   inference.pinExecutionProvidersForTesting({"cuda", "cpu"});
+  inference.setExecutionProviderPreference("auto");
   REQUIRE(inference.activeExecutionProvider() == "cuda");
 
   // When: a non-OOM / non-device-lost failure is simulated.

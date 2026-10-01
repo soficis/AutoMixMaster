@@ -234,9 +234,27 @@ class SettingsPanel final : public juce::Component {
  public:
   SettingsPanel(juce::AudioDeviceManager& audioDeviceManager,
                 const bool writeReportJsonSidecar,
-                std::function<void(bool)> onWriteReportSidecarChanged)
+                std::function<void(bool)> onWriteReportSidecarChanged,
+                const juce::String& gpuStatus = {},
+                const juce::String& gpuButtonText = {},
+                std::function<void()> onGpuButton = {})
       : audioSelector_(audioDeviceManager, 0, 0, 0, 2, false, false, true, false),
-        onWriteReportSidecarChanged_(std::move(onWriteReportSidecarChanged)) {
+        onWriteReportSidecarChanged_(std::move(onWriteReportSidecarChanged)),
+        onGpuButton_(std::move(onGpuButton)) {
+    // GPU acceleration: status plus an optional action (install / remove the
+    // per-user NVIDIA CUDA runtime), both decided by the owner.
+    gpuStatusLabel_.setText(gpuStatus, juce::dontSendNotification);
+    gpuButton_.setButtonText(gpuButtonText);
+    gpuButton_.setVisible(gpuButtonText.isNotEmpty());
+    gpuButton_.onClick = [this] {
+      gpuButton_.setEnabled(false);  // one action per dialog
+      if (onGpuButton_) {
+        onGpuButton_();
+      }
+    };
+    addAndMakeVisible(gpuStatusLabel_);
+    addChildComponent(gpuButton_);
+
     reportSidecarToggle_.setButtonText("Write .report.json sidecar next to each exported file");
     reportSidecarToggle_.setTooltip("Disable to export only audio files without per-file JSON report sidecars.");
     reportSidecarToggle_.setToggleState(writeReportJsonSidecar, juce::dontSendNotification);
@@ -253,6 +271,13 @@ class SettingsPanel final : public juce::Component {
   void resized() override {
     auto area = getLocalBounds().reduced(10);
     reportSidecarToggle_.setBounds(area.removeFromTop(28));
+    area.removeFromTop(6);
+    auto gpuRow = area.removeFromTop(28);
+    if (gpuButton_.isVisible()) {
+      gpuButton_.setBounds(gpuRow.removeFromRight(130));
+      gpuRow.removeFromRight(8);
+    }
+    gpuStatusLabel_.setBounds(gpuRow);
     area.removeFromTop(10);
     audioSelector_.setBounds(area);
   }
@@ -261,6 +286,9 @@ class SettingsPanel final : public juce::Component {
   juce::AudioDeviceSelectorComponent audioSelector_;
   juce::ToggleButton reportSidecarToggle_;
   std::function<void(bool)> onWriteReportSidecarChanged_;
+  juce::Label gpuStatusLabel_;
+  juce::TextButton gpuButton_;
+  std::function<void()> onGpuButton_;
 };
 
 // ── Stem string helpers ────────────────────────────────────────

@@ -24,6 +24,7 @@ namespace automix::ai::GpuRuntimePack {
 namespace {
 
 constexpr const char* kMarkerFile = "runtime.json";
+constexpr const char* kPendingRemovalFile = "remove-pending";
 constexpr std::uint32_t kNvidiaVendorId = 0x10DE;
 
 std::filesystem::path binDirectory(const std::filesystem::path& root) { return root / "bin"; }
@@ -179,6 +180,10 @@ std::string extractLibraries(const std::filesystem::path& wheel,
       continue;
     }
     const auto fileName = entryPath.filename();
+    const auto& unused = unusedLibraries();
+    if (std::find(unused.begin(), unused.end(), fileName.string()) != unused.end()) {
+      continue;
+    }
     std::unique_ptr<juce::InputStream> in(zip.createStreamForEntry(i));
     if (in == nullptr) {
       return "cannot read '" + name + "' from " + wheel.filename().string();
@@ -270,6 +275,55 @@ InstallResult install(const std::filesystem::path& root,
   return result;
 }
 
+const std::vector<std::string>& unusedLibraries() {
+  static const std::vector<std::string> list = {"cufftw64_12.dll", "nvblas64_13.dll"};
+  return list;
+}
+
+namespace {
+
+// Only ever delete something that is recognisably ours: the versioned folder
+// holding a bin/ directory, a marker or a pending-removal note.
+bool looksLikePack(const std::filesystem::path& root) {
+  std::error_code error;
+  return root.filename() == version() &&
+         (std::filesystem::is_directory(root / "bin", error) || std::filesystem::exists(root / kMarkerFile, error) ||
+          std::filesystem::exists(root / kPendingRemovalFile, error));
+}
+
+} // namespace
+
+RemoveResult uninstall(const std::filesystem::path& root) {
+  RemoveResult result;
+  std::error_code error;
+  if (!std::filesystem::exists(root, error)) {
+    result.removedNow = true;
+    result.message = "The GPU runtime is not installed.";
+    return result;
+  }
+  if (!looksLikePack(root)) {
+    result.message = "Refusing to delete '" + root.string() + "': it does not look like a GPU runtime pack.";
+    return result;
+  }
+  std::filesystem::remove(root / kMarkerFile, error);  // first: nothing may preload a half-deleted pack
+  std::filesystem::remove_all(root, error);
+  if (!error && !std::filesystem::exists(root, error)) {
+    result.removedNow = true;
+    result.message = "GPU runtime removed.";
+    return result;
+  }
+  // Libraries loaded by this process are locked on Windows.
+  std::ofstream(root / kPendingRemovalFile) << "remove at next start\n";
+  result.message = "GPU runtime disabled; its remaining files are removed the next time AutoMixMaster starts.";
+  return result;
+}
+
+void completePendingRemoval(const std::filesystem::path& root) {
+  std::error_code error;
+  if (std::filesystem::exists(root / kPendingRemovalFile, error) && looksLikePack(root)) {
+    std::filesystem::remove_all(root, error);
+  }
+}
 bool preload(const std::filesystem::path& root) {
 #if defined(_WIN32)
   static std::mutex mutex;
@@ -302,20 +356,36 @@ bool preload(const std::filesystem::path& root) {
 #endif
 }
 
-std::optional<std::uint64_t> largestNvidiaAdapterBytes() {
+std::pair<int, int> nvidiaDriverVersion(const std::uint64_t userModeDriverVersion) {
+  const auto c = static_cast<int>((userModeDriverVersion >> 16) & 0xFFFF);
+  const auto d = static_cast<int>(userModeDriverVersion & 0xFFFF);
+  const int combined = (c % 10) * 10000 + d;  // the last five digits
+  return {combined / 100, combined % 100};
+}
+
+std::optional<NvidiaAdapter> largestNvidiaAdapter() {
 #if defined(_WIN32)
   IDXGIFactory1* factory = nullptr;
   if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory))) || factory == nullptr) {
     return std::nullopt;
   }
-  std::optional<std::uint64_t> largest;
+  std::optional<NvidiaAdapter> largest;
   IDXGIAdapter1* adapter = nullptr;
   for (UINT index = 0; factory->EnumAdapters1(index, &adapter) != DXGI_ERROR_NOT_FOUND; ++index) {
     DXGI_ADAPTER_DESC1 desc{};
     if (SUCCEEDED(adapter->GetDesc1(&desc)) && desc.VendorId == kNvidiaVendorId &&
         (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0) {
-      const auto bytes = static_cast<std::uint64_t>(desc.DedicatedVideoMemory);
-      largest = std::max(largest.value_or(0), bytes);
+      NvidiaAdapter found;
+      found.dedicatedBytes = static_cast<std::uint64_t>(desc.DedicatedVideoMemory);
+      LARGE_INTEGER userModeVersion{};
+      if (SUCCEEDED(adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &userModeVersion))) {
+        const auto [major, minor] = nvidiaDriverVersion(static_cast<std::uint64_t>(userModeVersion.QuadPart));
+        found.driverMajor = major;
+        found.driverMinor = minor;
+      }
+      if (!largest.has_value() || found.dedicatedBytes > largest->dedicatedBytes) {
+        largest = found;
+      }
     }
     adapter->Release();
   }
@@ -330,8 +400,10 @@ bool shouldOffer(const std::uint64_t minimumDedicatedBytes, const std::filesyste
   if (archives().empty() || isInstalled(root)) {
     return false;
   }
-  const auto bytes = largestNvidiaAdapterBytes();
-  return bytes.has_value() && *bytes >= minimumDedicatedBytes;
+  const auto adapter = largestNvidiaAdapter();
+  // An unreported driver version is not proof of an old one, but 1 GB is too
+  // much to download on a guess: only offer what is known to work.
+  return adapter.has_value() && adapter->dedicatedBytes >= minimumDedicatedBytes &&
+         adapter->driverMajor.value_or(0) >= kMinimumDriverMajor;
 }
-
 } // namespace automix::ai::GpuRuntimePack

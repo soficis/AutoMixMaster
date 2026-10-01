@@ -14,6 +14,7 @@
 #include "app/ui/TransportBar.h"
 #include "app/ui/VerificationEngine.h"
 #include "ai/GpuRuntimePack.h"
+#include "ai/HuggingFaceModelHub.h"
 #include "ai/OnnxTensorInference.h"
 #include "renderers/RendererPipeline.h"
 #include "util/FileUtils.h"
@@ -65,6 +66,10 @@ void automix::app::detail::updateStemPanelFromSession(StemPanel& panel, const do
 
 MainLayout::MainLayout() {
   setWantsKeyboardFocus(true);
+
+  // A GPU runtime removed last run may still have files on disk (they were
+  // locked while loaded); finish that before anything can preload them.
+  ai::GpuRuntimePack::completePendingRemoval();
 
   // 1. Create UI components
   headerBar_ = std::make_unique<HeaderBar>();
@@ -1712,7 +1717,8 @@ void MainLayout::onSettings() {
         taskOrchestrator_->appendHistory(enabled
                                              ? "Export sidecar JSON enabled (.report.json)"
                                              : "Export sidecar JSON disabled");
-      });
+      },
+      gpuRuntimeStatusText(), gpuRuntimeButtonText(), [this] { onGpuRuntimeButton(); });
   settingsPanel->setSize(540, 430);
 
   juce::DialogWindow::LaunchOptions options;
@@ -2244,10 +2250,7 @@ void MainLayout::offerGpuRuntimeIfUseful() {
   if (gpuRuntimeOffered_ || gpuRuntimeInstalling_) {
     return;
   }
-  // The fp32 vocal model needs 10 GiB of device memory plus desktop headroom;
-  // offering ~1 GB of CUDA libraries to a smaller card would buy nothing.
-  constexpr std::uint64_t kMinimumAdapterBytes = (10240ull + 1536ull) * 1024 * 1024;
-  if (!ai::runtimeReportsProvider("cuda") || !ai::GpuRuntimePack::shouldOffer(kMinimumAdapterBytes)) {
+  if (!ai::runtimeReportsProvider("cuda") || !ai::GpuRuntimePack::shouldOffer(kGpuRuntimeMinimumAdapterBytes)) {
     return;
   }
   gpuRuntimeOffered_ = true;
@@ -2293,12 +2296,80 @@ void MainLayout::installGpuRuntime() {
       safe->gpuRuntimeInstalling_ = false;
       safe->taskOrchestrator_->appendHistory(juce::String(result.message));
       if (result.success) {
-        safe->taskOrchestrator_->appendHistory(
-            "GPU acceleration is ready. If the vocal model was installed before this, reinstall it from Models to get "
-            "its GPU build.");
+        safe->taskOrchestrator_->appendHistory("GPU acceleration is ready.");
+        safe->upgradeVocalModelForGpu();
       }
     });
   });
 }
 
+juce::String MainLayout::gpuRuntimeStatusText() const {
+  namespace pack = ai::GpuRuntimePack;
+  if (gpuRuntimeInstalling_) {
+    return "GPU acceleration: downloading NVIDIA CUDA libraries...";
+  }
+  if (pack::isInstalled(pack::defaultRoot())) {
+    return "GPU acceleration: installed (NVIDIA CUDA libraries)";
+  }
+  const auto adapter = pack::largestNvidiaAdapter();
+  if (!adapter.has_value()) {
+    return "GPU acceleration: needs an NVIDIA GPU (separation runs on the CPU)";
+  }
+  if (adapter->driverMajor.value_or(0) < pack::kMinimumDriverMajor) {
+    return "GPU acceleration: update the NVIDIA driver to " + juce::String(pack::kMinimumDriverMajor) +
+           " or newer (found " +
+           (adapter->driverMajor.has_value() ? juce::String(*adapter->driverMajor) : juce::String("unknown")) + ")";
+  }
+  if (adapter->dedicatedBytes < kGpuRuntimeMinimumAdapterBytes) {
+    return "GPU acceleration: the vocal model needs a 12 GB NVIDIA GPU (found " +
+           juce::String(static_cast<juce::int64>(adapter->dedicatedBytes / (1024 * 1024 * 1024))) + " GB)";
+  }
+  if (!ai::runtimeReportsProvider("cuda")) {
+    return "GPU acceleration: not included in this build of AutoMixMaster";
+  }
+  return "GPU acceleration: available for your NVIDIA GPU (one-time download)";
+}
+
+juce::String MainLayout::gpuRuntimeButtonText() const {
+  namespace pack = ai::GpuRuntimePack;
+  if (gpuRuntimeInstalling_) {
+    return {};
+  }
+  if (pack::isInstalled(pack::defaultRoot())) {
+    return "Remove";
+  }
+  if (ai::runtimeReportsProvider("cuda") && pack::shouldOffer(kGpuRuntimeMinimumAdapterBytes)) {
+    return "Install (~" + juce::String(static_cast<juce::int64>(pack::downloadBytes() / (1024 * 1024 * 1024) + 1)) +
+           " GB)";
+  }
+  return {};
+}
+
+void MainLayout::onGpuRuntimeButton() {
+  namespace pack = ai::GpuRuntimePack;
+  if (pack::isInstalled(pack::defaultRoot())) {
+    const auto removed = pack::uninstall();
+    taskOrchestrator_->appendHistory(juce::String(removed.message));
+    return;
+  }
+  gpuRuntimeOffered_ = true;  // asked explicitly; no need to offer again this run
+  installGpuRuntime();
+}
+
+void MainLayout::upgradeVocalModelForGpu() {
+  // Runs off the message thread: a re-install is a ~650 MB download.
+  juce::Thread::launch([safe = juce::Component::SafePointer<MainLayout>(this),
+                        hubRoot = modelController_->modelHubRoot()] {
+    const auto upgraded = ai::upgradeBsRoformerForGpu(hubRoot);
+    if (!upgraded.has_value()) {
+      return;
+    }
+    juce::MessageManager::callAsync([safe, upgraded] {
+      if (safe != nullptr) {
+        safe->taskOrchestrator_->appendHistory(
+            juce::String(upgraded->success ? upgraded->message : "Vocal model GPU upgrade failed: " + upgraded->message));
+      }
+    });
+  });
+}
 } // namespace automix::app

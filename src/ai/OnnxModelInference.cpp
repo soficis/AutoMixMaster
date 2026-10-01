@@ -17,6 +17,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "ai/GpuRuntimePack.h"
 #include "util/StringUtils.h"
 
 #ifndef AUTOMIX_HAS_NATIVE_ORT
@@ -397,6 +398,9 @@ bool OnnxModelInference::loadModel(const std::filesystem::path& modelPath) {
       nativeState->sessionOptions->EnableProfiling(nativeState->profilingPrefix.c_str());
     }
 
+    if (activeExecutionProvider_ != gpu::kProviderCpu) {
+      GpuRuntimePack::preload();  // per-user CUDA libraries, if installed
+    }
     try {
       appendExecutionProvider(*nativeState->sessionOptions, activeExecutionProvider_);
     } catch (const std::exception&) {

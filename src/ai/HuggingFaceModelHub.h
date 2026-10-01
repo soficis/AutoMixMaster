@@ -101,6 +101,16 @@ std::string primaryFileForRepo(const std::string& repoId,
                                bool* hasOnnxOut = nullptr,
                                bool preferGpuBuild = false);
 
+// True when this machine should get BS-RoFormer's GPU (fp32) build: a CUDA
+// session opens and the device is large enough for the model.
+bool bsRoformerGpuBuildQualifies();
+
+// After GPU support appears (e.g. the GPU runtime pack was installed),
+// reinstalls a BS-RoFormer pack under `destinationRoot` that is still on its CPU
+// (quantized) build as the GPU build, and removes the superseded file. Empty
+// when there is no such pack or the machine does not qualify.
+std::optional<HubInstallResult> upgradeBsRoformerForGpu(const std::filesystem::path& destinationRoot);
+
 // Files that must be downloaded next to `primaryFile` to make a complete pack:
 // per-repo extras, plus "<primaryFile>.data" whenever the repo publishes one
 // (ONNX external weights, which the installer then inlines).

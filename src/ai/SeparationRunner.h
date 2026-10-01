@@ -56,6 +56,10 @@ struct RunnerConfig {
   // JUCE-free on purpose: the runner stays testable with no message loop; the
   // controller that adapts it to the UI owns the SafePointer marshalling.
   std::function<void(int done, int total)> progressCallback;
+  // Polled before every chunk and, where the backend supports it, during
+  // inference (from a watcher thread, so it must be thread-safe). Returning
+  // true discards all work and yields Result::cancelled.
+  std::function<bool()> cancelRequested;
 };
 
 // Empty when the configuration is runnable; otherwise the reason it is not.
@@ -65,6 +69,9 @@ class SeparationRunner final {
  public:
   struct Result {
     bool usedModel = false;
+    // The caller asked to stop. Not a failure: callers must not fall back to
+    // another separator, because the user wants no separation at all.
+    bool cancelled = false;
     std::vector<engine::AudioBuffer> stemAudio;
     std::vector<std::string> stemNames;
     std::string logMessage;

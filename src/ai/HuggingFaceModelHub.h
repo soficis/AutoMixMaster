@@ -95,8 +95,17 @@ std::vector<std::string> curatedModelIds();
 // The repo file an install downloads as the pack's model file; empty when the
 // repo offers nothing installable. Generic preference order, except for repos
 // whose correct file cannot be inferred from names (BS-RoFormer, spec D4).
+// preferGpuBuild selects a GPU-oriented variant where a repo has one.
 std::string primaryFileForRepo(const std::string& repoId,
                                const std::vector<std::string>& files,
-                               bool* hasOnnxOut = nullptr);
+                               bool* hasOnnxOut = nullptr,
+                               bool preferGpuBuild = false);
+
+// Files that must be downloaded next to `primaryFile` to make a complete pack:
+// per-repo extras, plus "<primaryFile>.data" whenever the repo publishes one
+// (ONNX external weights, which the installer then inlines).
+std::vector<std::string> auxiliaryAssetsFor(const std::string& repoId,
+                                            const std::string& primaryFile,
+                                            const std::vector<std::string>& files);
 
 } // namespace automix::ai

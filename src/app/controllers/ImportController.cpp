@@ -29,7 +29,7 @@ void ImportController::importFiles(std::vector<juce::File> files,
                                    const int preferredStemCount,
                                    std::atomic_bool& cancelFlag,
                                    std::optional<std::filesystem::path> separationModelRoot,
-                                   const bool useTensorModel) {
+                                   TensorSeparationRequest tensorSeparation) {
   if (files.empty()) {
     return;
   }
@@ -68,7 +68,7 @@ void ImportController::importFiles(std::vector<juce::File> files,
     bool useSeparation;
     int preferredStemCount;
     std::optional<std::filesystem::path> separationModelRoot;
-    bool useTensorModel;
+    TensorSeparationRequest tensorSeparation;
     std::atomic_bool* cancelFlag;
     Callbacks callbacks;
 
@@ -76,7 +76,7 @@ void ImportController::importFiles(std::vector<juce::File> files,
               bool sep,
               int stemCount,
               std::optional<std::filesystem::path> separationRoot,
-              bool tensor,
+              TensorSeparationRequest tensor,
               std::atomic_bool* cancel,
               Callbacks cb)
         : juce::ThreadPoolJob("ImportJob"),
@@ -84,7 +84,7 @@ void ImportController::importFiles(std::vector<juce::File> files,
           useSeparation(sep),
           preferredStemCount(stemCount),
           separationModelRoot(std::move(separationRoot)),
-          useTensorModel(tensor),
+          tensorSeparation(std::move(tensor)),
           cancelFlag(cancel),
           callbacks(std::move(cb)) {}
 
@@ -132,7 +132,7 @@ void ImportController::importFiles(std::vector<juce::File> files,
           if (!result.cancelled) {
             ai::StemSeparator separator(separationModelRoot.value_or(std::filesystem::path("assets/models/stem-separator")));
             if (separationModelRoot.has_value()) {
-              if (useTensorModel && separator.isTensorModelAvailable()) {
+              if (tensorSeparation.enabled && separator.isTensorModelAvailable()) {
                 importLines.push_back("Tensor separation pack: " + separationModelRoot->string());
               } else if (separator.isModelAvailable()) {
                 importLines.push_back("Separation model pack: " + separationModelRoot->string());
@@ -143,8 +143,11 @@ void ImportController::importFiles(std::vector<juce::File> files,
             }
             ai::StemSeparator::SeparationOptions separationOptions;
             separationOptions.targetStemCount = preferredStemCount;
-            separationOptions.useTensorModel = useTensorModel;
-            if (useTensorModel) {
+            separationOptions.useTensorModel = tensorSeparation.enabled;
+            separationOptions.executionProvider = tensorSeparation.executionProvider;
+            if (tensorSeparation.enabled) {
+              // Thread-safe: an atomic load plus ThreadPoolJob::shouldExit().
+              separationOptions.cancelRequested = [this] { return isCancellationRequested(); };
               // Chunk progress fills the band between the 0.12 and 0.78 marks.
               separationOptions.tensorProgress = [cb = callbacks](const int done, const int total) {
                 if (total > 0) {
@@ -154,7 +157,11 @@ void ImportController::importFiles(std::vector<juce::File> files,
             }
             const auto separationResult = separator.separate(mixPath, outputDir, separationOptions);
             emitProgress(callbacks, 0.78);
-            if (separationResult.success) {
+            if (separationResult.cancelled) {
+              requestCancellation();
+              result.cancelled = true;
+              importLines.push_back(separationResult.logMessage);
+            } else if (separationResult.success) {
               importedStems = separationResult.stems;
               separatedFromSingleMix = true;
               importLines.push_back("Separated import from: " + mixPath.string());
@@ -239,7 +246,7 @@ void ImportController::importFiles(std::vector<juce::File> files,
   };
 
   threadPool_.addJob(
-      new ImportJob(std::move(files), useSeparation, preferredStemCount, std::move(separationModelRoot), useTensorModel, &cancelFlag, callbacks_),
+      new ImportJob(std::move(files), useSeparation, preferredStemCount, std::move(separationModelRoot), std::move(tensorSeparation), &cancelFlag, callbacks_),
       true);
 }
 

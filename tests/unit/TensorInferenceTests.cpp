@@ -20,6 +20,7 @@
 #include "ai/ModelCatalogValidator.h"
 #include "ai/ModelLicensePolicy.h"
 #include "ai/ModelPackLoader.h"
+#include "ai/OnnxExternalData.h"
 #include "ai/OnnxTensorInference.h"
 #include "ai/SeparationRunner.h"
 #include "ai/StemSeparator.h"
@@ -998,3 +999,280 @@ TEST_CASE("Tensor separation runs end to end through StemSeparator", "[ai][tenso
 }
 
 #endif
+TEST_CASE("Tensor provider candidates always end on CPU", "[ai][tensor][gpu]") {
+  using V = std::vector<std::string>;
+  const V cudaBuild{"TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"};
+  REQUIRE(ai::tensorProviderCandidates("auto", cudaBuild) == V{"cuda", "cpu"});
+  REQUIRE(ai::tensorProviderCandidates("", cudaBuild) == V{"cuda", "cpu"});
+  REQUIRE(ai::tensorProviderCandidates("cuda", cudaBuild) == V{"cuda", "cpu"});
+  REQUIRE(ai::tensorProviderCandidates("CUDAExecutionProvider", cudaBuild) == V{"cuda", "cpu"});
+  REQUIRE(ai::tensorProviderCandidates("cpu", cudaBuild) == V{"cpu"});
+  // A provider the runtime does not contain is never attempted, but the GPU
+  // request is honoured with what is there (Windows defaults to DirectML).
+  REQUIRE(ai::tensorProviderCandidates("directml", cudaBuild) == V{"cuda", "cpu"});
+  REQUIRE(ai::tensorProviderCandidates("directml", V{"CPUExecutionProvider"}) == V{"cpu"});
+  REQUIRE(ai::tensorProviderCandidates("auto", V{"CPUExecutionProvider"}) == V{"cpu"});
+  REQUIRE(ai::tensorProviderCandidates("auto", V{}) == V{"cpu"});
+}
+
+TEST_CASE("Runner stops before the next chunk when cancelled", "[ai][tensor][runner][cancel]") {
+  FakeTensorInference fake({kRoformerInput}, {kRoformerOutput}, identityMask);
+  const int samples = 352800 * 3;
+  const auto mix = makeTestSignal(2, samples, 44100.0);
+  auto config = roformerRunnerConfig();
+  REQUIRE(ai::SeparationRunner::chunkCount(samples, config) > 2);
+  int progressCalls = 0;
+  config.progressCallback = [&](int, int) { ++progressCalls; };
+  config.cancelRequested = [&] { return progressCalls >= 1; };
+
+  const auto result = ai::SeparationRunner::separate(mix, fake, config);
+  INFO(result.logMessage);
+  REQUIRE(result.cancelled);
+  REQUIRE_FALSE(result.usedModel);
+  REQUIRE(result.stemAudio.empty());
+  REQUIRE(fake.calls == 1);
+  REQUIRE(result.logMessage.find("cancelled after 1/") != std::string::npos);
+}
+
+namespace {
+
+// A backend whose inference can be aborted: it reports the terminated run as a
+// failure, the way ONNX Runtime does after RunOptions::SetTerminate().
+class AbortableTensorInference final : public ai::ITensorInference {
+ public:
+  bool isAvailable() const override { return true; }
+  bool loadModel(const std::filesystem::path&) override { return true; }
+  std::vector<ai::TensorSpec> inputSpecs() const override { return {kRoformerInput}; }
+  std::vector<ai::TensorSpec> outputSpecs() const override { return {kRoformerOutput}; }
+  ai::TensorInferenceResult run(const std::vector<ai::TensorBinding>& inputs) const override {
+    return identityMask(inputs);
+  }
+  ai::TensorInferenceResult runCancellable(const std::vector<ai::TensorBinding>& inputs,
+                                           const std::function<bool()>& cancelRequested) const override {
+    ++calls;
+    abortRequested = true;  // the user presses Cancel while this chunk is running
+    if (cancelRequested && cancelRequested()) {
+      ai::TensorInferenceResult aborted;
+      aborted.logMessage = "Exiting due to terminate flag being set to true.";
+      return aborted;
+    }
+    return run(inputs);
+  }
+  mutable int calls = 0;
+  mutable bool abortRequested = false;
+};
+
+} // namespace
+
+TEST_CASE("Runner reports a terminated inference as cancelled, not failed", "[ai][tensor][runner][cancel]") {
+  AbortableTensorInference backend;
+  const auto mix = makeTestSignal(2, 352800 * 2, 44100.0);
+  auto config = roformerRunnerConfig();
+  config.cancelRequested = [&] { return backend.abortRequested; };
+
+  const auto result = ai::SeparationRunner::separate(mix, backend, config);
+  INFO(result.logMessage);
+  REQUIRE(result.cancelled);
+  REQUIRE(backend.calls == 1);
+  REQUIRE(result.logMessage.find("cancelled after 0/") != std::string::npos);
+  REQUIRE(result.logMessage.find("failed") == std::string::npos);
+}
+
+#ifdef AUTOMIX_HAS_NATIVE_ORT
+
+TEST_CASE("Cancelled tensor separation writes nothing and does not fall back", "[ai][tensor][separator][cancel][native]") {
+  const auto tempRoot = std::filesystem::temp_directory_path() / "automix_tensor_cancel";
+  std::filesystem::remove_all(tempRoot);
+  std::filesystem::create_directories(tempRoot);
+  const auto mixPath = tempRoot / "mix.wav";
+  automix::util::WavWriter writer;
+  writer.write(mixPath, makeTestSignal(2, 100000, 44100.0), 24);
+  const auto fixture = std::filesystem::path(AUTOMIX_SOURCE_DIR) / "tests" / "fixtures" / "tensor" / "identity_mask.onnx";
+  const auto packRoot = writeTensorPack(tempRoot / "pack", &fixture);
+
+  ai::StemSeparator separator(packRoot);
+  ai::StemSeparator::SeparationOptions options;
+  options.useTensorModel = true;
+  options.cancelRequested = [] { return true; };
+  const auto result = separator.separate(mixPath, tempRoot / "out", options);
+  INFO(result.logMessage);
+  REQUIRE(result.cancelled);
+  REQUIRE_FALSE(result.success);
+  REQUIRE(result.stems.empty());
+  REQUIRE(result.generatedFiles.empty());
+  // The existing separator would have produced stems; it must not have run.
+  REQUIRE_FALSE(std::filesystem::exists(tempRoot / "out" / "separation_qa_report.json"));
+  std::filesystem::remove_all(tempRoot);
+}
+
+TEST_CASE("Tensor session reports the provider it actually runs on", "[ai][tensor][gpu][native]") {
+  const auto fixture = std::filesystem::path(AUTOMIX_SOURCE_DIR) / "tests" / "fixtures" / "tensor" / "identity_mask.onnx";
+
+  ai::OnnxTensorInference cpu;
+  cpu.setExecutionProvider("cpu");
+  REQUIRE(cpu.loadModel(fixture));
+  REQUIRE(cpu.activeExecutionProvider() == "cpu");
+  REQUIRE(cpu.backendDiagnostics().find("provider=cpu") != std::string::npos);
+
+  // "auto" opens on whatever works here; either way it must say which.
+  ai::OnnxTensorInference automatic;
+  REQUIRE(automatic.loadModel(fixture));
+  INFO(automatic.backendDiagnostics());
+  REQUIRE_FALSE(automatic.activeExecutionProvider().empty());
+
+  const char* expectCuda = std::getenv("AUTOMIX_EXPECT_CUDA");
+  if (expectCuda == nullptr || std::string(expectCuda) != "1") {
+    SKIP("Set AUTOMIX_EXPECT_CUDA=1 on a machine with a CUDA-capable GPU and runtime to require CUDA");
+  }
+  ai::OnnxTensorInference cuda;
+  cuda.setExecutionProvider("cuda");
+  REQUIRE(cuda.loadModel(fixture));
+  INFO(cuda.backendDiagnostics());
+  REQUIRE(cuda.activeExecutionProvider() == "cuda");
+  // Same numbers on the GPU: the identity mask still reconstructs the mix.
+  const int samples = 352800;
+  const auto mix = makeTestSignal(2, samples, 44100.0);
+  auto config = roformerRunnerConfig();
+  config.stft.zeroDc = false;
+  const auto separated = ai::SeparationRunner::separate(mix, cuda, config);
+  INFO(separated.logMessage);
+  REQUIRE(separated.usedModel);
+  REQUIRE(maxAbsDifference(separated.stemAudio[0], mix) < 1.0e-4f);
+}
+
+#endif
+namespace {
+
+std::filesystem::path tensorFixturePath(const char* name) {
+  return std::filesystem::path(AUTOMIX_SOURCE_DIR) / "tests" / "fixtures" / "tensor" / name;
+}
+
+// Minimal protobuf encoding, enough to hand-build hostile ONNX models.
+void putVarint(std::string& out, std::uint64_t value) {
+  while (value >= 0x80) {
+    out.push_back(static_cast<char>((value & 0x7F) | 0x80));
+    value >>= 7;
+  }
+  out.push_back(static_cast<char>(value));
+}
+std::string lengthField(std::uint32_t number, const std::string& payload) {
+  std::string out;
+  putVarint(out, (static_cast<std::uint64_t>(number) << 3) | 2);
+  putVarint(out, payload.size());
+  return out + payload;
+}
+std::string modelWithExternalLocation(const std::string& location) {
+  std::string tensor;
+  putVarint(tensor, (14u << 3) | 0);  // data_location
+  putVarint(tensor, 1);               // EXTERNAL
+  tensor += lengthField(13, lengthField(1, "location") + lengthField(2, location));
+  return lengthField(7, lengthField(5, tensor));  // ModelProto.graph.initializer
+}
+
+} // namespace
+
+TEST_CASE("External-data models are inlined into one self-contained file", "[ai][tensor][external-data]") {
+  const auto root = std::filesystem::temp_directory_path() / "automix_inline_external";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+  std::filesystem::copy_file(tensorFixturePath("external_data.onnx"), root / "external_data.onnx");
+  std::filesystem::copy_file(tensorFixturePath("external_data.onnx.data"), root / "external_data.onnx.data");
+
+  const auto inlinedPath = root / "inlined.onnx";
+  const auto inlined = ai::inlineExternalData(root / "external_data.onnx", inlinedPath);
+  INFO(inlined.error);
+  REQUIRE(inlined.success);
+  REQUIRE(inlined.tensorsInlined == 1);
+  const auto bytes = readBytes(inlinedPath);
+  const std::string text(bytes.begin(), bytes.end());
+  REQUIRE(text.find("external_data.onnx.data") == std::string::npos);
+  REQUIRE(text.find("location") == std::string::npos);
+  // The sidecar's 16 bytes now live in the model itself.
+  const auto sidecar = readBytes(root / "external_data.onnx.data");
+  REQUIRE(text.find(std::string(sidecar.begin(), sidecar.end())) != std::string::npos);
+  REQUIRE_FALSE(std::filesystem::exists(root / "inlined.onnx.partial"));
+
+  // A model with nothing external is copied unchanged.
+  const auto again = ai::inlineExternalData(inlinedPath, root / "again.onnx");
+  REQUIRE(again.success);
+  REQUIRE(again.tensorsInlined == 0);
+  REQUIRE(readBytes(root / "again.onnx") == bytes);
+
+#ifdef AUTOMIX_HAS_NATIVE_ORT
+  // It still computes the same thing with the sidecar gone.
+  std::filesystem::remove(root / "external_data.onnx.data");
+  ai::OnnxTensorInference session;
+  REQUIRE(session.loadModel(inlinedPath));
+  const auto ran = session.run({{{"x", ai::TensorElementType::Float32, {1, 4}}, {0.5f, 0.5f, 0.5f, 0.5f}}});
+  REQUIRE(ran.usedModel);
+  REQUIRE(ran.outputs.front().data == std::vector<float>{1.5f, 2.5f, 3.5f, 4.5f});
+#endif
+  std::filesystem::remove_all(root);
+}
+
+TEST_CASE("External-data inlining refuses locations outside the model directory", "[ai][tensor][external-data]") {
+  const auto root = std::filesystem::temp_directory_path() / "automix_inline_hostile";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root / "models");
+  {
+    std::ofstream secret(root / "secret.bin", std::ios::binary);
+    secret << "do not copy me";
+  }
+  for (const std::string location : {std::string("../secret.bin"), (root / "secret.bin").string(), std::string("")}) {
+    INFO("location: " << location);
+    const auto modelPath = root / "models" / "hostile.onnx";
+    {
+      std::ofstream model(modelPath, std::ios::binary | std::ios::trunc);
+      const auto bytes = modelWithExternalLocation(location);
+      model.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    }
+    const auto result = ai::inlineExternalData(modelPath, root / "models" / "out.onnx");
+    REQUIRE_FALSE(result.success);
+    REQUIRE(result.error.find("location") != std::string::npos);
+    REQUIRE_FALSE(std::filesystem::exists(root / "models" / "out.onnx"));
+  }
+
+  // Truncated input is a clean error, not a crash.
+  {
+    std::ofstream model(root / "models" / "truncated.onnx", std::ios::binary | std::ios::trunc);
+    const auto bytes = modelWithExternalLocation("weights.bin");
+    model.write(bytes.data(), static_cast<std::streamsize>(bytes.size() - 3));
+  }
+  const auto truncated = ai::inlineExternalData(root / "models" / "truncated.onnx", root / "models" / "t.onnx");
+  REQUIRE_FALSE(truncated.success);
+  REQUIRE(truncated.error.find("not a valid ONNX model") != std::string::npos);
+  std::filesystem::remove_all(root);
+}
+TEST_CASE("BS-RoFormer installs fp32 for GPU and quantized for CPU", "[ai][tensor][catalog][gpu]") {
+  bool hasOnnx = false;
+  REQUIRE(ai::primaryFileForRepo(ai::kBsRoformerRepoId, kBsRoformerSiblings, &hasOnnx, true) ==
+          ai::kBsRoformerFp32File);
+  REQUIRE(hasOnnx);
+  REQUIRE(ai::primaryFileForRepo(ai::kBsRoformerRepoId, kBsRoformerSiblings, &hasOnnx, false) ==
+          ai::kBsRoformerQuantizedFile);
+
+  // fp32 without its weights is never chosen.
+  std::vector<std::string> noSidecar = kBsRoformerSiblings;
+  noSidecar.erase(std::find(noSidecar.begin(), noSidecar.end(), "bs_roformer_ep317_sdr12.9755.onnx.data"));
+  REQUIRE(ai::primaryFileForRepo(ai::kBsRoformerRepoId, noSidecar, &hasOnnx, true) == ai::kBsRoformerQuantizedFile);
+
+  // The sidecar is fetched with the fp32 graph and only with it.
+  REQUIRE(ai::auxiliaryAssetsFor(ai::kBsRoformerRepoId, ai::kBsRoformerFp32File, kBsRoformerSiblings) ==
+          std::vector<std::string>{"bs_roformer_ep317_sdr12.9755.onnx.data"});
+  REQUIRE(ai::auxiliaryAssetsFor(ai::kBsRoformerRepoId, ai::kBsRoformerQuantizedFile, kBsRoformerSiblings).empty());
+}
+
+TEST_CASE("GPU probe agrees with the build", "[ai][tensor][gpu]") {
+  std::string provider;
+  const bool available = ai::gpuTensorSessionAvailable(&provider);
+  INFO("provider: " << provider);
+  REQUIRE(available == !provider.empty());
+#ifndef AUTOMIX_HAS_NATIVE_ORT
+  REQUIRE_FALSE(available);
+#else
+  const char* expectCuda = std::getenv("AUTOMIX_EXPECT_CUDA");
+  if (expectCuda != nullptr && std::string(expectCuda) == "1") {
+    REQUIRE(provider == "cuda");
+  }
+#endif
+}

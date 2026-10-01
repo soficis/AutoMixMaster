@@ -1171,7 +1171,11 @@ void MainLayout::importFiles(std::vector<juce::File> files) {
       sessionManager_.session().preferredStemCount,
       taskOrchestrator_->cancelFlag(ActiveTask::Import),
       std::move(separationModelRoot),
-      sessionManager_.session().renderSettings.tensorSeparationEnabled);
+      TensorSeparationRequest{
+          .enabled = sessionManager_.session().renderSettings.tensorSeparationEnabled,
+          .executionProvider = sessionManager_.session().renderSettings.preferHardwareAcceleration
+                                   ? sessionManager_.session().renderSettings.gpuExecutionProvider
+                                   : std::string("cpu")});
 }
 
 bool MainLayout::startAiSeparationBeforeAutoMixIfNeeded() {

@@ -148,6 +148,7 @@ add_library(automix_core
   src/ai/TensorTypes.cpp
   src/ai/SeparationRunner.cpp
   src/ai/OnnxTensorInference.cpp
+  src/ai/OnnxExternalData.cpp
   src/util/StringUtils.cpp
   src/util/LameDownloader.cpp
   src/util/MetadataPolicy.cpp
@@ -461,4 +462,28 @@ if(BUILD_TESTING)
   include(CTest)
   include(${Catch2_SOURCE_DIR}/extras/Catch.cmake)
   catch_discover_tests(automix_tests)
+endif()
+
+# Stage ONNX Runtime (and, optionally, CUDA/cuDNN) DLLs beside each executable.
+# Windows resolves DLLs from the executable's directory first; without this an
+# older onnxruntime.dll in System32 wins, and the CUDA provider cannot find its
+# dependencies. Point AUTOMIX_CUDA_RUNTIME_DIR at a folder of cudart / cublas /
+# cufft / cudnn DLLs to make the CUDA execution provider loadable.
+set(AUTOMIX_CUDA_RUNTIME_DIR "" CACHE PATH "Folder of CUDA runtime + cuDNN DLLs staged next to executables (optional)")
+if(WIN32 AND AUTOMIX_HAS_NATIVE_ORT)
+  get_filename_component(_ort_lib_dir "${ONNXRUNTIME_LIBRARY}" DIRECTORY)
+  file(GLOB _automix_runtime_dlls "${_ort_lib_dir}/*.dll")
+  if(AUTOMIX_CUDA_RUNTIME_DIR)
+    file(GLOB _automix_cuda_dlls "${AUTOMIX_CUDA_RUNTIME_DIR}/*.dll")
+    list(APPEND _automix_runtime_dlls ${_automix_cuda_dlls})
+  endif()
+  if(_automix_runtime_dlls)
+    foreach(_automix_target IN ITEMS automix_tests automix_dev_tools AutoMixMasterApp)
+      if(TARGET ${_automix_target})
+        add_custom_command(TARGET ${_automix_target} POST_BUILD
+          COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_automix_runtime_dlls} "$<TARGET_FILE_DIR:${_automix_target}>"
+          VERBATIM)
+      endif()
+    endforeach()
+  endif()
 endif()

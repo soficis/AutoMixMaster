@@ -118,10 +118,12 @@
       "attributionRequired": false,
       "flagged": false,
       "assets": [
-        "bs_roformer_ep317_sdr12.9755_quantized_uint8.onnx"
+        "bs_roformer_ep317_sdr12.9755_quantized_uint8.onnx",
+        "bs_roformer_ep317_sdr12.9755.onnx",
+        "bs_roformer_ep317_sdr12.9755.onnx.data"
       ],
       "attribution": "BS-RoFormer, Lu et al., arXiv 2309.02612; ONNX export by xycld (huggingface.co/xycld/BS-RoFormer-ONNX)",
-      "notes": "BS-RoFormer vocal separation ONNX; MIT confirmed on HF card (cardData.license and license:mit tag, checked 2026-09-30). Catalog installs the single-file uint8-quantized build (~166 MB); the fp32 build needs a ~640 MB external-data sidecar and is not the default. Graph outputs vocals only; instrumental is the residual mix - vocals. Download-only, never bundled."
+      "notes": "BS-RoFormer vocal separation ONNX; MIT confirmed on HF card (cardData.license and license:mit tag, checked 2026-09-30). Catalog installs fp32 (~645 MB, external-data sidecar inlined locally at install) where a CUDA session opens, else the single-file uint8-quantized build (~166 MB). Measured on RTX 5060 Ti: fp32/CUDA 85-91 s vs quantized/CPU 687 s for a 196 s track. Graph outputs vocals only; instrumental is the residual mix - vocals. Download-only, never bundled."
     }
   ]
 }

@@ -1,10 +1,14 @@
 #include "ai/OnnxTensorInference.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstddef>
+#include <algorithm>
 #include <cstdint>
 #include <exception>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -12,8 +16,12 @@
 #define AUTOMIX_HAS_NATIVE_ORT 0
 #endif
 
+#include "ai/GpuProvider.h"
+
 #if AUTOMIX_HAS_NATIVE_ORT
 #include <onnxruntime_cxx_api.h>
+
+#include "ai/OrtSessionProviders.h"
 #endif
 
 namespace automix::ai {
@@ -79,6 +87,111 @@ bool isConcrete(const std::vector<int64_t>& dims) {
 
 } // namespace
 
+std::vector<std::string> tensorProviderCandidates(const std::string& requested,
+                                                  const std::vector<std::string>& runtimeProviders) {
+  std::vector<std::string> reported;
+  for (const auto& provider : runtimeProviders) {
+    reported.push_back(gpu::canonicalProviderName(provider));
+  }
+  const auto isReported = [&reported](const std::string& provider) {
+    return std::find(reported.begin(), reported.end(), provider) != reported.end();
+  };
+
+  std::vector<std::string> candidates;
+  const auto wanted = gpu::canonicalProviderName(requested.empty() ? std::string("auto") : requested);
+  if (wanted == gpu::kProviderCpu) {
+    return {gpu::kProviderCpu};
+  }
+  // A named GPU provider is tried first; if this runtime lacks it, the request
+  // still means "a GPU" (e.g. a DirectML preference on a CUDA build), so the
+  // remaining reported GPU providers follow before CPU.
+  if (wanted != "auto" && isReported(wanted)) {
+    candidates.push_back(wanted);
+  }
+  for (const auto& provider : gpu::providerPriorityChain()) {
+    if (provider != gpu::kProviderCpu && provider != wanted && isReported(provider)) {
+      candidates.push_back(provider);
+    }
+  }
+  candidates.emplace_back(gpu::kProviderCpu);
+  return candidates;
+}
+
+namespace {
+
+#if AUTOMIX_HAS_NATIVE_ORT
+void putVarint(std::string& out, std::uint64_t value) {
+  while (value >= 0x80) {
+    out.push_back(static_cast<char>((value & 0x7F) | 0x80));
+    value >>= 7;
+  }
+  out.push_back(static_cast<char>(value));
+}
+std::string varintField(std::uint32_t number, std::uint64_t value) {
+  std::string out;
+  putVarint(out, static_cast<std::uint64_t>(number) << 3);
+  putVarint(out, value);
+  return out;
+}
+std::string bytesField(std::uint32_t number, const std::string& payload) {
+  std::string out;
+  putVarint(out, (static_cast<std::uint64_t>(number) << 3) | 2);
+  putVarint(out, payload.size());
+  return out + payload;
+}
+
+// y = Identity(x), x and y float[1], IR 8 / opset 17: the smallest graph that
+// makes a session initialise its execution provider and device.
+std::string identityProbeModel() {
+  const auto valueInfo = [](const std::string& name) {
+    const auto dim = bytesField(1, varintField(1, 1));             // Dimension.dim_value = 1
+    const auto tensorType = varintField(1, 1) + bytesField(2, dim);  // elem_type FLOAT, shape
+    return bytesField(1, name) + bytesField(2, bytesField(1, tensorType));
+  };
+  const auto node = bytesField(1, "x") + bytesField(2, "y") + bytesField(4, "Identity");
+  const auto graph = bytesField(1, node) + bytesField(2, "gpu_probe") + bytesField(11, valueInfo("x")) +
+                     bytesField(12, valueInfo("y"));
+  return varintField(1, 8) + bytesField(8, bytesField(1, "") + varintField(2, 17)) + bytesField(7, graph);
+}
+#endif
+
+} // namespace
+
+bool gpuTensorSessionAvailable(std::string* providerOut) {
+#if AUTOMIX_HAS_NATIVE_ORT
+  static const std::string provider = [] {
+    std::vector<std::string> runtimeProviders;
+    try {
+      runtimeProviders = Ort::GetAvailableProviders();
+    } catch (...) {
+    }
+    const auto model = identityProbeModel();
+    for (const auto& candidate : tensorProviderCandidates("auto", runtimeProviders)) {
+      if (candidate == gpu::kProviderCpu) {
+        break;
+      }
+      try {
+        Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "AutoMixMasterGpuProbe");
+        Ort::SessionOptions options;
+        appendOrtExecutionProvider(options, candidate);
+        Ort::Session session(env, model.data(), model.size(), options);
+        return candidate;
+      } catch (...) {
+      }
+    }
+    return std::string();
+  }();
+  if (providerOut != nullptr) {
+    *providerOut = provider;
+  }
+  return !provider.empty();
+#else
+  if (providerOut != nullptr) {
+    providerOut->clear();
+  }
+  return false;
+#endif
+}
 struct OnnxTensorInference::NativeState {
 #if AUTOMIX_HAS_NATIVE_ORT
   std::unique_ptr<Ort::Env> env;
@@ -90,6 +203,10 @@ OnnxTensorInference::OnnxTensorInference() = default;
 OnnxTensorInference::~OnnxTensorInference() noexcept = default;
 
 void OnnxTensorInference::setTensorContract(std::optional<TensorContract> contract) { contract_ = std::move(contract); }
+
+void OnnxTensorInference::setExecutionProvider(std::string provider) { requestedProvider_ = std::move(provider); }
+
+std::string OnnxTensorInference::activeExecutionProvider() const { return activeProvider_; }
 
 bool OnnxTensorInference::isAvailable() const { return nativeState_ != nullptr; }
 
@@ -103,6 +220,7 @@ std::vector<TensorSpec> OnnxTensorInference::outputSpecs() const { return output
 
 void OnnxTensorInference::unload(std::string diagnostics) {
   nativeState_.reset();
+  activeProvider_.clear();
   inputs_.clear();
   outputs_.clear();
   diagnostics_ = std::move(diagnostics);
@@ -116,19 +234,46 @@ bool OnnxTensorInference::loadModel(const std::filesystem::path& modelPath) {
   }
 
 #if AUTOMIX_HAS_NATIVE_ORT
-  auto state = std::make_unique<NativeState>();
+  std::vector<std::string> runtimeProviders;
+  try {
+    runtimeProviders = Ort::GetAvailableProviders();
+  } catch (...) {
+  }
+  const auto candidates = tensorProviderCandidates(requestedProvider_, runtimeProviders);
+
+  std::unique_ptr<NativeState> state;
   std::vector<TensorSpec> inputs;
   std::vector<TensorSpec> outputs;
-  try {
-    state->env = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "AutoMixMasterTensor");
-    Ort::SessionOptions options;
-    options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+  std::string provider;
+  std::string attempts;  // why each provider before the winner was passed over
+  for (const auto& candidate : candidates) {
+    auto attempt = std::make_unique<NativeState>();
+    try {
+      attempt->env = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "AutoMixMasterTensor");
+      Ort::SessionOptions options;
+      options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+      appendOrtExecutionProvider(options, candidate);
 #if defined(_WIN32)
-    state->session = std::make_unique<Ort::Session>(*state->env, modelPath.wstring().c_str(), options);
+      attempt->session = std::make_unique<Ort::Session>(*attempt->env, modelPath.wstring().c_str(), options);
 #else
-    state->session = std::make_unique<Ort::Session>(*state->env, modelPath.string().c_str(), options);
+      attempt->session = std::make_unique<Ort::Session>(*attempt->env, modelPath.string().c_str(), options);
 #endif
+    } catch (const std::exception& exception) {
+      if (candidate == gpu::kProviderCpu) {
+        // Session creation is where a missing external-data sidecar surfaces; ORT's
+        // message names the file it could not open.
+        unload("ONNX tensor load failed for '" + modelPath.string() + "': " + attempts + exception.what());
+        return false;
+      }
+      attempts += candidate + " unavailable (" + exception.what() + "); ";
+      continue;
+    }
+    state = std::move(attempt);
+    provider = candidate;
+    break;
+  }
 
+  try {
     Ort::AllocatorWithDefaultOptions allocator;
     std::string probeError;
     for (std::size_t i = 0; i < state->session->GetInputCount(); ++i) {
@@ -146,12 +291,9 @@ bool OnnxTensorInference::loadModel(const std::filesystem::path& modelPath) {
       }
     }
   } catch (const std::exception& exception) {
-    // Session creation is where a missing external-data sidecar surfaces; ORT's
-    // message names the file it could not open.
     unload("ONNX tensor load failed for '" + modelPath.string() + "': " + exception.what());
     return false;
   }
-
   if (contract_.has_value()) {
     std::string contractError;
     if (!checkTensorContract(*contract_, inputs, outputs, contractError)) {
@@ -163,8 +305,10 @@ bool OnnxTensorInference::loadModel(const std::filesystem::path& modelPath) {
   inputs_ = std::move(inputs);
   outputs_ = std::move(outputs);
   nativeState_ = std::move(state);
-  diagnostics_ = "backend=native_onnxruntime; model=" + modelPath.filename().string() +
-                 "; inputs=" + std::to_string(inputs_.size()) + "; outputs=" + std::to_string(outputs_.size());
+  activeProvider_ = provider;
+  diagnostics_ = "backend=native_onnxruntime; provider=" + provider + "; model=" + modelPath.filename().string() +
+                 "; inputs=" + std::to_string(inputs_.size()) + "; outputs=" + std::to_string(outputs_.size()) +
+                 (attempts.empty() ? std::string() : "; fallback: " + attempts);
   return true;
 #else
   unload("ONNX tensor load failed for '" + modelPath.string() +
@@ -174,6 +318,16 @@ bool OnnxTensorInference::loadModel(const std::filesystem::path& modelPath) {
 }
 
 TensorInferenceResult OnnxTensorInference::run(const std::vector<TensorBinding>& inputs) const {
+  return runImpl(inputs, nullptr);
+}
+
+TensorInferenceResult OnnxTensorInference::runCancellable(const std::vector<TensorBinding>& inputs,
+                                                          const std::function<bool()>& cancelRequested) const {
+  return runImpl(inputs, cancelRequested ? &cancelRequested : nullptr);
+}
+
+TensorInferenceResult OnnxTensorInference::runImpl(const std::vector<TensorBinding>& inputs,
+                                                   const std::function<bool()>* cancelRequested) const {
   TensorInferenceResult result;
   if (nativeState_ == nullptr) {
     result.logMessage = "OnnxTensorInference: no model loaded (" + diagnostics_ + ")";
@@ -239,7 +393,41 @@ TensorInferenceResult OnnxTensorInference::run(const std::vector<TensorBinding>&
           memoryInfo, buffers[i].data(), buffers[i].size(), shapes[i].data(), shapes[i].size()));
     }
 
-    auto produced = nativeState_->session->Run(Ort::RunOptions{nullptr},
+    // A watcher polls the cancel check while the native run executes and
+    // terminates it; ORT then throws, which the catch below reports.
+    Ort::RunOptions runOptions;
+    if (activeProvider_ == gpu::kProviderCuda) {
+      // Return the run's unused arena memory to the device afterwards. Without
+      // it, the second BS-RoFormer chunk grows the arena past a 16 GB card and
+      // the driver spills into shared system memory (~5x slower per chunk).
+      // Requires arena_extend_strategy=kSameAsRequested (OrtSessionProviders.h).
+      runOptions.AddConfigEntry("memory.enable_memory_arena_shrinkage", "gpu:0");
+    }
+    std::atomic<bool> runFinished{false};
+    std::thread watcher;
+    if (cancelRequested != nullptr) {
+      watcher = std::thread([&runOptions, &runFinished, cancelRequested] {
+        while (!runFinished.load()) {
+          if ((*cancelRequested)()) {
+            runOptions.SetTerminate();
+            return;
+          }
+          std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        }
+      });
+    }
+    struct WatcherJoin {
+      std::atomic<bool>& finished;
+      std::thread& thread;
+      ~WatcherJoin() {
+        finished.store(true);
+        if (thread.joinable()) {
+          thread.join();
+        }
+      }
+    } watcherJoin{runFinished, watcher};
+
+    auto produced = nativeState_->session->Run(runOptions,
                                                inputNames.data(),
                                                values.data(),
                                                values.size(),
@@ -276,6 +464,7 @@ TensorInferenceResult OnnxTensorInference::run(const std::vector<TensorBinding>&
   return result;
 #else
   static_cast<void>(inputs);
+  static_cast<void>(cancelRequested);
   result.logMessage = "OnnxTensorInference: this build has no native ONNX Runtime.";
   return result;
 #endif

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -22,6 +23,15 @@ class ITensorInference {
   virtual std::vector<TensorSpec> inputSpecs() const = 0;
   virtual std::vector<TensorSpec> outputSpecs() const = 0;
   virtual TensorInferenceResult run(const std::vector<TensorBinding>& inputs) const = 0;
+
+  // run(), but a backend able to abort an in-flight inference stops early once
+  // cancelRequested() returns true. cancelRequested may be called from another
+  // thread, so it must be thread-safe. The default cannot abort and just runs.
+  virtual TensorInferenceResult runCancellable(const std::vector<TensorBinding>& inputs,
+                                               const std::function<bool()>& cancelRequested) const {
+    (void)cancelRequested;
+    return run(inputs);
+  }
 };
 
 class NullTensorInference final : public ITensorInference {

@@ -269,7 +269,8 @@ bool writeTurnkeyModelPackManifest(const std::filesystem::path& installPath,
         "License: " + kItoMasterLicense + ". Attribution: " + kItoMasterAttribution;
   }
   if (model.repoId == kBsRoformerRepoId) {
-    manifest["intended_use"] = kBsRoformerIntendedUse;
+    manifest["intended_use"] =
+        modelFileName == kBsRoformerFp32File ? kBsRoformerFp32IntendedUse : kBsRoformerIntendedUse;
   }
 
   const auto manifestPath = installPath / "model.json";

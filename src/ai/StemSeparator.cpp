@@ -1041,17 +1041,35 @@ StemSeparator::SeparationResult runTensorSeparation(const std::filesystem::path&
     return result;
   }
   config->progressCallback = options.tensorProgress;
+  config->cancelRequested = options.cancelRequested;
 
-  OnnxTensorInference inference;
-  inference.setTensorContract(pack->tensorContract);
-  if (!inference.loadModel(modelRoot / pack->modelFile)) {
-    result.logMessage = "tensor model did not load: " + inference.backendDiagnostics();
-    return result;
+  // A GPU session can open and still fail mid-run (out of device memory, an
+  // unsupported kernel), so a GPU failure gets exactly one retry on CPU.
+  SeparationRunner::Result separated;
+  std::string provider;
+  std::string gpuFailure;
+  for (const auto& requested : {options.executionProvider, std::string("cpu")}) {
+    OnnxTensorInference inference;
+    inference.setTensorContract(pack->tensorContract);
+    inference.setExecutionProvider(requested);
+    if (!inference.loadModel(modelRoot / pack->modelFile)) {
+      result.logMessage = gpuFailure + "tensor model did not load: " + inference.backendDiagnostics();
+      return result;
+    }
+    provider = inference.activeExecutionProvider();
+    separated = SeparationRunner::separate(mix, inference, *config);
+    if (separated.cancelled) {
+      result.cancelled = true;
+      result.logMessage = separated.logMessage;
+      return result;
+    }
+    if (separated.usedModel || provider == "cpu") {
+      break;
+    }
+    gpuFailure = "on " + provider + ": " + separated.logMessage + "; retried on cpu. ";
   }
-
-  auto separated = SeparationRunner::separate(mix, inference, *config);
   if (!separated.usedModel) {
-    result.logMessage = "tensor separation failed: " + separated.logMessage;
+    result.logMessage = "tensor separation failed: " + gpuFailure + separated.logMessage;
     return result;
   }
 
@@ -1085,7 +1103,8 @@ StemSeparator::SeparationResult runTensorSeparation(const std::filesystem::path&
   result.usedModel = true;
   result.stemVariantCount = static_cast<int>(result.stems.size());
   result.qaMetrics = computeQaMetrics(mix, separated.stemAudio);
-  result.logMessage = "Tensor separation via pack '" + pack->id + "'." + residuals + " " + separated.logMessage;
+  result.logMessage = "Tensor separation via pack '" + pack->id + "' on " + provider + "." + residuals + " " +
+                      gpuFailure + separated.logMessage;
   return result;
 }
 
@@ -1140,7 +1159,9 @@ StemSeparator::SeparationResult StemSeparator::separate(const std::filesystem::p
     std::string tensorFallbackNote;
     if (options.useTensorModel) {
       auto tensorResult = runTensorSeparation(modelRoot_, mixBuffer, outputDir, options);
-      if (tensorResult.success) {
+      if (tensorResult.success || tensorResult.cancelled) {
+        // Cancelled is returned as-is: falling back would run the separation
+        // the user just stopped.
         return tensorResult;
       }
       tensorFallbackNote = "Tensor separation unavailable (" + tensorResult.logMessage + "); existing separator used. ";

@@ -512,27 +512,34 @@ int commandModelHealth(const CommandArgs& args) {
   return failed == 0 ? 0 : 1;
 }
 
-// separate --mix <file> --out <dir> [--pack <dir>] [--tensor] [--json]
+// separate --mix <file> --out <dir> [--pack <dir>] [--tensor] [--provider auto|cpu|cuda] [--cancel-after-ms N] [--json]
 // Runs StemSeparator exactly as single-mix import does, outside the UI.
 int commandSeparate(const std::vector<std::string>& args) {
   const auto mixArg = argValue(args, "--mix");
   const auto outArg = argValue(args, "--out");
   if (!mixArg.has_value() || !outArg.has_value()) {
-    std::cerr << "Usage: separate --mix <file> --out <dir> [--pack <dir>] [--tensor] [--json]\n";
+    std::cerr << "Usage: separate --mix <file> --out <dir> [--pack <dir>] [--tensor] [--provider auto|cpu|cuda] [--cancel-after-ms N] [--json]\n";
     return 2;
   }
 
   automix::ai::StemSeparator separator(argValue(args, "--pack").value_or("assets/models/stem-separator"));
   automix::ai::StemSeparator::SeparationOptions options;
   options.useTensorModel = hasFlag(args, "--tensor");
+  options.executionProvider = argValue(args, "--provider").value_or("auto");
   const bool jsonOutput = hasFlag(args, "--json");
+  // --cancel-after-ms N: request cancellation N ms after start, to measure how
+  // quickly a running separation actually stops.
+  const auto started = std::chrono::steady_clock::now();
+  if (const auto cancelAfter = parseIntArg(args, "--cancel-after-ms"); cancelAfter.has_value()) {
+    const auto deadline = started + std::chrono::milliseconds(*cancelAfter);
+    options.cancelRequested = [deadline] { return std::chrono::steady_clock::now() >= deadline; };
+  }
   if (options.useTensorModel && !jsonOutput) {
     options.tensorProgress = [](const int done, const int total) {
       std::cout << "  chunk " << done << "/" << total << "\n" << std::flush;
     };
   }
 
-  const auto started = std::chrono::steady_clock::now();
   const auto result = separator.separate(*mixArg, *outArg, options);
   const double seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
@@ -544,6 +551,7 @@ int commandSeparate(const std::vector<std::string>& args) {
   const nlohmann::json payload = {
       {"success", result.success},
       {"usedModel", result.usedModel},
+      {"cancelled", result.cancelled},
       {"seconds", seconds},
       {"stems", stems},
       {"energyLeakage", result.qaMetrics.energyLeakage},

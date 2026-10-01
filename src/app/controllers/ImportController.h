@@ -14,6 +14,13 @@
 
 namespace automix::app {
 
+// Opt-in tensor (vocal model) separation for single-mix import.
+struct TensorSeparationRequest {
+  bool enabled = false;
+  // "auto", "cpu" or a provider such as "cuda"; see StemSeparator::SeparationOptions.
+  std::string executionProvider = "auto";
+};
+
 struct ImportResult {
   bool cancelled = false;
   std::vector<domain::Stem> stems;
@@ -37,7 +44,7 @@ class ImportController {
                    int preferredStemCount,
                    std::atomic_bool& cancelFlag,
                    std::optional<std::filesystem::path> separationModelRoot = std::nullopt,
-                   bool useTensorModel = false);
+                   TensorSeparationRequest tensorSeparation = {});
 
  private:
   juce::ThreadPool& threadPool_;

@@ -16,6 +16,7 @@
 #include "ai/BsRoformerPack.h"
 #include "ai/ItoMasterAdapter.h"
 #include "ai/ModelCatalogValidator.h"
+#include "ai/OnnxExternalData.h"
 #include "ai/OnnxTensorInference.h"
 #include "util/Sha256.h"
 #include "util/StringUtils.h"
@@ -455,14 +456,25 @@ void appendInstallLog(const std::filesystem::path& root,
   out << event.dump() << "\n";
 }
 
-std::string primaryFileForRepo(const std::string& repoId, const std::vector<std::string>& files, bool* hasOnnxOut) {
+std::string primaryFileForRepo(const std::string& repoId,
+                               const std::vector<std::string>& files,
+                               bool* hasOnnxOut,
+                               const bool preferGpuBuild) {
   auto primary = pickPrimaryFile(files, hasOnnxOut);
   if (repoId == kBsRoformerRepoId) {
-    // Pinned by name (see kBsRoformerQuantizedFile). If the repo ever drops the
-    // file, the entry becomes undiscoverable instead of installing the fp32
-    // graph without its sidecar.
-    const bool hasQuantized = std::find(files.begin(), files.end(), kBsRoformerQuantizedFile) != files.end();
-    primary = hasQuantized ? kBsRoformerQuantizedFile : "";
+    // Pinned by name (see kBsRoformerQuantizedFile / kBsRoformerFp32File). The
+    // fp32 graph is only chosen together with its sidecar; without both, and
+    // without the quantized file, the entry becomes undiscoverable instead of
+    // installing an unloadable graph.
+    const auto has = [&files](const std::string& name) {
+      return std::find(files.begin(), files.end(), name) != files.end();
+    };
+    const std::string fp32 = kBsRoformerFp32File;
+    if (preferGpuBuild && has(fp32) && has(fp32 + ".data")) {
+      primary = fp32;
+    } else {
+      primary = has(kBsRoformerQuantizedFile) ? kBsRoformerQuantizedFile : "";
+    }
   }
   return primary;
 }
@@ -488,11 +500,18 @@ std::vector<std::string> curatedModelIds() {
 
 // Artifacts that must accompany the primary model file to form a complete pack
 // (the ITO-Master mastering route consumes all three as one model pack).
-std::vector<std::string> auxiliaryAssetsForRepo(const std::string& repoId) {
+std::vector<std::string> auxiliaryAssetsFor(const std::string& repoId,
+                                            const std::string& primaryFile,
+                                            const std::vector<std::string>& files) {
+  std::vector<std::string> assets;
   if (repoId == kItoMasterRepoId) {
-    return {kItoMasterPredictorFile, kItoMasterConfigFile};
+    assets = {kItoMasterPredictorFile, kItoMasterConfigFile};
   }
-  return {};
+  const auto sidecar = primaryFile + ".data";
+  if (!primaryFile.empty() && std::find(files.begin(), files.end(), sidecar) != files.end()) {
+    assets.push_back(sidecar);
+  }
+  return assets;
 }
 
 std::vector<std::string> HuggingFaceModelHub::defaultRecommendedSearchTerms() {
@@ -601,7 +620,10 @@ std::optional<HubModelInfo> HuggingFaceModelHub::modelInfo(const std::string& mo
     }
   }
 
-  info.primaryFile = primaryFileForRepo(info.repoId, info.files, &info.hasOnnx);
+  // The GPU probe opens a real session once per process; only repos with a
+  // GPU variant pay for it.
+  const bool preferGpuBuild = info.repoId == kBsRoformerRepoId && gpuTensorSessionAvailable();
+  info.primaryFile = primaryFileForRepo(info.repoId, info.files, &info.hasOnnx, preferGpuBuild);
   info.useCase = HuggingFaceModelHub::inferUseCase(info.repoId, info.tags, "");
   const auto compatibility = validateCatalogModel(info);
   info.compatible = compatibility.compatible;
@@ -819,7 +841,7 @@ HubInstallResult HuggingFaceModelHub::installModel(const std::string& modelIdOrR
   // Fetch auxiliary artifacts so the pack is complete on disk (e.g. the
   // ITO-Master pack needs mastering_tcn.onnx + config.json alongside the
   // primary fxencoder.onnx). Each is SHA-256 verified when the repo exposes it.
-  for (const auto& auxiliaryAsset : auxiliaryAssetsForRepo(info->repoId)) {
+  for (const auto& auxiliaryAsset : auxiliaryAssetsFor(info->repoId, info->primaryFile, info->files)) {
     const auto auxiliaryPath = installPath / auxiliaryAsset;
     const auto auxiliaryUrl = "https://huggingface.co/" + info->repoId + "/resolve/" + revision + "/" +
                               escapePathPreservingSlash(auxiliaryAsset);
@@ -844,6 +866,34 @@ HubInstallResult HuggingFaceModelHub::installModel(const std::string& modelIdOrR
     }
     result.downloadedFiles.push_back(auxiliaryAsset);
     result.auxiliaryFiles.push_back(auxiliaryAsset);
+  }
+
+  // ONNX Runtime cannot load some external-weight exports at all (shape
+  // inference cannot read external initializers), so "<primary>.data" is
+  // folded into the primary model in place and the sidecar dropped. The pack
+  // keeps its file name, so the already-installed check above still matches.
+  const auto sidecarName = primaryPath.filename().string() + ".data";
+  if (const auto sidecarIt = std::find(result.auxiliaryFiles.begin(), result.auxiliaryFiles.end(), sidecarName);
+      sidecarIt != result.auxiliaryFiles.end()) {
+    auto inlinedPath = primaryPath;
+    inlinedPath += ".inlined";
+    const auto inlined = inlineExternalData(primaryPath, inlinedPath);
+    if (!inlined.success) {
+      std::filesystem::remove(primaryPath, error);
+      std::filesystem::remove(installPath / sidecarName, error);
+      result.message = "Could not make " + primaryPath.filename().string() + " self-contained: " + inlined.error;
+      appendInstallLog(destinationRoot, info.value(), result);
+      return result;
+    }
+    std::filesystem::rename(inlinedPath, primaryPath, error);
+    if (error) {
+      result.message = "Could not replace " + primaryPath.filename().string() + " with its inlined form: " +
+                       error.message();
+      appendInstallLog(destinationRoot, info.value(), result);
+      return result;
+    }
+    std::filesystem::remove(installPath / sidecarName, error);
+    result.auxiliaryFiles.erase(sidecarIt);
   }
 
   if (options.downloadReadme) {

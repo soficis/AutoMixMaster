@@ -110,8 +110,11 @@ resolves it.
   xycld/BS-RoFormer-ONNX (MIT)
       BS-RoFormer (Lu et al., arXiv 2309.02612), ONNX export by xycld.
       https://opensource.org/license/mit
-      The catalog installs the uint8-quantized build; its quality relative
-      to the fp32 build has not been measured. The model separates vocals
+      The catalog installs the fp32 build where a CUDA GPU session opens and
+      the uint8-quantized build otherwise; the quantized build's quality
+      relative to fp32 has not been formally measured. The fp32 export's
+      external weights are folded into one local .onnx file at install time.
+      No model file is re-hosted. The model separates vocals
       only: the instrumental stem is the residual (mix - vocals), not a
       second separation.
 

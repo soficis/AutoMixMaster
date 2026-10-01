@@ -254,8 +254,20 @@ SeparationRunner::Result SeparationRunner::separate(const engine::AudioBuffer& m
     stemAudio.emplace_back(channels, samples, mix.getSampleRate());
   }
 
+  const auto cancelRequested = [&config] { return config.cancelRequested && config.cancelRequested(); };
+  const auto cancelled = [&](const int chunksDone) {
+    Result stopped;
+    stopped.cancelled = true;
+    stopped.logMessage = "Tensor separation cancelled after " + std::to_string(chunksDone) + "/" +
+                         std::to_string(totalChunks) + " chunk(s); no stems were produced.";
+    return stopped;
+  };
+
   try {
     for (int chunkIndex = 0; chunkIndex < totalChunks; ++chunkIndex) {
+      if (cancelRequested()) {
+        return cancelled(chunkIndex);
+      }
       const int start = chunkIndex * stride;
       const int valid = std::min(chunk, samples - start);
 
@@ -280,7 +292,11 @@ SeparationRunner::Result SeparationRunner::separate(const engine::AudioBuffer& m
       }
       binding.data = encodeInput(spectrum, config.inputLayout);
 
-      const auto inferred = inference.run({binding});
+      const auto inferred = inference.runCancellable({binding}, config.cancelRequested);
+      if (!inferred.usedModel && cancelRequested()) {
+        // A terminated run reports failure; the cause is the cancellation.
+        return cancelled(chunkIndex);
+      }
       if (!inferred.usedModel) {
         throw ChunkFailure("chunk " + std::to_string(chunkIndex + 1) + "/" + std::to_string(totalChunks) +
                            " inference failed: " + inferred.logMessage);

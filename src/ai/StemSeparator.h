@@ -23,6 +23,13 @@ class StemSeparator final {
     // Tensor path only, called from the separating thread. JUCE-free so the
     // caller owns any message-thread marshalling.
     std::function<void(int done, int total)> tensorProgress;
+    // Tensor path only. Polled between chunks and during inference, possibly
+    // from a watcher thread: must be thread-safe. True stops separation with
+    // SeparationResult::cancelled and no fallback.
+    std::function<bool()> cancelRequested;
+    // Tensor path only: "auto" (GPU when the runtime can open one, else CPU),
+    // "cpu", or a provider name such as "cuda".
+    std::string executionProvider = "auto";
   };
 
   struct SeparationQaMetrics {
@@ -34,6 +41,8 @@ class StemSeparator final {
   struct SeparationResult {
     bool success = false;
     bool usedModel = false;
+    // The user stopped it; success is false and nothing was written.
+    bool cancelled = false;
     int stemVariantCount = 0;
     std::vector<domain::Stem> stems;
     std::vector<std::filesystem::path> generatedFiles;

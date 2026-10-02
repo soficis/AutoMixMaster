@@ -197,7 +197,7 @@ bool gpuTensorSessionAvailable(std::string* providerOut) {
       try {
         Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "AutoMixMasterGpuProbe");
         Ort::SessionOptions options;
-        appendOrtExecutionProvider(options, candidate);
+        configureSessionForProvider(options, candidate);
         Ort::Session session(env, model.data(), model.size(), options);
         return candidate;
       } catch (...) {
@@ -280,7 +280,7 @@ bool OnnxTensorInference::loadModel(const std::filesystem::path& modelPath) {
       attempt->env = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "AutoMixMasterTensor");
       Ort::SessionOptions options;
       options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-      appendOrtExecutionProvider(options, candidate);
+      configureSessionForProvider(options, candidate);
 #if defined(_WIN32)
       attempt->session = std::make_unique<Ort::Session>(*attempt->env, modelPath.wstring().c_str(), options);
 #else

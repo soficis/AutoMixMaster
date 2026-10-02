@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace automix::ai::gpu {
@@ -71,6 +72,91 @@ inline int providerPriority(const std::string& provider) {
     return static_cast<int>(std::distance(chain.begin(), it));
   }
   return static_cast<int>(chain.size());
+}
+
+struct SessionTuning {
+  std::string hardwareTier = "standard";
+  int intraOpThreads = 0;
+  int interOpThreads = 0;
+  bool memPattern = true;
+  bool cpuArena = true;
+  bool sequentialExecution = false;
+};
+
+inline SessionTuning sessionTuning(const std::string& provider, const int hardwareThreads) {
+  SessionTuning tuning;
+  const auto normalized = canonicalProviderName(provider);
+  const int clampedThreads = std::max(1, hardwareThreads);
+  if (clampedThreads <= 4) {
+    tuning.hardwareTier = "low";
+  } else if (clampedThreads >= 12) {
+    tuning.hardwareTier = "high";
+  }
+
+  if (normalized == kProviderCuda) {
+    tuning.intraOpThreads = std::clamp(clampedThreads / 2, 1, 8);
+    tuning.interOpThreads = 1;
+    tuning.memPattern = false;
+    tuning.cpuArena = true;
+    tuning.sequentialExecution = false;
+    return tuning;
+  }
+
+  if (normalized == kProviderDirectMl) {
+    tuning.intraOpThreads = std::clamp(clampedThreads / 2, 1, 4);
+    tuning.interOpThreads = 1;
+    tuning.memPattern = false;
+    tuning.cpuArena = false;
+    tuning.sequentialExecution = true;
+    return tuning;
+  }
+
+  if (normalized == kProviderCoreMl || normalized == kProviderAne) {
+    tuning.intraOpThreads = std::clamp(clampedThreads / 2, 1, 4);
+    tuning.interOpThreads = 1;
+    tuning.memPattern = false;
+    tuning.cpuArena = false;
+    tuning.sequentialExecution = true;
+    return tuning;
+  }
+
+  tuning.intraOpThreads = std::clamp(clampedThreads, 1, 16);
+  tuning.interOpThreads = std::clamp(clampedThreads / 2, 1, 8);
+  tuning.memPattern = true;
+  tuning.cpuArena = true;
+  tuning.sequentialExecution = false;
+  return tuning;
+}
+
+// Option maps for execution providers.
+// Valid CoreML options per coreml_options.cc@v1.30.0:55-64:
+// MLComputeUnits, ModelFormat, RequireStaticInputShapes, EnableOnSubgraphs,
+// SpecializationStrategy, ProfileComputePlan, AllowLowPrecisionAccumulationOnGPU, ModelCacheDirectory
+inline std::unordered_map<std::string, std::string> providerOptionMap(const std::string& rawProvider) {
+  std::unordered_map<std::string, std::string> options;
+  const auto canonical = canonicalProviderName(rawProvider);
+  if (canonical == kProviderDirectMl) {
+    options["device_id"] = "0";
+    return options;
+  }
+  if (canonical == kProviderCoreMl) {
+    options["ModelFormat"] = "MLProgram";
+    options["MLComputeUnits"] = "ALL";
+    return options;
+  }
+  if (canonical == kProviderAne) {
+    // Apple Neural Engine via CoreML with Neural Engine compute units.
+    // (Note: older docs suggested a unit-count key which ORT 1.30 rejects with 'Unknown option')
+    options["ModelFormat"] = "MLProgram";
+    options["MLComputeUnits"] = "CPUAndNeuralEngine";
+    return options;
+  }
+  if (canonical == kProviderOpenVino) {
+    // OpenVINO provider for Intel NPU / GPU: device_type=CPU_FP32 is a CPU device, and OpenVINO is not shipped
+    options["device_type"] = "CPU_FP32";
+    return options;
+  }
+  return options;
 }
 
 // --- Optional ONNX Runtime capabilities -------------------------------------

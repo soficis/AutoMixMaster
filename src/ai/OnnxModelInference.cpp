@@ -94,61 +94,7 @@ std::filesystem::path pickQuantizedVariant(const std::filesystem::path& modelPat
   return modelPath;
 }
 
-#if AUTOMIX_HAS_NATIVE_ORT
-struct SessionTuning {
-  std::string hardwareTier = "standard";
-  int intraOpThreads = 0;
-  int interOpThreads = 0;
-  bool memPattern = true;
-  bool cpuArena = true;
-  bool sequentialExecution = false;
-};
 
-SessionTuning tuningForProvider(const std::string& provider, const int hardwareThreads) {
-  SessionTuning tuning;
-  const auto normalized = canonicalProviderName(provider);
-  const int clampedThreads = std::max(1, hardwareThreads);
-  if (clampedThreads <= 4) {
-    tuning.hardwareTier = "low";
-  } else if (clampedThreads >= 12) {
-    tuning.hardwareTier = "high";
-  }
-
-  if (normalized == "cuda") {
-    tuning.intraOpThreads = std::clamp(clampedThreads / 2, 1, 8);
-    tuning.interOpThreads = 1;
-    tuning.memPattern = false;
-    tuning.cpuArena = true;
-    tuning.sequentialExecution = false;
-    return tuning;
-  }
-
-  if (normalized == "directml") {
-    tuning.intraOpThreads = std::clamp(clampedThreads / 2, 1, 4);
-    tuning.interOpThreads = 1;
-    tuning.memPattern = false;
-    tuning.cpuArena = false;
-    tuning.sequentialExecution = true;
-    return tuning;
-  }
-
-  if (normalized == "coreml") {
-    tuning.intraOpThreads = std::clamp(clampedThreads / 2, 1, 4);
-    tuning.interOpThreads = 1;
-    tuning.memPattern = false;
-    tuning.cpuArena = false;
-    tuning.sequentialExecution = true;
-    return tuning;
-  }
-
-  tuning.intraOpThreads = std::clamp(clampedThreads, 1, 16);
-  tuning.interOpThreads = std::clamp(clampedThreads / 2, 1, 8);
-  tuning.memPattern = true;
-  tuning.cpuArena = true;
-  tuning.sequentialExecution = false;
-  return tuning;
-}
-#endif
 
 #if AUTOMIX_HAS_NATIVE_ORT
 
@@ -168,9 +114,7 @@ std::string makeProfilePrefix(const std::filesystem::path& modelPath) {
   return (base / (stem + "_" + timeTag)).string();
 }
 
-void appendExecutionProvider(Ort::SessionOptions& options, const std::string& provider) {
-  appendOrtExecutionProvider(options, canonicalProviderName(provider));
-}
+
 
 std::vector<std::string> discoverAvailableRuntimeProviders() {
   std::vector<std::string> providers = {"cpu"};
@@ -371,27 +315,9 @@ bool OnnxModelInference::loadModel(const std::filesystem::path& modelPath) {
     nativeState->sessionOptions = std::make_unique<Ort::SessionOptions>();
 
     const int hardwareThreads = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
-    auto tuning = tuningForProvider(activeExecutionProvider_, hardwareThreads);
-    if (intraOpThreads_ > 0) {
-      tuning.intraOpThreads = intraOpThreads_;
-    }
-    if (interOpThreads_ > 0) {
-      tuning.interOpThreads = interOpThreads_;
-    }
-
-    nativeState->sessionOptions->SetIntraOpNumThreads(std::max(1, tuning.intraOpThreads));
-    nativeState->sessionOptions->SetInterOpNumThreads(std::max(1, tuning.interOpThreads));
-    nativeState->sessionOptions->SetExecutionMode(
-        tuning.sequentialExecution ? ExecutionMode::ORT_SEQUENTIAL : ExecutionMode::ORT_PARALLEL);
+    auto tuning = gpu::sessionTuning(activeExecutionProvider_, hardwareThreads);
     nativeState->sessionOptions->SetGraphOptimizationLevel(
         graphOptimizationEnabled_ ? GraphOptimizationLevel::ORT_ENABLE_ALL : GraphOptimizationLevel::ORT_DISABLE_ALL);
-
-    if (!tuning.memPattern) {
-      nativeState->sessionOptions->DisableMemPattern();
-    }
-    if (!tuning.cpuArena) {
-      nativeState->sessionOptions->DisableCpuMemArena();
-    }
 
     if (profilingEnabled_) {
       nativeState->profilingPrefix = makeProfilePrefix(modelPath_);
@@ -402,7 +328,7 @@ bool OnnxModelInference::loadModel(const std::filesystem::path& modelPath) {
       GpuRuntimePack::preload();  // per-user CUDA libraries, if installed
     }
     try {
-      appendExecutionProvider(*nativeState->sessionOptions, activeExecutionProvider_);
+      configureSessionForProvider(*nativeState->sessionOptions, activeExecutionProvider_, hardwareThreads);
     } catch (const std::exception&) {
       providerFallbacks_.fetch_add(1);
       {
@@ -410,6 +336,15 @@ bool OnnxModelInference::loadModel(const std::filesystem::path& modelPath) {
         failedProviders_.push_back(activeExecutionProvider_);
       }
       activeExecutionProvider_ = gpu::kProviderCpu;
+      tuning = gpu::sessionTuning(activeExecutionProvider_, hardwareThreads);
+      configureSessionForProvider(*nativeState->sessionOptions, activeExecutionProvider_, hardwareThreads);
+    }
+
+    if (intraOpThreads_ > 0) {
+      nativeState->sessionOptions->SetIntraOpNumThreads(intraOpThreads_);
+    }
+    if (interOpThreads_ > 0) {
+      nativeState->sessionOptions->SetInterOpNumThreads(interOpThreads_);
     }
 
 #if defined(_WIN32)

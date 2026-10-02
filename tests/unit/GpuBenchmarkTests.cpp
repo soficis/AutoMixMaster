@@ -136,6 +136,71 @@ TEST_CASE("GpuProvider platform preferred provider", "[gpu][provider]") {
          preferred == "cuda" || preferred == "directml"));
 }
 
+TEST_CASE("GpuProvider providerOptionMap and sessionTuning", "[gpu][provider]") {
+  using namespace automix::ai::gpu;
+
+  // 1. providerOptionMap("ane")
+  const auto aneOpts = providerOptionMap("ane");
+  CHECK(aneOpts.at("ModelFormat") == "MLProgram");
+  CHECK(aneOpts.at("MLComputeUnits") == "CPUAndNeuralEngine");
+
+  // Every CoreML/ANE key must be in the valid set documented in coreml_options.cc@v1.30.0:55-64
+  const std::vector<std::string> validCoreMlKeys = {
+      "MLComputeUnits",
+      "ModelFormat",
+      "RequireStaticInputShapes",
+      "EnableOnSubgraphs",
+      "SpecializationStrategy",
+      "ProfileComputePlan",
+      "AllowLowPrecisionAccumulationOnGPU",
+      "ModelCacheDirectory"
+  };
+  for (const auto& [k, v] : aneOpts) {
+    CHECK((std::find(validCoreMlKeys.begin(), validCoreMlKeys.end(), k) != validCoreMlKeys.end()));
+  }
+
+  // 2. providerOptionMap("coreml")
+  const auto coremlOpts = providerOptionMap("coreml");
+  CHECK(coremlOpts.at("ModelFormat") == "MLProgram");
+  CHECK(coremlOpts.at("MLComputeUnits") == "ALL");
+  for (const auto& [k, v] : coremlOpts) {
+    CHECK((std::find(validCoreMlKeys.begin(), validCoreMlKeys.end(), k) != validCoreMlKeys.end()));
+  }
+
+  // 3. sessionTuning("directml", n) gives sequential execution with mem pattern off
+  const auto dmlTuning = sessionTuning("directml", 8);
+  CHECK(dmlTuning.sequentialExecution == true);
+  CHECK(dmlTuning.memPattern == false);
+  CHECK(dmlTuning.cpuArena == false);
+  CHECK(dmlTuning.interOpThreads == 1);
+  CHECK(dmlTuning.intraOpThreads == 4);
+
+  // 4. sessionTuning("cuda" | "cpu", n) golden values
+  const auto cudaTuning = sessionTuning("cuda", 8);
+  CHECK(cudaTuning.sequentialExecution == false);
+  CHECK(cudaTuning.memPattern == false);
+  CHECK(cudaTuning.cpuArena == true);
+  CHECK(cudaTuning.interOpThreads == 1);
+  CHECK(cudaTuning.intraOpThreads == 4);
+  CHECK(cudaTuning.hardwareTier == "standard");
+
+  const auto cpuTuningLow = sessionTuning("cpu", 2);
+  CHECK(cpuTuningLow.hardwareTier == "low");
+  CHECK(cpuTuningLow.intraOpThreads == 2);
+  CHECK(cpuTuningLow.interOpThreads == 1);
+  CHECK(cpuTuningLow.memPattern == true);
+  CHECK(cpuTuningLow.cpuArena == true);
+  CHECK(cpuTuningLow.sequentialExecution == false);
+
+  const auto cpuTuningHigh = sessionTuning("cpu", 16);
+  CHECK(cpuTuningHigh.hardwareTier == "high");
+  CHECK(cpuTuningHigh.intraOpThreads == 16);
+  CHECK(cpuTuningHigh.interOpThreads == 8);
+  CHECK(cpuTuningHigh.memPattern == true);
+  CHECK(cpuTuningHigh.cpuArena == true);
+  CHECK(cpuTuningHigh.sequentialExecution == false);
+}
+
 // ─── T3.4: detectAvailableProviders ─────────────────────────────────────────
 
 TEST_CASE("OnnxModelInference detectAvailableProviders", "[gpu][detect]") {

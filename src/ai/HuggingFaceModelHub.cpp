@@ -459,11 +459,9 @@ void appendInstallLog(const std::filesystem::path& root,
 }
 
 bool bsRoformerGpuBuildQualifies() {
-  // The probe opens a real session (once per process when it succeeds). fp32
-  // also needs a device big enough to hold it: on a smaller card it spills into
-  // shared memory and runs slower than the CPU.
-  std::string gpuProvider;
-  return gpuTensorSessionAvailable(&gpuProvider) && gpuProvider == "cuda" &&
+  // Probes whether CUDA tensor inference is usable on this machine, and
+  // checks whether device memory is sufficient for the ~10 GiB fp32 model.
+  return tensorProviderUsable("cuda") &&
          gpuFitsModel(queryCudaDeviceMemory(), kBsRoformerFp32GpuMemoryMb * 1024 * 1024);
 }
 

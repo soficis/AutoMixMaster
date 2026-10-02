@@ -616,10 +616,14 @@ int commandGpuRuntime(const std::vector<std::string>& args) {
       return true;
     });
     std::cout << result.message << "\n";
+    if (result.success) {
+      automix::ai::invalidateTensorProviderProbeCache();
+    }
     return result.success ? 0 : 1;
   }
   if (action == "remove") {
     const auto removed = pack::uninstall(root);
+    automix::ai::invalidateTensorProviderProbeCache();
     std::cout << removed.message << "\n";
     return removed.removedNow ? 0 : 3;
   }

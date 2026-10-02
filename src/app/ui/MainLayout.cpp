@@ -2315,6 +2315,7 @@ void MainLayout::installGpuRuntime() {
       safe->gpuRuntimeInstalling_ = false;
       safe->taskOrchestrator_->appendHistory(juce::String(result.message));
       if (result.success) {
+        ai::invalidateTensorProviderProbeCache();
         safe->taskOrchestrator_->appendHistory("GPU acceleration is ready.");
         safe->upgradeVocalModelForGpu();
       }
@@ -2368,6 +2369,7 @@ void MainLayout::onGpuRuntimeButton() {
   namespace pack = ai::GpuRuntimePack;
   if (pack::isInstalled(pack::defaultRoot())) {
     const auto removed = pack::uninstall();
+    ai::invalidateTensorProviderProbeCache();
     taskOrchestrator_->appendHistory(juce::String(removed.message));
     return;
   }

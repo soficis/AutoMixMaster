@@ -148,6 +148,7 @@ add_library(automix_core
   src/ai/TensorTypes.cpp
   src/ai/SeparationRunner.cpp
   src/ai/OnnxTensorInference.cpp
+  src/ai/OrtRuntime.cpp
   src/ai/OnnxExternalData.cpp
   src/ai/GpuMemory.cpp
   src/ai/GpuRuntimePack.cpp

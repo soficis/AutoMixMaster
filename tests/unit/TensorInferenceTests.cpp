@@ -1338,7 +1338,89 @@ TEST_CASE("fp32 pack records its GPU memory need; quantized does not", "[ai][ten
   std::filesystem::remove_all(root);
 }
 
+TEST_CASE("BS-RoFormer packs default to CUDA allow-list if missing from manifest", "[ai][tensor]") {
+  const auto root = std::filesystem::temp_directory_path() / "automix_bsroformer_allowlist_test";
+  std::filesystem::remove_all(root);
+  std::filesystem::create_directories(root);
+
+  const auto writePackWithManifest = [&](const std::string& modelFile, const std::optional<std::vector<std::string>>& gpuProviders) {
+    {
+      std::ofstream model(root / modelFile, std::ios::binary);
+      model << "not a real graph";
+    }
+    ai::HubModelInfo info;
+    info.repoId = ai::kBsRoformerRepoId;
+    info.modelId = ai::kBsRoformerRepoId;
+    info.license = "mit";
+    ai::HubInstallResult install;
+    install.primaryFilePath = root / modelFile;
+    ai::ModelCompatibilityResult compatibility;
+    compatibility.compatible = true;
+    compatibility.taskScope = "separation";
+    compatibility.packType = "separation_model";
+    const auto contract = ai::bsRoformerCatalogContract();
+    std::string error;
+    REQUIRE(ai::writeTurnkeyModelPackManifest(root, info, install, compatibility, &contract, &error));
+
+    // Now edit model.json to control gpu_providers and/or model_file
+    std::ifstream in(root / "model.json");
+    nlohmann::json manifest;
+    in >> manifest;
+    in.close();
+
+    manifest["model_file"] = modelFile;
+    if (gpuProviders.has_value()) {
+      manifest["gpu_providers"] = *gpuProviders;
+    } else {
+      manifest.erase("gpu_providers");
+      manifest.erase("gpuProviders");
+    }
+
+    std::ofstream out(root / "model.json");
+    out << manifest.dump(2);
+  };
+
+  ai::ModelPackLoader loader;
+
+  // 1. Manifest with model_file = kBsRoformerQuantizedFile and no gpu_providers -> gpuProviders == {"cuda"}
+  writePackWithManifest(ai::kBsRoformerQuantizedFile, std::nullopt);
+  auto pack = loader.load(root);
+  REQUIRE(pack.has_value());
+  CHECK(pack->gpuProviders == std::vector<std::string>{"cuda"});
+
+  // 2. Same with kBsRoformerFp32File -> {"cuda"}
+  writePackWithManifest(ai::kBsRoformerFp32File, std::nullopt);
+  pack = loader.load(root);
+  REQUIRE(pack.has_value());
+  CHECK(pack->gpuProviders == std::vector<std::string>{"cuda"});
+
+  // 3. BS-RoFormer manifest with gpu_providers: ["cuda","webgpu"] -> kept as-is (explicit wins)
+  writePackWithManifest(ai::kBsRoformerQuantizedFile, std::vector<std::string>{"cuda", "webgpu"});
+  pack = loader.load(root);
+  REQUIRE(pack.has_value());
+  CHECK(pack->gpuProviders == std::vector<std::string>{"cuda", "webgpu"});
+
+  // 4. Non-BS-RoFormer manifest without the key -> empty
+  writePackWithManifest("other_model.onnx", std::nullopt);
+  pack = loader.load(root);
+  REQUIRE(pack.has_value());
+  CHECK(pack->gpuProviders.empty());
+
+  std::filesystem::remove_all(root);
+}
+
 #ifdef AUTOMIX_HAS_NATIVE_ORT
+
+#include "ai/OrtRuntime.h"
+
+TEST_CASE("OrtRuntime reports available providers and diagnostics", "[ai][tensor][native]") {
+  auto& runtime = ai::OrtRuntime::instance();
+  const auto providers = runtime.availableProviders();
+  INFO("OrtRuntime diagnostics: " << runtime.diagnostics());
+  CHECK(std::find(providers.begin(), providers.end(), "cpu") != providers.end());
+  CHECK(runtime.diagnostics().rfind("ORT version: 1.30", 0) == 0);
+  CHECK(!runtime.diagnostics().empty());
+}
 
 TEST_CASE("Separation runs on CPU when the GPU lacks free memory for the model", "[ai][tensor][gpu][native]") {
   const auto memory = ai::queryCudaDeviceMemory();

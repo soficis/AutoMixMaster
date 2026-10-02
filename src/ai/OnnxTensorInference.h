@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -21,10 +22,23 @@ std::vector<std::string> tensorProviderCandidates(const std::string& requested,
                                                   const std::vector<std::string>& runtimeProviders,
                                                   const std::vector<std::string>& allowList = {});
 
+// True when a GPU execution provider (e.g. "cuda", "webgpu") is proven usable on this system
+// by opening a real session on a tiny in-memory graph. Successes are cached per provider.
+// CPU always returns true. Always false without native ONNX Runtime.
+bool tensorProviderUsable(const std::string& canonical);
+
+// Test injection hooks for probe-cache semantics verification without hardware.
+using TensorProviderProbeFn = std::function<bool(const std::string& candidate)>;
+void setTensorProviderProbeFunctionForTesting(TensorProviderProbeFn fn);
+void resetTensorProviderProbeCacheForTesting();
+
+// Call after the GPU runtime pack is installed, removed or upgraded.
+void invalidateTensorProviderProbeCache();
+
 // True when a GPU tensor session can actually be opened here, proven by
 // opening one on a tiny in-memory graph (a reported provider can still lack
-// its DLLs or a device). Probed once per process; `providerOut` receives the
-// provider that opened. Always false without native ONNX Runtime.
+// its DLLs or a device). Walks providerPriorityChain() and returns the first usable
+// GPU provider. False without native ONNX Runtime or when no GPU session opens.
 bool gpuTensorSessionAvailable(std::string* providerOut = nullptr);
 
 // Whether this ONNX Runtime build contains `provider` (e.g. "cuda") at all,

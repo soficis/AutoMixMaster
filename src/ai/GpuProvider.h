@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -132,6 +133,38 @@ inline SessionTuning sessionTuning(const std::string& provider, const int hardwa
   return tuning;
 }
 
+// Exactly which SessionOptions calls configureSessionForProvider() makes. An empty
+// optional means "leave ONNX Runtime's default". Pure: unit-testable without ORT.
+struct SessionConfigPlan {
+  std::optional<int> intraOpThreads;
+  std::optional<int> interOpThreads;
+  std::optional<bool> sequentialExecution;
+  std::optional<bool> memPattern;
+  std::optional<bool> cpuArena;
+};
+
+// hardwareThreads > 0: full tuning (model path). <= 0: only what the provider
+// requires to open a session at all - today that is DirectML's memory-pattern-off
+// and sequential execution - so tensor sessions keep ORT's own thread defaults.
+inline SessionConfigPlan sessionConfigPlan(const std::string& provider, int hardwareThreads) {
+  SessionConfigPlan plan;
+  const auto canonical = canonicalProviderName(provider);
+  if (hardwareThreads <= 0) {
+    if (canonical == kProviderDirectMl) {
+      plan.memPattern = false;
+      plan.sequentialExecution = true;
+    }
+    return plan;
+  }
+  const auto tuning = sessionTuning(canonical, hardwareThreads);
+  plan.intraOpThreads = std::max(1, tuning.intraOpThreads);
+  plan.interOpThreads = std::max(1, tuning.interOpThreads);
+  plan.sequentialExecution = tuning.sequentialExecution;
+  plan.memPattern = tuning.memPattern;
+  plan.cpuArena = tuning.cpuArena;
+  return plan;
+}
+
 // Option maps for execution providers.
 // Valid CoreML options per coreml_options.cc@v1.30.0:55-64:
 // MLComputeUnits, ModelFormat, RequireStaticInputShapes, EnableOnSubgraphs,
@@ -245,6 +278,23 @@ inline PluginEpDecision decidePluginEpAttempt(bool compiledIn,
   }
   decision.attempt = true;
   return decision;
+}
+
+inline std::string pluginLibraryFileName(const std::string& platform) {
+  auto lower = platform;
+  std::transform(lower.begin(), lower.end(), lower.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  if (lower.find("darwin") != std::string::npos || lower.find("macos") != std::string::npos ||
+      lower.find("osx") != std::string::npos) {
+    return {};
+  }
+  if (lower.find("win") != std::string::npos) {
+    return "onnxruntime_providers_webgpu.dll";
+  }
+  if (lower.find("linux") != std::string::npos || lower.find("ubuntu") != std::string::npos) {
+    return "libonnxruntime_providers_webgpu.so";
+  }
+  return {};
 }
 
 inline bool isSha256Hex64(const std::string& text) {

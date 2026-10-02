@@ -3,12 +3,15 @@
 // Native-ORT builds only: include after checking AUTOMIX_HAS_NATIVE_ORT.
 
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <onnxruntime_cxx_api.h>
 
 #include "ai/GpuProvider.h"
+#include "ai/OrtRuntime.h"
 
 namespace automix::ai {
 
@@ -19,27 +22,14 @@ inline void configureSessionForProvider(Ort::SessionOptions& options,
                                         const std::string& canonical,
                                         int hardwareThreads = 0) {
   const auto canon = gpu::canonicalProviderName(canonical);
-  const auto tuning = gpu::sessionTuning(canon, hardwareThreads);
-
-  if (tuning.intraOpThreads > 0) {
-    options.SetIntraOpNumThreads(std::max(1, tuning.intraOpThreads));
-  }
-  if (tuning.interOpThreads > 0) {
-    options.SetInterOpNumThreads(std::max(1, tuning.interOpThreads));
-  }
-  options.SetExecutionMode(
-      tuning.sequentialExecution ? ExecutionMode::ORT_SEQUENTIAL : ExecutionMode::ORT_PARALLEL);
-
-  if (!tuning.memPattern) {
-    options.DisableMemPattern();
-  } else {
-    options.EnableMemPattern();
-  }
-  if (!tuning.cpuArena) {
-    options.DisableCpuMemArena();
-  } else {
-    options.EnableCpuMemArena();
-  }
+  const auto plan = gpu::sessionConfigPlan(canon, hardwareThreads);
+  if (plan.intraOpThreads) options.SetIntraOpNumThreads(*plan.intraOpThreads);
+  if (plan.interOpThreads) options.SetInterOpNumThreads(*plan.interOpThreads);
+  if (plan.sequentialExecution)
+    options.SetExecutionMode(*plan.sequentialExecution ? ExecutionMode::ORT_SEQUENTIAL
+                                                       : ExecutionMode::ORT_PARALLEL);
+  if (plan.memPattern) { if (*plan.memPattern) options.EnableMemPattern(); else options.DisableMemPattern(); }
+  if (plan.cpuArena)   { if (*plan.cpuArena) options.EnableCpuMemArena(); else options.DisableCpuMemArena(); }
 
   if (canon == gpu::kProviderCpu || canon == "auto" || canon.empty()) {
     return;
@@ -74,6 +64,22 @@ inline void configureSessionForProvider(Ort::SessionOptions& options,
   }
 
   const auto providerOptions = gpu::providerOptionMap(canon);
+  if (canon == gpu::kProviderWebGpu) {
+#if defined(__APPLE__)
+    options.AppendExecutionProvider("WebGPU", providerOptions);
+#elif AUTOMIX_HAS_EP_PLUGIN
+    auto& runtime = OrtRuntime::instance();
+    const auto& devices = runtime.webGpuDevices();
+    if (devices.empty()) {
+      throw std::runtime_error("WebGPU execution provider requested but no WebGPU devices are available");
+    }
+    std::vector<Ort::ConstEpDevice> selectedDevice = {devices[0]};
+    options.AppendExecutionProvider_V2(runtime.env(), selectedDevice, providerOptions);
+#else
+    throw std::runtime_error("WebGPU plugin EP not compiled in");
+#endif
+    return;
+  }
   if (canon == gpu::kProviderDirectMl) {
     options.AppendExecutionProvider("DML", providerOptions);
     return;

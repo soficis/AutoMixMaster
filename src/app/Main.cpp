@@ -1,5 +1,6 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 
+#include "ai/OrtRuntime.h"
 #include "app/style/AutoMixLookAndFeel.h"
 #include "app/ui/MainLayout.h"
 
@@ -45,6 +46,8 @@ public:
     lookAndFeel_ = std::make_unique<AutoMixLookAndFeel>();
     juce::LookAndFeel::setDefaultLookAndFeel(lookAndFeel_.get());
     mainWindow_ = std::make_unique<MainWindow>(getApplicationName());
+    // Warm up ONNX Runtime asynchronously to avoid UI stalls on adapter discovery
+    automix::ai::OrtRuntime::instance().warmUpAsync();
   }
 
   void shutdown() override {

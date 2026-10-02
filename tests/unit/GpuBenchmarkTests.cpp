@@ -232,6 +232,56 @@ TEST_CASE("GpuProvider providerOptionMap and sessionTuning", "[gpu][provider]") 
   CHECK(cpuTuningHigh.sequentialExecution == false);
 }
 
+TEST_CASE("sessionConfigPlan leaves ORT defaults for untuned sessions", "[gpu][provider]") {
+  using namespace automix::ai::gpu;
+
+  // Untuned CPU session leaves every field empty (ORT defaults)
+  const auto cpuUntuned = sessionConfigPlan("cpu", 0);
+  CHECK(!cpuUntuned.intraOpThreads.has_value());
+  CHECK(!cpuUntuned.interOpThreads.has_value());
+  CHECK(!cpuUntuned.sequentialExecution.has_value());
+  CHECK(!cpuUntuned.memPattern.has_value());
+  CHECK(!cpuUntuned.cpuArena.has_value());
+
+  // Untuned CUDA, CoreML, WebGPU: every field empty
+  for (const auto& prov : {"cuda", "coreml", "webgpu"}) {
+    const auto untuned = sessionConfigPlan(prov, 0);
+    CHECK(!untuned.intraOpThreads.has_value());
+    CHECK(!untuned.interOpThreads.has_value());
+    CHECK(!untuned.sequentialExecution.has_value());
+    CHECK(!untuned.memPattern.has_value());
+    CHECK(!untuned.cpuArena.has_value());
+  }
+
+  // Untuned DirectML: mandatory constraints only (memPattern=false, sequentialExecution=true)
+  const auto dmlUntuned = sessionConfigPlan("directml", 0);
+  CHECK(dmlUntuned.memPattern == false);
+  CHECK(dmlUntuned.sequentialExecution == true);
+  CHECK(!dmlUntuned.intraOpThreads.has_value());
+  CHECK(!dmlUntuned.interOpThreads.has_value());
+  CHECK(!dmlUntuned.cpuArena.has_value());
+
+  // Tuned CPU session (hardwareThreads > 0): equals sessionTuning field by field
+  const auto cpuTuned = sessionConfigPlan("cpu", 16);
+  const auto cpuExpectedTuning = sessionTuning("cpu", 16);
+  CHECK(cpuTuned.intraOpThreads == cpuExpectedTuning.intraOpThreads);
+  CHECK(cpuTuned.interOpThreads == cpuExpectedTuning.interOpThreads);
+  CHECK(cpuTuned.sequentialExecution == cpuExpectedTuning.sequentialExecution);
+  CHECK(cpuTuned.memPattern == cpuExpectedTuning.memPattern);
+  CHECK(cpuTuned.cpuArena == cpuExpectedTuning.cpuArena);
+  CHECK(cpuTuned.intraOpThreads == 16);
+  CHECK(cpuTuned.interOpThreads == 8);
+  CHECK(cpuTuned.sequentialExecution == false);
+  CHECK(cpuTuned.memPattern == true);
+  CHECK(cpuTuned.cpuArena == true);
+
+  // Tuned DirectML session (hardwareThreads > 0)
+  const auto dmlTuned = sessionConfigPlan("directml", 8);
+  CHECK(dmlTuned.sequentialExecution == true);
+  CHECK(dmlTuned.memPattern == false);
+  CHECK(dmlTuned.cpuArena == false);
+}
+
 // ─── T3.4: detectAvailableProviders ─────────────────────────────────────────
 
 TEST_CASE("OnnxModelInference detectAvailableProviders", "[gpu][detect]") {
@@ -575,3 +625,75 @@ TEST_CASE("Multiple task type benchmark", "[gpu][benchmark][onnx]") {
 
   std::filesystem::remove_all(tempDir);
 }
+
+TEST_CASE("GpuProvider pluginLibraryFileName platform mapping", "[gpu][provider]") {
+  using namespace automix::ai::gpu;
+
+  CHECK(pluginLibraryFileName("windows") == "onnxruntime_providers_webgpu.dll");
+  CHECK(pluginLibraryFileName("win") == "onnxruntime_providers_webgpu.dll");
+  CHECK(pluginLibraryFileName("win-x64") == "onnxruntime_providers_webgpu.dll");
+  CHECK(pluginLibraryFileName("Windows_NT") == "onnxruntime_providers_webgpu.dll");
+
+  CHECK(pluginLibraryFileName("linux") == "libonnxruntime_providers_webgpu.so");
+  CHECK(pluginLibraryFileName("linux-x64") == "libonnxruntime_providers_webgpu.so");
+  CHECK(pluginLibraryFileName("Ubuntu") == "libonnxruntime_providers_webgpu.so");
+
+  CHECK(pluginLibraryFileName("macos").empty());
+  CHECK(pluginLibraryFileName("darwin").empty());
+  CHECK(pluginLibraryFileName("").empty());
+}
+
+struct ProbeCacheResetGuard {
+  ProbeCacheResetGuard() { resetTensorProviderProbeCacheForTesting(); }
+  ~ProbeCacheResetGuard() { resetTensorProviderProbeCacheForTesting(); }
+};
+
+TEST_CASE("tensorProviderUsable per-provider probe cache semantics", "[gpu][tensor]") {
+  ProbeCacheResetGuard guard;
+
+  int cudaProbeCalls = 0;
+  bool cudaAvailable = false;
+  bool webgpuAvailable = false;
+
+  setTensorProviderProbeFunctionForTesting([&](const std::string& candidate) {
+    if (candidate == "webgpu") return webgpuAvailable;
+    if (candidate == "cuda") {
+      ++cudaProbeCalls;
+      return cudaAvailable;
+    }
+    return false;
+  });
+
+  // 1. Failure caching: with probe returning false for cuda, first call is false,
+  // and second call does NOT invoke probe (count remains 1).
+  cudaAvailable = false;
+  CHECK(tensorProviderUsable("cuda") == false);
+  CHECK(cudaProbeCalls == 1);
+  CHECK(tensorProviderUsable("cuda") == false);
+  CHECK(cudaProbeCalls == 1);
+
+  // 2. Invalidate cache: after invalidateTensorProviderProbeCache(), probe is re-invoked
+  cudaAvailable = true;
+  invalidateTensorProviderProbeCache();
+  CHECK(tensorProviderUsable("cuda") == true);
+  CHECK(cudaProbeCalls == 2);
+  // Subsequent calls use cached success
+  CHECK(tensorProviderUsable("cuda") == true);
+  CHECK(cudaProbeCalls == 2);
+
+  // 3. R1 regression: probe returns true for webgpu and false for cuda
+  invalidateTensorProviderProbeCache();
+  cudaAvailable = false;
+  webgpuAvailable = true;
+  std::string winner;
+  CHECK(gpuTensorSessionAvailable(&winner) == true);
+  CHECK(winner == "webgpu");
+
+  // Invalidate and make cuda succeed: CUDA is usable AND winner is "cuda" (precedes webgpu)
+  invalidateTensorProviderProbeCache();
+  cudaAvailable = true;
+  CHECK(tensorProviderUsable("cuda") == true);
+  CHECK(gpuTensorSessionAvailable(&winner) == true);
+  CHECK(winner == "cuda");
+}
+

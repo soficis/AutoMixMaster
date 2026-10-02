@@ -26,6 +26,7 @@
 
 #if AUTOMIX_HAS_NATIVE_ORT
 #include <onnxruntime_cxx_api.h>
+#include "ai/OrtRuntime.h"
 #include "ai/OrtSessionProviders.h"
 #endif
 
@@ -117,19 +118,7 @@ std::string makeProfilePrefix(const std::filesystem::path& modelPath) {
 
 
 std::vector<std::string> discoverAvailableRuntimeProviders() {
-  std::vector<std::string> providers = {"cpu"};
-  try {
-    const auto runtimeProviders = Ort::GetAvailableProviders();
-    providers.reserve(providers.size() + runtimeProviders.size());
-    for (const auto& provider : runtimeProviders) {
-      providers.push_back(canonicalProviderName(provider));
-    }
-  } catch (...) {
-  }
-
-  std::sort(providers.begin(), providers.end());
-  providers.erase(std::unique(providers.begin(), providers.end()), providers.end());
-  return providers;
+  return OrtRuntime::instance().availableProviders();
 }
 
 #endif
@@ -138,7 +127,6 @@ std::vector<std::string> discoverAvailableRuntimeProviders() {
 
 struct OnnxModelInference::NativeState {
 #if AUTOMIX_HAS_NATIVE_ORT
-  std::unique_ptr<Ort::Env> env;
   std::unique_ptr<Ort::SessionOptions> sessionOptions;
   std::unique_ptr<Ort::Session> session;
   std::vector<std::string> inputNames;
@@ -261,23 +249,11 @@ bool OnnxModelInference::loadModel(const std::filesystem::path& modelPath) {
   }
 
   if (availableExecutionProviders_.empty()) {
-    std::vector<std::string> runtime;
 #if AUTOMIX_HAS_NATIVE_ORT
-    try {
-      for (const auto& p : Ort::GetAvailableProviders()) {
-        runtime.push_back(canonicalProviderName(p));
-      }
-    } catch (...) {
-    }
+    availableExecutionProviders_ = OrtRuntime::instance().availableProviders();
+#else
+    availableExecutionProviders_ = {gpu::kProviderCpu};
 #endif
-    for (const auto& p : gpu::providerPriorityChain()) {
-      if (std::find(runtime.begin(), runtime.end(), p) != runtime.end() || p == gpu::kProviderCpu) {
-        availableExecutionProviders_.push_back(p);
-      }
-    }
-    if (availableExecutionProviders_.empty()) {
-      availableExecutionProviders_.push_back(gpu::kProviderCpu);
-    }
   }
 
   for (auto& provider : availableExecutionProviders_) {
@@ -323,7 +299,6 @@ bool OnnxModelInference::loadModel(const std::filesystem::path& modelPath) {
     }
 
     auto nativeState = std::make_shared<NativeState>();
-    nativeState->env = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "AutoMixMaster");
     nativeState->sessionOptions = std::make_unique<Ort::SessionOptions>();
 
     const int hardwareThreads = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
@@ -360,11 +335,11 @@ bool OnnxModelInference::loadModel(const std::filesystem::path& modelPath) {
     }
 
 #if defined(_WIN32)
-    nativeState->session = std::make_unique<Ort::Session>(*nativeState->env,
+    nativeState->session = std::make_unique<Ort::Session>(OrtRuntime::instance().env(),
                                                            modelPath_.wstring().c_str(),
                                                            *nativeState->sessionOptions);
 #else
-    nativeState->session = std::make_unique<Ort::Session>(*nativeState->env,
+    nativeState->session = std::make_unique<Ort::Session>(OrtRuntime::instance().env(),
                                                            modelPath_.string().c_str(),
                                                            *nativeState->sessionOptions);
 #endif
@@ -910,10 +885,7 @@ std::string OnnxModelInference::resolveExecutionProvider() const {
     runtimeProviders = *pinnedProviders_;
   } else {
 #if AUTOMIX_HAS_NATIVE_ORT
-    try {
-      runtimeProviders = Ort::GetAvailableProviders();
-    } catch (...) {
-    }
+    runtimeProviders = OrtRuntime::instance().availableProviders();
 #endif
   }
 
@@ -994,25 +966,11 @@ void OnnxModelInference::captureProfilingArtifactIfNeeded() const {
 }
 
 std::vector<std::string> OnnxModelInference::detectAvailableProviders() const {
-  std::vector<std::string> providers = {gpu::kProviderCpu};
 #if AUTOMIX_HAS_NATIVE_ORT
-  try {
-    const auto runtimeProviders = Ort::GetAvailableProviders();
-    providers.reserve(1 + runtimeProviders.size());
-    for (const auto& p : runtimeProviders) {
-      providers.push_back(gpu::canonicalProviderName(p));
-    }
-  } catch (...) {
-  }
-  std::sort(providers.begin(), providers.end());
-  providers.erase(std::unique(providers.begin(), providers.end()), providers.end());
-
-  std::stable_sort(providers.begin(), providers.end(),
-                   [](const std::string& a, const std::string& b) {
-                     return gpu::providerPriority(a) < gpu::providerPriority(b);
-                   });
+  return OrtRuntime::instance().availableProviders();
+#else
+  return {gpu::kProviderCpu};
 #endif
-  return providers;
 }
 
 std::vector<std::string> OnnxModelInference::failedProviders() const {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 
 #include "ai/ModelPackLoader.h"
 
@@ -33,6 +34,12 @@ inline constexpr const char* kBsRoformerIntendedUse =
 inline constexpr const char* kBsRoformerFp32IntendedUse =
     "Vocal separation (BS-RoFormer). The graph produces vocals only; the instrumental stem is the "
     "residual mix - vocals, not a second separation. fp32 build, installed for GPU (CUDA) inference.";
+
+// True for either BS-RoFormer build, judged by the pack's model file name.
+inline bool isBsRoformerModelFile(const std::string& modelFile) {
+  const auto name = std::filesystem::path(modelFile).filename().string();
+  return name == kBsRoformerQuantizedFile || name == kBsRoformerFp32File;
+}
 
 // BS-RoFormer is restricted to CUDA until Task 8 measures other EPs.
 // Peaks at 9.4 GiB device memory on GPU.

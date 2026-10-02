@@ -7,6 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "ai/BsRoformerPack.h"
 #include "ai/FeatureSchema.h"
 #include "analysis/SpectrogramFrontEnd.h"
 #include "util/HashUtils.h"
@@ -518,6 +519,12 @@ std::optional<ModelPack> ModelPackLoader::load(const std::filesystem::path& dire
     pack.gpuProviders = json.at("gpu_providers").get<std::vector<std::string>>();
   } else if (json.contains("gpuProviders") && json.at("gpuProviders").is_array()) {
     pack.gpuProviders = json.at("gpuProviders").get<std::vector<std::string>>();
+  }
+
+  // Packs installed before gpu_providers existed carry no list; BS-RoFormer must
+  // still be held to the providers it was measured on.
+  if (pack.gpuProviders.empty() && isBsRoformerModelFile(pack.modelFile)) {
+    pack.gpuProviders = bsRoformerGpuProviders();
   }
 
   if (pack.featureSchemaVersion.empty() && json.contains("feature_schema") && json.at("feature_schema").is_object()) {

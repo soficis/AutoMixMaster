@@ -17,8 +17,11 @@
 #define AUTOMIX_HAS_NATIVE_ORT 0
 #endif
 
+#include <unordered_set>
+
 #include "ai/GpuProvider.h"
 #include "ai/GpuRuntimePack.h"
+#include "ai/OrtRuntime.h"
 
 #if AUTOMIX_HAS_NATIVE_ORT
 #include <onnxruntime_cxx_api.h>
@@ -173,7 +176,7 @@ bool runtimeReportsProvider(const std::string& provider) {
 #if AUTOMIX_HAS_NATIVE_ORT
   try {
     const auto wanted = gpu::canonicalProviderName(provider);
-    for (const auto& reported : Ort::GetAvailableProviders()) {
+    for (const auto& reported : OrtRuntime::instance().availableProviders()) {
       if (gpu::canonicalProviderName(reported) == wanted) {
         return true;
       }
@@ -185,51 +188,102 @@ bool runtimeReportsProvider(const std::string& provider) {
 #endif
   return false;
 }
-bool gpuTensorSessionAvailable(std::string* providerOut) {
-#if AUTOMIX_HAS_NATIVE_ORT
-  // Only success is cached: a GPU runtime pack installed later in this
-  // process must be able to turn a failed probe into a working one.
-  static std::mutex mutex;
-  static std::string cached;
-  const std::scoped_lock lock(mutex);
-  GpuRuntimePack::preload();
-  const std::string provider = cached.empty() ? [] {
-    std::vector<std::string> runtimeProviders;
-    try {
-      runtimeProviders = Ort::GetAvailableProviders();
-    } catch (...) {
-    }
-    const auto model = identityProbeModel();
-    for (const auto& candidate : tensorProviderCandidates("auto", runtimeProviders)) {
-      if (candidate == gpu::kProviderCpu) {
-        break;
-      }
-      try {
-        Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "AutoMixMasterGpuProbe");
-        Ort::SessionOptions options;
-        configureSessionForProvider(options, candidate);
-        Ort::Session session(env, model.data(), model.size(), options);
-        return candidate;
-      } catch (...) {
-      }
-    }
-    return std::string();
-  }() : cached;
-  cached = provider;
-  if (providerOut != nullptr) {
-    *providerOut = provider;
+
+namespace {
+std::mutex s_probeMutex;
+std::unordered_set<std::string> s_usableProviders;
+std::unordered_set<std::string> s_unusableProviders;
+TensorProviderProbeFn s_testProbeFn = nullptr;
+} // namespace
+
+void setTensorProviderProbeFunctionForTesting(TensorProviderProbeFn fn) {
+  const std::scoped_lock lock(s_probeMutex);
+  s_testProbeFn = std::move(fn);
+}
+
+void invalidateTensorProviderProbeCache() {
+  const std::scoped_lock lock(s_probeMutex);
+  s_usableProviders.clear();
+  s_unusableProviders.clear();
+}
+
+void resetTensorProviderProbeCacheForTesting() {
+  const std::scoped_lock lock(s_probeMutex);
+  s_usableProviders.clear();
+  s_unusableProviders.clear();
+  s_testProbeFn = nullptr;
+}
+
+bool tensorProviderUsable(const std::string& canonical) {
+  const auto canon = gpu::canonicalProviderName(canonical);
+  if (canon == gpu::kProviderCpu) {
+    return true;
   }
-  return !provider.empty();
+
+  const std::scoped_lock lock(s_probeMutex);
+  if (s_usableProviders.count(canon) > 0) {
+    return true;
+  }
+  if (s_unusableProviders.count(canon) > 0) {
+    return false;
+  }
+
+  if (s_testProbeFn != nullptr) {
+    if (s_testProbeFn(canon)) {
+      s_usableProviders.insert(canon);
+      return true;
+    }
+    s_unusableProviders.insert(canon);
+    return false;
+  }
+
+#if AUTOMIX_HAS_NATIVE_ORT
+  const auto available = OrtRuntime::instance().availableProviders();
+  if (std::find(available.begin(), available.end(), canon) == available.end()) {
+    s_unusableProviders.insert(canon);
+    return false;
+  }
+
+  if (canon == gpu::kProviderCuda) {
+    GpuRuntimePack::preload();
+  }
+  try {
+    const auto model = identityProbeModel();
+    Ort::SessionOptions options;
+    // untuned: keep ORT's thread defaults (see gpu::sessionConfigPlan)
+    configureSessionForProvider(options, canon);
+    Ort::Session session(OrtRuntime::instance().env(), model.data(), model.size(), options);
+    s_usableProviders.insert(canon);
+    return true;
+  } catch (...) {
+    s_unusableProviders.insert(canon);
+    return false;
+  }
 #else
+  return false;
+#endif
+}
+
+bool gpuTensorSessionAvailable(std::string* providerOut) {
+  for (const auto& candidate : gpu::providerPriorityChain()) {
+    if (candidate == gpu::kProviderCpu) {
+      break;
+    }
+    if (tensorProviderUsable(candidate)) {
+      if (providerOut != nullptr) {
+        *providerOut = candidate;
+      }
+      return true;
+    }
+  }
   if (providerOut != nullptr) {
     providerOut->clear();
   }
   return false;
-#endif
 }
+
 struct OnnxTensorInference::NativeState {
 #if AUTOMIX_HAS_NATIVE_ORT
-  std::unique_ptr<Ort::Env> env;
   std::unique_ptr<Ort::Session> session;
 #endif
 };
@@ -273,11 +327,7 @@ bool OnnxTensorInference::loadModel(const std::filesystem::path& modelPath) {
   }
 
 #if AUTOMIX_HAS_NATIVE_ORT
-  std::vector<std::string> runtimeProviders;
-  try {
-    runtimeProviders = Ort::GetAvailableProviders();
-  } catch (...) {
-  }
+  const auto runtimeProviders = OrtRuntime::instance().availableProviders();
   if (gpu::canonicalProviderName(requestedProvider_) != gpu::kProviderCpu) {
     GpuRuntimePack::preload();  // CUDA libraries installed per user, if any
   }
@@ -291,14 +341,14 @@ bool OnnxTensorInference::loadModel(const std::filesystem::path& modelPath) {
   for (const auto& candidate : candidates) {
     auto attempt = std::make_unique<NativeState>();
     try {
-      attempt->env = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "AutoMixMasterTensor");
       Ort::SessionOptions options;
       options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+      // untuned: keep ORT's thread defaults (see gpu::sessionConfigPlan)
       configureSessionForProvider(options, candidate);
 #if defined(_WIN32)
-      attempt->session = std::make_unique<Ort::Session>(*attempt->env, modelPath.wstring().c_str(), options);
+      attempt->session = std::make_unique<Ort::Session>(OrtRuntime::instance().env(), modelPath.wstring().c_str(), options);
 #else
-      attempt->session = std::make_unique<Ort::Session>(*attempt->env, modelPath.string().c_str(), options);
+      attempt->session = std::make_unique<Ort::Session>(OrtRuntime::instance().env(), modelPath.string().c_str(), options);
 #endif
     } catch (const std::exception& exception) {
       if (candidate == gpu::kProviderCpu) {
@@ -350,7 +400,8 @@ bool OnnxTensorInference::loadModel(const std::filesystem::path& modelPath) {
   activeProvider_ = provider;
   diagnostics_ = "backend=native_onnxruntime; provider=" + provider + "; model=" + modelPath.filename().string() +
                  "; inputs=" + std::to_string(inputs_.size()) + "; outputs=" + std::to_string(outputs_.size()) +
-                 (attempts.empty() ? std::string() : "; fallback: " + attempts);
+                 (attempts.empty() ? std::string() : "; fallback: " + attempts) +
+                 "; runtime: " + OrtRuntime::instance().diagnostics();
   return true;
 #else
   unload("ONNX tensor load failed for '" + modelPath.string() +

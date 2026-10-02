@@ -2387,6 +2387,9 @@ void MainLayout::upgradeVocalModelForGpu() {
       if (safe != nullptr) {
         safe->taskOrchestrator_->appendHistory(
             juce::String(upgraded->success ? upgraded->message : "Vocal model GPU upgrade failed: " + upgraded->message));
+        if (upgraded->success) {
+          safe->refreshModelPacks();  // the scanned pack still names the deleted quantized file
+        }
       }
     });
   });

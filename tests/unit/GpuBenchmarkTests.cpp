@@ -10,6 +10,7 @@
 
 #include "ai/GpuProvider.h"
 #include "ai/OnnxModelInference.h"
+#include "ai/OnnxTensorInference.h"
 
 namespace automix { namespace ai { namespace test {
 
@@ -78,6 +79,9 @@ TEST_CASE("GpuProvider canonical name mapping", "[gpu][provider]") {
   CHECK(canonicalProviderName("CpuExecutionProvider") == "cpu");
   CHECK(canonicalProviderName("CUDA") == "cuda");
   CHECK(canonicalProviderName("CudaExecutionProvider") == "cuda");
+  CHECK(canonicalProviderName("WebGpu") == "webgpu");
+  CHECK(canonicalProviderName("WebGpuExecutionProvider") == "webgpu");
+  CHECK(canonicalProviderName("wgpu") == "webgpu");
   CHECK(canonicalProviderName("DML") == "directml");
   CHECK(canonicalProviderName("DirectML") == "directml");
   CHECK(canonicalProviderName("CoreML") == "coreml");
@@ -95,25 +99,27 @@ TEST_CASE("GpuProvider priority chain order", "[gpu][provider]") {
 
   const auto& chain = providerPriorityChain();
 
-  // Chain should be: ANE > CoreML > CUDA > OpenVINO > DirectML > CPU
-  REQUIRE(chain.size() == 6);
+  // Chain should be: ANE > CoreML > CUDA > WebGPU > OpenVINO > DirectML > CPU
+  REQUIRE(chain.size() == 7);
   CHECK(chain[0] == "ane");
   CHECK(chain[1] == "coreml");
   CHECK(chain[2] == "cuda");
-  CHECK(chain[3] == "openvino");
-  CHECK(chain[4] == "directml");
-  CHECK(chain[5] == "cpu");
+  CHECK(chain[3] == "webgpu");
+  CHECK(chain[4] == "openvino");
+  CHECK(chain[5] == "directml");
+  CHECK(chain[6] == "cpu");
 
   // Verify priority values (lower = higher priority)
   CHECK(providerPriority("ane") == 0);
   CHECK(providerPriority("coreml") == 1);
   CHECK(providerPriority("cuda") == 2);
-  CHECK(providerPriority("openvino") == 3);
-  CHECK(providerPriority("directml") == 4);
-  CHECK(providerPriority("cpu") == 5);
+  CHECK(providerPriority("webgpu") == 3);
+  CHECK(providerPriority("openvino") == 4);
+  CHECK(providerPriority("directml") == 5);
+  CHECK(providerPriority("cpu") == 6);
 
   // Unknown providers have lowest priority
-  CHECK(providerPriority("tensorrt") == 6);
+  CHECK(providerPriority("tensorrt") == 7);
 }
 
 TEST_CASE("GpuProvider isGpuProvider classification", "[gpu][provider]") {
@@ -121,6 +127,7 @@ TEST_CASE("GpuProvider isGpuProvider classification", "[gpu][provider]") {
 
   CHECK_FALSE(isGpuProvider("cpu"));
   CHECK(isGpuProvider("cuda"));
+  CHECK(isGpuProvider("webgpu"));
   CHECK(isGpuProvider("directml"));
   CHECK(isGpuProvider("coreml"));
   CHECK(isGpuProvider("ane"));
@@ -133,7 +140,31 @@ TEST_CASE("GpuProvider platform preferred provider", "[gpu][provider]") {
   const auto preferred = platformPreferredProvider();
   // Should return one of the known provider names
   CHECK((preferred == "ane" || preferred == "coreml" ||
-         preferred == "cuda" || preferred == "directml"));
+         preferred == "cuda" || preferred == "webgpu"));
+#if defined(_WIN32)
+  CHECK(preferred == "webgpu");
+#endif
+}
+
+TEST_CASE("tensorProviderCandidates allow-list filtering", "[gpu][tensor]") {
+  // 1. Empty allow-list preserves all reported GPU candidates and keeps CPU last
+  const auto c1 = tensorProviderCandidates("auto", {"cuda", "webgpu", "cpu"}, {});
+  const std::vector<std::string> expected1 = {"cuda", "webgpu", "cpu"};
+  CHECK(c1 == expected1);
+
+  // 2. ["cuda"] on a webgpu-only runtime filters to [cpu], CPU always kept
+  const auto c2 = tensorProviderCandidates("auto", {"webgpu", "cpu"}, {"cuda"});
+  const std::vector<std::string> expected2 = {"cpu"};
+  CHECK(c2 == expected2);
+
+  // 3. Requested provider not in allow-list falls back to allowed candidates then CPU
+  const auto c3 = tensorProviderCandidates("webgpu", {"webgpu", "cpu"}, {"cuda"});
+  CHECK(c3 == expected2);
+
+  // 4. ["webgpu"] on a multi-GPU runtime filters to [webgpu, cpu]
+  const auto c4 = tensorProviderCandidates("auto", {"cuda", "webgpu", "cpu"}, {"webgpu"});
+  const std::vector<std::string> expected4 = {"webgpu", "cpu"};
+  CHECK(c4 == expected4);
 }
 
 TEST_CASE("GpuProvider providerOptionMap and sessionTuning", "[gpu][provider]") {

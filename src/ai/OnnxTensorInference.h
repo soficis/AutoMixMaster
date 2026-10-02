@@ -18,7 +18,8 @@ namespace automix::ai {
 // Reported is not the same as usable (CUDA may lack its DLLs), which is why
 // loadModel() treats every non-CPU entry as an attempt that may fail.
 std::vector<std::string> tensorProviderCandidates(const std::string& requested,
-                                                  const std::vector<std::string>& runtimeProviders);
+                                                  const std::vector<std::string>& runtimeProviders,
+                                                  const std::vector<std::string>& allowList = {});
 
 // True when a GPU tensor session can actually be opened here, proven by
 // opening one on a tiny in-memory graph (a reported provider can still lack
@@ -45,6 +46,8 @@ class OnnxTensorInference final : public ITensorInference {
   // "auto" (default), "cpu", or a provider name such as "cuda". Applies to
   // the next loadModel().
   void setExecutionProvider(std::string provider);
+  // Restricts GPU candidates to this list when non-empty. CPU is always kept.
+  void setGpuProviderAllowList(std::vector<std::string> allowList);
   // Provider the loaded session actually runs on ("cpu", "cuda", ...), or
   // empty when nothing is loaded.
   [[nodiscard]] std::string activeExecutionProvider() const;
@@ -70,6 +73,7 @@ class OnnxTensorInference final : public ITensorInference {
 
   std::optional<TensorContract> contract_;
   std::string requestedProvider_ = "auto";
+  std::vector<std::string> gpuProviderAllowList_;
   std::string activeProvider_;
   std::vector<TensorSpec> inputs_;
   std::vector<TensorSpec> outputs_;

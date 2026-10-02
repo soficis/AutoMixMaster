@@ -1063,6 +1063,7 @@ StemSeparator::SeparationResult runTensorSeparation(const std::filesystem::path&
   }
   for (const auto& requested : {firstProvider, std::string("cpu")}) {
     OnnxTensorInference inference;
+    inference.setGpuProviderAllowList(pack->gpuProviders);
     inference.setTensorContract(pack->tensorContract);
     inference.setExecutionProvider(requested);
     if (!inference.loadModel(modelRoot / pack->modelFile)) {

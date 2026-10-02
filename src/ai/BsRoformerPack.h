@@ -34,6 +34,13 @@ inline constexpr const char* kBsRoformerFp32IntendedUse =
     "Vocal separation (BS-RoFormer). The graph produces vocals only; the instrumental stem is the "
     "residual mix - vocals, not a second separation. fp32 build, installed for GPU (CUDA) inference.";
 
+// BS-RoFormer is restricted to CUDA until Task 8 measures other EPs.
+// Peaks at 9.4 GiB device memory on GPU.
+inline const std::vector<std::string>& bsRoformerGpuProviders() {
+  static const std::vector<std::string> providers = {"cuda"};
+  return providers;
+}
+
 // Catalog form of the pack's tensor contract (spec section 6). Tensor names are
 // omitted because the repo does not publish them; the install-time probe fills
 // them in, and until then checkTensorContract() matches positionally.

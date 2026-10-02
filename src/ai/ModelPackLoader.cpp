@@ -514,6 +514,11 @@ std::optional<ModelPack> ModelPackLoader::load(const std::filesystem::path& dire
   if (json.contains("gpu_memory_mb") && json.at("gpu_memory_mb").is_number_unsigned()) {
     pack.gpuMemoryMb = json.at("gpu_memory_mb").get<std::uint64_t>();
   }
+  if (json.contains("gpu_providers") && json.at("gpu_providers").is_array()) {
+    pack.gpuProviders = json.at("gpu_providers").get<std::vector<std::string>>();
+  } else if (json.contains("gpuProviders") && json.at("gpuProviders").is_array()) {
+    pack.gpuProviders = json.at("gpuProviders").get<std::vector<std::string>>();
+  }
 
   if (pack.featureSchemaVersion.empty() && json.contains("feature_schema") && json.at("feature_schema").is_object()) {
     pack.featureSchemaVersion = json.at("feature_schema").value("version", "");

@@ -103,6 +103,10 @@ struct ModelPack {
   // memory is below it, GPU execution would spill into system memory, so
   // callers run on CPU instead. Absent: no known requirement.
   std::optional<std::uint64_t> gpuMemoryMb;
+  // Per-pack GPU provider allow-list (e.g. {"cuda"}). When non-empty, GPU
+  // candidates outside this list are ignored and fallback to CPU. Empty means
+  // any runtime-supported GPU provider in the priority chain is allowed.
+  std::vector<std::string> gpuProviders;
   std::filesystem::path rootPath;
 };
 

@@ -1220,7 +1220,7 @@ TEST_CASE("Optional ORT provider plugin and compiled-model cache policy needs no
   REQUIRE(gpu::compiledModelCacheKey("not-a-digest", "cuda", "sm_90", "driver", "1.30.0").empty());
 
   const auto& chain = gpu::providerPriorityChain();
-  REQUIRE(chain.size() == 6);
+  REQUIRE(chain.size() == 7);
   REQUIRE(chain.front() == gpu::kProviderAne);
   REQUIRE(chain.back() == gpu::kProviderCpu);
 }

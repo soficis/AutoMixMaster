@@ -90,7 +90,8 @@ bool isConcrete(const std::vector<int64_t>& dims) {
 } // namespace
 
 std::vector<std::string> tensorProviderCandidates(const std::string& requested,
-                                                  const std::vector<std::string>& runtimeProviders) {
+                                                  const std::vector<std::string>& runtimeProviders,
+                                                  const std::vector<std::string>& allowList) {
   std::vector<std::string> reported;
   for (const auto& provider : runtimeProviders) {
     reported.push_back(gpu::canonicalProviderName(provider));
@@ -99,19 +100,28 @@ std::vector<std::string> tensorProviderCandidates(const std::string& requested,
     return std::find(reported.begin(), reported.end(), provider) != reported.end();
   };
 
+  std::vector<std::string> canonicalAllow;
+  for (const auto& a : allowList) {
+    canonicalAllow.push_back(gpu::canonicalProviderName(a));
+  }
+  const auto isAllowed = [&canonicalAllow](const std::string& provider) {
+    if (canonicalAllow.empty()) return true;
+    return std::find(canonicalAllow.begin(), canonicalAllow.end(), provider) != canonicalAllow.end();
+  };
+
   std::vector<std::string> candidates;
   const auto wanted = gpu::canonicalProviderName(requested.empty() ? std::string("auto") : requested);
   if (wanted == gpu::kProviderCpu) {
     return {gpu::kProviderCpu};
   }
-  // A named GPU provider is tried first; if this runtime lacks it, the request
-  // still means "a GPU" (e.g. a DirectML preference on a CUDA build), so the
-  // remaining reported GPU providers follow before CPU.
-  if (wanted != "auto" && isReported(wanted)) {
+  // A named GPU provider is tried first; if this runtime lacks it or it's not allowed,
+  // the request still means "a GPU" (e.g. a DirectML preference on a CUDA build),
+  // so the remaining reported GPU providers follow before CPU.
+  if (wanted != "auto" && isReported(wanted) && isAllowed(wanted)) {
     candidates.push_back(wanted);
   }
   for (const auto& provider : gpu::providerPriorityChain()) {
-    if (provider != gpu::kProviderCpu && provider != wanted && isReported(provider)) {
+    if (provider != gpu::kProviderCpu && provider != wanted && isReported(provider) && isAllowed(provider)) {
       candidates.push_back(provider);
     }
   }
@@ -231,6 +241,10 @@ void OnnxTensorInference::setTensorContract(std::optional<TensorContract> contra
 
 void OnnxTensorInference::setExecutionProvider(std::string provider) { requestedProvider_ = std::move(provider); }
 
+void OnnxTensorInference::setGpuProviderAllowList(std::vector<std::string> allowList) {
+  gpuProviderAllowList_ = std::move(allowList);
+}
+
 std::string OnnxTensorInference::activeExecutionProvider() const { return activeProvider_; }
 
 bool OnnxTensorInference::isAvailable() const { return nativeState_ != nullptr; }
@@ -267,7 +281,7 @@ bool OnnxTensorInference::loadModel(const std::filesystem::path& modelPath) {
   if (gpu::canonicalProviderName(requestedProvider_) != gpu::kProviderCpu) {
     GpuRuntimePack::preload();  // CUDA libraries installed per user, if any
   }
-  const auto candidates = tensorProviderCandidates(requestedProvider_, runtimeProviders);
+  const auto candidates = tensorProviderCandidates(requestedProvider_, runtimeProviders, gpuProviderAllowList_);
 
   std::unique_ptr<NativeState> state;
   std::vector<TensorSpec> inputs;

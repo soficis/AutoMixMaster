@@ -239,11 +239,26 @@ bool GpuCapabilityDetector::hasDirectMlSupport() {
 #endif
 }
 
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+
+static int getMacOsMajorVersion() {
+  char osversion[64] = {0};
+  size_t len = sizeof(osversion) - 1;
+  if (sysctlbyname("kern.osproductversion", osversion, &len, nullptr, 0) == 0) {
+    int major = 0;
+    if (std::sscanf(osversion, "%d", &major) == 1) {
+      return major;
+    }
+  }
+  return 0;
+}
+#endif
+
 bool GpuCapabilityDetector::hasCoreMlSupport() {
 #if defined(__APPLE__)
-  // CoreML is available on macOS 10.13+ (High Sierra) and later.
-  // At compile time we assume the deployment target is at least that.
-  return true;
+  // CoreML requires macOS >= 12
+  return getMacOsMajorVersion() >= 12;
 #else
   return false;
 #endif
@@ -251,8 +266,8 @@ bool GpuCapabilityDetector::hasCoreMlSupport() {
 
 bool GpuCapabilityDetector::hasAneSupport() {
 #if defined(__APPLE__) && defined(__arm64__)
-  // Apple Neural Engine is available on M1 and later.
-  return true;
+  // Apple Neural Engine requires Apple Silicon and macOS >= 13
+  return getMacOsMajorVersion() >= 13;
 #else
   return false;
 #endif

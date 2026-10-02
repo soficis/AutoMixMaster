@@ -12,6 +12,7 @@ inline constexpr const char* kProviderCpu = "cpu";
 inline constexpr const char* kProviderAne = "ane";
 inline constexpr const char* kProviderCoreMl = "coreml";
 inline constexpr const char* kProviderCuda = "cuda";
+inline constexpr const char* kProviderWebGpu = "webgpu";
 inline constexpr const char* kProviderOpenVino = "openvino";
 inline constexpr const char* kProviderDirectMl = "directml";
 
@@ -20,6 +21,7 @@ inline const std::vector<std::string>& providerPriorityChain() {
       kProviderAne,
       kProviderCoreMl,
       kProviderCuda,
+      kProviderWebGpu,
       kProviderOpenVino,
       kProviderDirectMl,
       kProviderCpu,
@@ -37,6 +39,8 @@ inline std::string canonicalProviderName(const std::string& raw) {
     return kProviderAne;
   if (lower.find("coreml") != std::string::npos) return kProviderCoreMl;
   if (lower.find("cuda") != std::string::npos) return kProviderCuda;
+  if (lower.find("webgpu") != std::string::npos || lower.find("wgpu") != std::string::npos)
+    return kProviderWebGpu;
   if (lower.find("openvino") != std::string::npos || lower.find("vino") != std::string::npos)
     return kProviderOpenVino;
   if (lower.find("dml") != std::string::npos || lower.find("directml") != std::string::npos)
@@ -53,7 +57,7 @@ inline std::string platformPreferredProvider() {
 #elif defined(__APPLE__)
   return kProviderCoreMl;
 #elif defined(_WIN32)
-  return kProviderDirectMl;
+  return kProviderWebGpu;
 #else
   return kProviderCuda;
 #endif

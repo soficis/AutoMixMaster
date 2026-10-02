@@ -261,10 +261,22 @@ bool OnnxModelInference::loadModel(const std::filesystem::path& modelPath) {
   }
 
   if (availableExecutionProviders_.empty()) {
-    availableExecutionProviders_.push_back("cpu");
-    const auto platformProvider = platformPreferredProvider();
-    if (platformProvider != "cpu") {
-      availableExecutionProviders_.push_back(platformProvider);
+    std::vector<std::string> runtime;
+#if AUTOMIX_HAS_NATIVE_ORT
+    try {
+      for (const auto& p : Ort::GetAvailableProviders()) {
+        runtime.push_back(canonicalProviderName(p));
+      }
+    } catch (...) {
+    }
+#endif
+    for (const auto& p : gpu::providerPriorityChain()) {
+      if (std::find(runtime.begin(), runtime.end(), p) != runtime.end() || p == gpu::kProviderCpu) {
+        availableExecutionProviders_.push_back(p);
+      }
+    }
+    if (availableExecutionProviders_.empty()) {
+      availableExecutionProviders_.push_back(gpu::kProviderCpu);
     }
   }
 

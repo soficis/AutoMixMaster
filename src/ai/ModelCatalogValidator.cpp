@@ -271,6 +271,7 @@ bool writeTurnkeyModelPackManifest(const std::filesystem::path& installPath,
   if (model.repoId == kBsRoformerRepoId) {
     const bool fp32 = modelFileName == kBsRoformerFp32File;
     manifest["intended_use"] = fp32 ? kBsRoformerFp32IntendedUse : kBsRoformerIntendedUse;
+    manifest["gpu_providers"] = bsRoformerGpuProviders();
     if (fp32) {
       manifest["gpu_memory_mb"] = kBsRoformerFp32GpuMemoryMb;
     }

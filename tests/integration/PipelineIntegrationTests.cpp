@@ -8,6 +8,7 @@
 #include "domain/Session.h"
 #include "domain/Stem.h"
 #include "engine/AudioBuffer.h"
+#include "renderers/PhaseLimiterDiscovery.h"
 #include "renderers/RendererPipeline.h"
 
 namespace {
@@ -59,13 +60,17 @@ TEST_CASE("Integration: rendering chain resolves correct default order", "[integ
   settings.rendererChainEnabled = true;
   settings.rendererChainMode = "logical_all";
 
+  // PhaseLimiter must exist and run on every platform (owner requirement), so a
+  // missing install is a failure here, never a silent BuiltIn fallback.
+  const auto phaseLimiter = automix::renderers::PhaseLimiterDiscovery{}.find();
+  INFO("PhaseLimiter not discovered on this platform: install a native, complete build "
+       "(binary + resource/mastering_reference.json) under assets/phaselimiter or the cache root");
+  REQUIRE(phaseLimiter.has_value());
+  REQUIRE(automix::renderers::isCompleteInstall(*phaseLimiter));
+
   const auto chain = automix::renderers::resolveRendererChain(settings);
   REQUIRE_FALSE(chain.empty());
-  if (std::find(chain.begin(), chain.end(), "PhaseLimiter") != chain.end()) {
-    REQUIRE(chain.front() == "PhaseLimiter");
-  } else {
-    REQUIRE(chain.front() == "BuiltIn");
-  }
+  REQUIRE(chain.front() == "PhaseLimiter");
 }
 
 TEST_CASE("Integration: each master preset produces different loudness targets", "[integration]") {

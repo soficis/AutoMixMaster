@@ -209,7 +209,8 @@ TEST_CASE("Preview bridge buffer swap never tears and keeps last writer", "[audi
       auto next =
           std::make_shared<automix::engine::AudioBuffer>(2, 256 + (i % 3), 44100.0);
       next->setSample(0, 0, static_cast<float>(i));
-      std::atomic_store_explicit(&buffer, std::move(next), std::memory_order_release);
+      std::shared_ptr<const automix::engine::AudioBuffer> constNext = std::move(next);
+      std::atomic_store_explicit(&buffer, std::move(constNext), std::memory_order_release);
     }
     done.store(true);
   });

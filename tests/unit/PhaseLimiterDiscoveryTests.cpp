@@ -136,3 +136,87 @@ TEST_CASE("PhaseLimiter discovery supports AUTOMIX_ASSET_ROOT override", "[phase
   setEnvValue("AUTOMIX_ASSET_ROOT", previousEnv);
   std::filesystem::remove_all(root);
 }
+
+TEST_CASE("PhaseLimiter download pin table contains target platforms and valid sha256 digests", "[phaselimiter][discovery]") {
+  const auto table = automix::renderers::phaseLimiterDownloadPinTable();
+  REQUIRE_FALSE(table.empty());
+
+  const std::vector<std::string> requiredPlatforms = {
+      "windows-x64",
+      "linux-x64",
+      "macos-arm64",
+      "macos-x86_64",
+      "linux-arm64",
+  };
+
+  for (const auto& required : requiredPlatforms) {
+    const auto it = std::find_if(table.begin(), table.end(),
+                                 [&](const automix::renderers::PhaseLimiterDownloadPin& pin) {
+                                   return pin.platformKey == required;
+                                 });
+    INFO("Checking presence of required platform: " << required);
+    REQUIRE(it != table.end());
+    REQUIRE(!it->url.empty());
+    if (!it->sha256.empty()) {
+      REQUIRE(it->sha256.size() == 64);
+      for (char c : it->sha256) {
+        REQUIRE(((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')));
+      }
+    }
+  }
+
+  const auto currentKey = automix::renderers::currentPhaseLimiterPlatformKey();
+  REQUIRE_FALSE(currentKey.empty());
+  REQUIRE(currentKey != "unknown");
+}
+
+TEST_CASE("PhaseLimiter auto-download rejects corrupted archive before extraction and discards file", "[phaselimiter][discovery]") {
+  automix::renderers::PhaseLimiterDiscovery::resetAttemptedDownloadForTesting();
+
+  std::filesystem::path interceptedDestination;
+  automix::renderers::PhaseLimiterDiscovery::setDownloadFetcherForTesting(
+      [&](const std::string& /*url*/, const std::filesystem::path& destination) {
+        interceptedDestination = destination;
+        std::ofstream out(destination, std::ios::binary);
+        out << "corrupted-file-data-that-will-not-match-expected-hash";
+        return true;
+      });
+
+  automix::renderers::PhaseLimiterDownloadPin testPin{
+      "test-platform",
+      "https://example.com/test_corrupted.zip",
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  };
+
+  const auto result = automix::renderers::PhaseLimiterDiscovery::downloadAndInstall(testPin);
+  REQUIRE(!result.has_value());
+  REQUIRE(!interceptedDestination.empty());
+  REQUIRE(!std::filesystem::exists(interceptedDestination));
+
+  automix::renderers::PhaseLimiterDiscovery::resetDownloadFetcherForTesting();
+  automix::renderers::PhaseLimiterDiscovery::resetAttemptedDownloadForTesting();
+}
+
+TEST_CASE("PhaseLimiter defaultPhaseLimiterDownloadPin supports AUTOMIX_PHASELIMITER_DOWNLOAD_URL override", "[phaselimiter][discovery]") {
+  std::string previousUrl;
+#if defined(_WIN32)
+  char* oldValue = nullptr;
+  size_t oldLength = 0;
+  if (_dupenv_s(&oldValue, &oldLength, "AUTOMIX_PHASELIMITER_DOWNLOAD_URL") == 0 && oldValue != nullptr) {
+    previousUrl.assign(oldValue, oldLength > 0 ? oldLength - 1 : 0);
+    free(oldValue);
+  }
+#else
+  if (const char* existing = std::getenv("AUTOMIX_PHASELIMITER_DOWNLOAD_URL"); existing != nullptr) {
+    previousUrl = existing;
+  }
+#endif
+
+  setEnvValue("AUTOMIX_PHASELIMITER_DOWNLOAD_URL", "https://example.com/custom_phaselimiter.zip");
+
+  const auto pin = automix::renderers::defaultPhaseLimiterDownloadPin();
+  REQUIRE(pin.has_value());
+  REQUIRE(pin->url == "https://example.com/custom_phaselimiter.zip");
+
+  setEnvValue("AUTOMIX_PHASELIMITER_DOWNLOAD_URL", previousUrl);
+}

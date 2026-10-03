@@ -1,7 +1,9 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <optional>
+#include <string>
 #include <system_error>
 #include <vector>
 
@@ -29,10 +31,29 @@ inline bool isCompleteInstall(const PhaseLimiterBinaryInfo& info) {
   return std::filesystem::is_regular_file(masteringReferencePath(info), error) && !error;
 }
 
+struct PhaseLimiterDownloadPin {
+  std::string platformKey;
+  std::string url;
+  std::string sha256;
+};
+
+std::vector<PhaseLimiterDownloadPin> phaseLimiterDownloadPinTable();
+std::optional<PhaseLimiterDownloadPin> defaultPhaseLimiterDownloadPin();
+std::string currentPhaseLimiterPlatformKey();
+
 class PhaseLimiterDiscovery {
  public:
+  using DownloadFetcher = std::function<bool(const std::string& url, const std::filesystem::path& destination)>;
+
   std::optional<PhaseLimiterBinaryInfo> find() const;
   std::optional<PhaseLimiterBinaryInfo> findInRoots(const std::vector<std::filesystem::path>& roots) const;
+
+  static std::optional<PhaseLimiterBinaryInfo> downloadAndInstall(
+      const std::optional<PhaseLimiterDownloadPin>& pin = std::nullopt);
+
+  static void setDownloadFetcherForTesting(DownloadFetcher fetcher);
+  static void resetDownloadFetcherForTesting();
+  static void resetAttemptedDownloadForTesting();
 };
 
 } // namespace automix::renderers

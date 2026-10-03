@@ -200,7 +200,7 @@ TEST_CASE("Preview bridge meter targets round-trip without torn reads", "[audioi
 
 TEST_CASE("Preview bridge buffer swap never tears and keeps last writer", "[audioio][previewbridge]") {
   constexpr int kIterations = 2000;
-  std::atomic<std::shared_ptr<const automix::engine::AudioBuffer>> buffer{nullptr};
+  std::shared_ptr<const automix::engine::AudioBuffer> buffer{nullptr};
   std::atomic<bool> done{false};
   std::atomic<bool> readerOk{true};
 
@@ -209,14 +209,14 @@ TEST_CASE("Preview bridge buffer swap never tears and keeps last writer", "[audi
       auto next =
           std::make_shared<automix::engine::AudioBuffer>(2, 256 + (i % 3), 44100.0);
       next->setSample(0, 0, static_cast<float>(i));
-      buffer.store(std::move(next), std::memory_order_release);
+      std::atomic_store_explicit(&buffer, std::move(next), std::memory_order_release);
     }
     done.store(true);
   });
 
   std::thread reader([&] {
     while (!done.load()) {
-      const auto current = buffer.load(std::memory_order_acquire);
+      const auto current = std::atomic_load_explicit(&buffer, std::memory_order_acquire);
       if (current == nullptr)
         continue;
       // While holding the shared_ptr the published buffer must be fully valid
@@ -234,7 +234,7 @@ TEST_CASE("Preview bridge buffer swap never tears and keeps last writer", "[audi
   reader.join();
 
   REQUIRE(readerOk.load());
-  const auto finalBuffer = buffer.load();
+  const auto finalBuffer = std::atomic_load(&buffer);
   REQUIRE(finalBuffer != nullptr);
   REQUIRE(finalBuffer->getNumSamples() == 256 + ((kIterations - 1) % 3));
   const float lastSample = finalBuffer->getSample(0, 0);

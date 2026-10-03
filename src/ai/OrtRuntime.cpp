@@ -120,6 +120,12 @@ void OrtRuntime::ensureInitialized() {
     const auto decision = gpu::decidePluginEpAttempt(compiledIn, ortVersion, "webgpu", pluginPathStr);
 
     diagnostics_ = "ORT version: " + std::string(Ort::GetVersionString());
+#ifdef AUTOMIX_ORT_EXPECTED_VERSION
+    const std::string runtimeVer = Ort::GetVersionString();
+    if (runtimeVer != AUTOMIX_ORT_EXPECTED_VERSION) {
+      diagnostics_ += " (WARNING: runtime version " + runtimeVer + " != expected " + AUTOMIX_ORT_EXPECTED_VERSION + ")";
+    }
+#endif
 
 #if AUTOMIX_HAS_EP_PLUGIN
     if (decision.attempt) {

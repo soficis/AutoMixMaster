@@ -159,38 +159,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure
+      - name: Build & Package Windows x64 (CUDA + WebGPU)
+        if: matrix.arch == 'x64'
         shell: pwsh
         run: |
-          # Auto-detect the installed Visual Studio generator
-          $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          if (Test-Path $vsWhere) {
-            $vsVersion = & $vsWhere -latest -property catalog_productLineVersion
-            Write-Host "Detected Visual Studio $vsVersion"
-          }
-          cmake -S . -B build_windows_${{ matrix.arch }} -A ${{ matrix.vs_platform }} -DBUILD_TESTING=OFF -DBUILD_TOOLS=OFF
+          powershell -ExecutionPolicy Bypass -File packaging/windows/build-release.ps1 -OutputDir "dist/release/windows"
 
-      - name: Build
-        run: cmake --build build_windows_${{ matrix.arch }} --config Release --target AutoMixMasterApp --parallel 3
-
-      - name: Package Windows zip
+      - name: Build & Package Windows arm64 (WebGPU)
+        if: matrix.arch == 'arm64'
         shell: pwsh
         run: |
+          cmake -S . -B build_windows_arm64 -A ARM64 -DENABLE_ONNX=ON -DAUTOMIX_FETCH_ORT=ON -DAUTOMIX_ORT_FLAVOR=cpu -DBUILD_TESTING=OFF -DBUILD_TOOLS=OFF
+          cmake --build build_windows_arm64 --config Release --target AutoMixMasterApp --parallel 3
           $releaseRoot = "dist/release/windows"
-          $packageDir = "$releaseRoot/AutoMixMaster-windows-${{ matrix.arch }}"
+          $packageDir = "$releaseRoot/AutoMixMaster-windows-arm64"
           New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
 
           $exeCandidates = @(
-            "build_windows_${{ matrix.arch }}/AutoMixMasterApp_artefacts/Release/AutoMixMaster.exe",
-            "build_windows_${{ matrix.arch }}/AutoMixMasterApp_artefacts/Release/Standalone/AutoMixMaster.exe",
-            "build_windows_${{ matrix.arch }}/AutoMixMasterApp_artefacts/AutoMixMaster.exe"
+            "build_windows_arm64/AutoMixMasterApp_artefacts/Release/AutoMixMaster.exe",
+            "build_windows_arm64/AutoMixMasterApp_artefacts/Release/Standalone/AutoMixMaster.exe",
+            "build_windows_arm64/AutoMixMasterApp_artefacts/AutoMixMaster.exe"
           )
           $exePath = $exeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $exePath) { throw "AutoMixMaster.exe not found in build outputs!" }
-          Copy-Item $exePath "$packageDir/AutoMixMaster.exe" -Force
+          $exeDir = Split-Path -Parent $exePath
+          Copy-Item "$exeDir/*" "$packageDir/" -Recurse -Force
           Copy-Item "assets" "$packageDir/assets" -Recurse -Force
 
-          $zipName = "AutoMixMaster-windows-${{ matrix.arch }}.zip"
+          $zipName = "AutoMixMaster-windows-arm64.zip"
           $zipPath = "$releaseRoot/$zipName"
           if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
           Compress-Archive -Path "$packageDir/*" -DestinationPath $zipPath -CompressionLevel Optimal
@@ -203,8 +199,8 @@ jobs:
         with:
           name: release-windows-${{ matrix.arch }}
           path: |
-            dist/release/windows/AutoMixMaster-windows-${{ matrix.arch }}.zip
-            dist/release/windows/AutoMixMaster-windows-${{ matrix.arch }}.zip.sha256
+            dist/release/windows/*.zip
+            dist/release/windows/*.sha256
           if-no-files-found: error
 
   macos-package:
@@ -217,9 +213,11 @@ jobs:
           - arch: x64
             runner: macos-15
             cmake_arch: x86_64
+            enable_onnx: "OFF"
           - arch: arm64
             runner: macos-15
             cmake_arch: arm64
+            enable_onnx: "ON"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -229,11 +227,20 @@ jobs:
           cmake -S . -B build_macos_${{ matrix.arch }}
           -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_OSX_ARCHITECTURES=${{ matrix.cmake_arch }}
+          -DENABLE_ONNX=${{ matrix.enable_onnx }}
+          -DAUTOMIX_FETCH_ORT=${{ matrix.enable_onnx }}
+          -DAUTOMIX_ORT_FLAVOR=cpu
           -DBUILD_TESTING=OFF
           -DBUILD_TOOLS=OFF
 
       - name: Build
         run: cmake --build build_macos_${{ matrix.arch }} --target AutoMixMasterApp --parallel 3
+
+      - name: Ad-hoc codesign bundled dylibs
+        if: matrix.arch == 'arm64'
+        run: |
+          APP_BUNDLE="$(find build_macos_${{ matrix.arch }} -maxdepth 6 -type d -name 'AutoMixMaster.app' | head -n 1)"
+          bash ./packaging/macos/codesign-bundled-dylibs.sh "$APP_BUNDLE"
 
       - name: Package macOS zip
         run: |

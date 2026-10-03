@@ -637,6 +637,211 @@ int commandGpuRuntime(const std::vector<std::string>& args) {
   return 2;
 }
 
+// model bench --provider <name> [--pack <dir>] [--runs N] [--warmup N] [--json] [--out <file>]
+int commandModelBench(const CommandArgs& args) {
+  const auto packArg = argValue(args, "--pack").value_or("assets/models/demo-mix-v1");
+  const auto providerArg = argValue(args, "--provider").value_or("auto");
+  const int warmupRuns = std::clamp(parseIntArg(args, "--warmup").value_or(2), 0, 50);
+  const int timedRuns = std::clamp(parseIntArg(args, "--runs").value_or(10), 1, 1000);
+  const bool jsonOutput = hasFlag(args, "--json");
+
+  const std::filesystem::path packDir(packArg);
+  automix::ai::ModelPackLoader loader;
+  const auto maybePack = loader.load(packDir);
+  if (!maybePack.has_value()) {
+    std::cerr << "Model benchmark failed: could not load model pack at " << packDir.string() << "\n";
+    return 1;
+  }
+  const auto& pack = maybePack.value();
+
+  std::vector<double> provLatencies;
+  std::vector<double> cpuLatencies;
+  std::string actualProvider = "unknown";
+  double maxDelta = 0.0;
+
+  if (pack.tensorContract.has_value()) {
+    automix::ai::OnnxTensorInference cpuInference;
+    cpuInference.setTensorContract(pack.tensorContract);
+    cpuInference.setExecutionProvider("cpu");
+    if (!cpuInference.loadModel(pack.rootPath / pack.modelFile)) {
+      std::cerr << "Model benchmark failed: could not load model on CPU: " << cpuInference.backendDiagnostics() << "\n";
+      return 1;
+    }
+
+    const auto inputSpecs = cpuInference.inputSpecs();
+    std::vector<automix::ai::TensorBinding> cpuBindings;
+    for (const auto& spec : inputSpecs) {
+      size_t count = automix::ai::elementCount(spec).value_or(1024);
+      cpuBindings.push_back(automix::ai::TensorBinding{
+          .expected = spec,
+          .data = std::vector<float>(count, 0.1f),
+      });
+    }
+
+    for (int i = 0; i < warmupRuns; ++i) {
+      cpuInference.run(cpuBindings);
+    }
+    automix::ai::TensorInferenceResult cpuResult;
+    for (int i = 0; i < timedRuns; ++i) {
+      const auto start = std::chrono::steady_clock::now();
+      cpuResult = cpuInference.run(cpuBindings);
+      const auto end = std::chrono::steady_clock::now();
+      cpuLatencies.push_back(std::chrono::duration<double, std::milli>(end - start).count());
+    }
+
+    automix::ai::OnnxTensorInference provInference;
+    provInference.setTensorContract(pack.tensorContract);
+    provInference.setExecutionProvider(providerArg);
+    provInference.setGpuProviderAllowList(pack.gpuProviders);
+    if (!provInference.loadModel(pack.rootPath / pack.modelFile)) {
+      std::cerr << "Model benchmark failed: could not load model with provider '" << providerArg
+                << "': " << provInference.backendDiagnostics() << "\n";
+      return 1;
+    }
+    actualProvider = provInference.activeExecutionProvider();
+
+    std::vector<automix::ai::TensorBinding> provBindings = cpuBindings;
+
+    for (int i = 0; i < warmupRuns; ++i) {
+      provInference.run(provBindings);
+    }
+    automix::ai::TensorInferenceResult provResult;
+    for (int i = 0; i < timedRuns; ++i) {
+      const auto start = std::chrono::steady_clock::now();
+      provResult = provInference.run(provBindings);
+      const auto end = std::chrono::steady_clock::now();
+      provLatencies.push_back(std::chrono::duration<double, std::milli>(end - start).count());
+    }
+
+    for (size_t i = 0; i < cpuResult.outputs.size() && i < provResult.outputs.size(); ++i) {
+      const auto& cOut = cpuResult.outputs[i];
+      const auto& pOut = provResult.outputs[i];
+      const size_t sz = std::min(cOut.data.size(), pOut.data.size());
+      for (size_t j = 0; j < sz; ++j) {
+        double diff = std::abs(static_cast<double>(cOut.data[j]) - static_cast<double>(pOut.data[j]));
+        if (diff > maxDelta) maxDelta = diff;
+      }
+    }
+  } else {
+    automix::ai::OnnxModelInference cpuInference;
+    cpuInference.setExecutionProviderPreference("cpu");
+    if (!cpuInference.loadModel(pack.rootPath / pack.modelFile)) {
+      std::cerr << "Model benchmark failed: could not load model on CPU: " << cpuInference.backendDiagnostics() << "\n";
+      return 1;
+    }
+    const size_t featureCount = pack.inputFeatureCount.value_or(automix::ai::FeatureSchemaV1::featureCount());
+    const automix::ai::InferenceRequest request{
+        .task = taskFromModelType(pack.type),
+        .features = deterministicFeatures(featureCount),
+    };
+
+    for (int i = 0; i < warmupRuns; ++i) {
+      cpuInference.run(request);
+    }
+    automix::ai::InferenceResult cpuResult;
+    for (int i = 0; i < timedRuns; ++i) {
+      const auto start = std::chrono::steady_clock::now();
+      cpuResult = cpuInference.run(request);
+      const auto end = std::chrono::steady_clock::now();
+      cpuLatencies.push_back(std::chrono::duration<double, std::milli>(end - start).count());
+    }
+
+    automix::ai::OnnxModelInference provInference;
+    provInference.setExecutionProviderPreference(providerArg);
+    if (!provInference.loadModel(pack.rootPath / pack.modelFile)) {
+      std::cerr << "Model benchmark failed: could not load model with provider '" << providerArg
+                << "': " << provInference.backendDiagnostics() << "\n";
+      return 1;
+    }
+    actualProvider = provInference.activeExecutionProvider();
+
+    for (int i = 0; i < warmupRuns; ++i) {
+      provInference.run(request);
+    }
+    automix::ai::InferenceResult provResult;
+    for (int i = 0; i < timedRuns; ++i) {
+      const auto start = std::chrono::steady_clock::now();
+      provResult = provInference.run(request);
+      const auto end = std::chrono::steady_clock::now();
+      provLatencies.push_back(std::chrono::duration<double, std::milli>(end - start).count());
+    }
+
+    for (const auto& [k, v] : cpuResult.outputs) {
+      auto it = provResult.outputs.find(k);
+      if (it != provResult.outputs.end()) {
+        double diff = std::abs(static_cast<double>(v) - static_cast<double>(it->second));
+        if (diff > maxDelta) maxDelta = diff;
+      }
+    }
+  }
+
+  auto computeMedian = [](std::vector<double> v) -> double {
+    if (v.empty()) return 0.0;
+    std::sort(v.begin(), v.end());
+    if (v.size() % 2 == 1) return v[v.size() / 2];
+    return 0.5 * (v[v.size() / 2 - 1] + v[v.size() / 2]);
+  };
+  const double medianMs = computeMedian(provLatencies);
+  const double cpuMedianMs = computeMedian(cpuLatencies);
+  const double minMs = provLatencies.empty() ? 0.0 : *std::min_element(provLatencies.begin(), provLatencies.end());
+  const double maxMs = provLatencies.empty() ? 0.0 : *std::max_element(provLatencies.begin(), provLatencies.end());
+  const double speedup = (medianMs > 1e-6) ? (cpuMedianMs / medianMs) : 1.0;
+
+  nlohmann::json payload = {
+      {"model", pack.id},
+      {"requestedProvider", providerArg},
+      {"actualProvider", actualProvider},
+      {"warmupRuns", warmupRuns},
+      {"timedRuns", timedRuns},
+      {"medianLatencyMs", medianMs},
+      {"minLatencyMs", minMs},
+      {"maxLatencyMs", maxMs},
+      {"cpuMedianLatencyMs", cpuMedianMs},
+      {"speedupVsCpu", speedup},
+      {"maxDeltaVsCpu", maxDelta},
+      {"latenciesMs", provLatencies},
+      {"passedParity", maxDelta < 1e-3},
+  };
+
+  if (const auto outArg = argValue(args, "--out"); outArg.has_value()) {
+    writeJsonFile(*outArg, payload);
+    std::cout << "Model benchmark report: " << *outArg << "\n";
+  }
+
+  if (jsonOutput) {
+    std::cout << payload.dump(2) << "\n";
+  } else {
+    std::cout << "Model benchmark: " << pack.id << "\n";
+    std::cout << "  Requested provider: " << providerArg << "\n";
+    std::cout << "  Actual provider: " << actualProvider << "\n";
+    std::cout << "  Warm-up runs: " << warmupRuns << "\n";
+    std::cout << "  Timed runs: " << timedRuns << "\n";
+    std::cout << "  Median latency: " << medianMs << " ms (min: " << minMs << " ms, max: " << maxMs << " ms)\n";
+    std::cout << "  CPU median latency: " << cpuMedianMs << " ms\n";
+    std::cout << "  Speedup vs CPU: " << speedup << "x\n";
+    std::cout << "  Max |Δ| vs CPU: " << maxDelta << "\n";
+  }
+
+  return 0;
+}
+
+int commandModel(const CommandArgs& args) {
+  if (args.size() > 1) {
+    const std::string& sub = args[1];
+    CommandArgs subArgs;
+    subArgs.push_back(sub);
+    for (size_t i = 2; i < args.size(); ++i) {
+      subArgs.push_back(args[i]);
+    }
+    if (sub == "bench") return commandModelBench(subArgs);
+    if (sub == "browse") return commandModelBrowse(subArgs);
+    if (sub == "install") return commandModelInstall(subArgs);
+    if (sub == "health") return commandModelHealth(subArgs);
+  }
+  std::cerr << "Usage: model bench|browse|install|health [options]\n";
+  return 2;
+}
+
 } // namespace
 
 void registerModelCommands(automix::devtools::CommandRegistry& registry) {
@@ -648,6 +853,8 @@ void registerModelCommands(automix::devtools::CommandRegistry& registry) {
   registry.add("validate-modelpack", commandValidateModelPack);
   registry.add("validate-external-limiter", commandValidateExternalLimiter);
   registry.add("external-limiter-compat", commandExternalLimiterCompat);
+  registry.add("model", commandModel);
+  registry.add("model-bench", commandModelBench);
   registry.add("model-browse", commandModelBrowse);
   registry.add("model-install", commandModelInstall);
   registry.add("model-health", commandModelHealth);

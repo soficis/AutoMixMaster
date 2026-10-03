@@ -117,8 +117,10 @@ AutoMixMaster is designed to benefit from **GPU acceleration** via ONNX Runtime 
 - **CPU:** modern **6-core / 12-thread** desktop CPU (Ryzen 5 5600 / Core i5-12400 class)
 - **RAM:** **16 GB minimum**
 - **GPU:** compatible acceleration path with ~**6 GB VRAM**
-  - Windows DirectML path: **DirectX 12-capable GPU**
-  - CUDA path: **NVIDIA CUDA-capable GPU**
+  - Windows: **WebGPU (DirectX 12 / Vulkan)** or **NVIDIA CUDA**
+  - Linux: **WebGPU (Vulkan, requires `libvulkan1`)** or **NVIDIA CUDA**
+  - macOS (Apple Silicon): **CoreML / ANE**
+  - *(Note: Intel Macs do not support AI tensor/model inference; heuristics and audio processing remain functional)*
 - **Storage:** ~10 GB free (models, temp files, exports)
 
 ### Recommended (smoother)
@@ -135,7 +137,7 @@ AutoMixMaster is designed to benefit from **GPU acceleration** via ONNX Runtime 
 
 ### Why these estimates
 
-- GPU acceleration matters most: DirectML needs a **DirectX 12** GPU and CUDA needs an **NVIDIA CUDA-capable** GPU ([DirectML](https://onnxruntime.ai/docs/execution-providers/DirectML-ExecutionProvider.html), [CUDA](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html)).
+- GPU acceleration matters most: WebGPU needs a **DirectX 12 or Vulkan-capable** GPU, CoreML uses Apple Silicon GPU/ANE, and CUDA needs an **NVIDIA CUDA-capable** GPU ([CUDA](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html)).
 - Demucs notes roughly **3 GB minimum** and around **7 GB typical** GPU memory, so **8 GB+ VRAM** is a safer real-world target; CPU-only runs work but are slower ([Demucs README](https://github.com/facebookresearch/demucs/blob/main/README.md)).
 
 ### ONNX Runtime
@@ -150,23 +152,23 @@ heuristic — it does not fail the build. See [docs/ito-master-validation.md](do
 | Minimum for the optional GPU paths | **1.22** |
 | Release cadence | roughly monthly — pin a minor series, not a patch |
 
-The build locates ONNX Runtime with `find_path`/`find_library` and applies **no** version
-constraint, so any installed SDK is used. Pin deliberately if you are validating a release.
+The build locates ONNX Runtime with `find_package(onnxruntime 1.30.0 EXACT CONFIG)` when fetched
+via `AUTOMIX_FETCH_ORT=ON`, or `find_path`/`find_library` for system-installed SDKs.
 
 #### Provider status (as of 1.30.x)
 
 | Provider | Status | Notes |
 |---|---|---|
 | **CPU** | always available | The baseline. Every GPU path falls back here on OOM or device loss, so the app never loses inference capability. |
-| **CUDA** | current | Default packages target **CUDA 13.0** since 1.27. CUDA 12.8 packages are deprecated but still published through 1.30. cuDNN is optional at runtime from 1.28. |
-| **DirectML** | maintenance mode | The `Microsoft.ML.OnnxRuntime.DirectML` NuGet is **frozen at 1.24.4** and caps at **opset ≤ 20**. It will not gain newer opsets, so prefer the options below for new work. |
-| **CoreML** | current | Also covers the **Apple Neural Engine** — there is no separate ANE provider. ANE-specific work goes through CoreML. |
+| **CUDA** | current | Default packages target **CUDA 13.0** since 1.27. cuDNN and CUDA runtime libraries are loaded dynamically at runtime when present. |
+| **WebGPU** | current | Native plugin EP on Windows/Linux (via `Microsoft.ML.OnnxRuntime.EP.WebGpu` 0.4.0) and in-tree provider on Apple Silicon macOS. Default non-NVIDIA path for Windows and Linux. Requires `libvulkan1` on Linux. |
+| **CoreML** | current | Built-in on macOS. Covers the **Apple Neural Engine** (`MLComputeUnits=CPUAndNeuralEngine` or `MLComputeUnits=ALL`). Note: Intel Macs do not support AI inference. |
+| **DirectML** | maintenance mode | The `Microsoft.ML.OnnxRuntime.DirectML` NuGet is **frozen at 1.24.4** and caps at **opset ≤ 20**. WebGPU is now the primary non-NVIDIA Windows path. |
 | **OpenVINO** | split | Legacy wheel pinned at 1.24.1; the plugin `onnxruntime-ep-openvino` 1.7.0 requires ORT ≥ 1.23. |
 | **Windows ML** | GA (2025-09-23) | The recommended path for new Windows work. C++ needs the **self-contained** NuGet; framework-dependent C/C++ packages are not published. |
-| **WebGPU** | preview | Native plugin EP, v0.4.0. |
 
 AutoMixMaster probes available providers and walks its own priority chain — **ANE → CoreML →
-CUDA → OpenVINO → DirectML → CPU** (`src/ai/GpuProvider.h`). If session creation or inference
+CUDA → WebGPU → OpenVINO → DirectML → CPU** (`src/ai/GpuProvider.h`). If session creation or inference
 fails, the provider is recorded as failed and the chain continues, so a broken or missing GPU
 runtime degrades to CPU instead of failing the render.
 
@@ -181,7 +183,7 @@ way, and both features default to off.
 
 | Capability | Compile guard | Minimum ORT | Status |
 |---|---|---|---|
-| CUDA provider supplied as a plugin library | `AUTOMIX_HAS_EP_PLUGIN` | 1.23 | Policy implemented; the `RegisterExecutionProviderLibrary` call is not yet wired |
+| WebGPU provider supplied as a plugin library | `AUTOMIX_HAS_EP_PLUGIN` | 1.23 | Wired for WebGPU via `OrtRuntime` and `RegisterExecutionProviderLibrary` |
 | Per-GPU compiled-model cache (EPContext) | `AUTOMIX_HAS_EP_CONTEXT` | 1.22 | Policy implemented; the `OrtCompileApi` call is not yet wired |
 
 `src/ai/GpuProvider.h` holds the deciding logic for both — `parseOrtVersion`,

@@ -97,11 +97,12 @@ if [[ $SKIP_BUILD -eq 0 ]]; then
   if command -v ccache >/dev/null 2>&1; then
     ccache_launcher=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
   fi
-  cmake -S "$REPO_ROOT" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DBUILD_TOOLS=OFF "${ccache_launcher[@]}"
+  cmake -S "$REPO_ROOT" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release -DENABLE_ONNX=ON -DAUTOMIX_FETCH_ORT=ON -DAUTOMIX_ORT_FLAVOR=cpu -DBUILD_TESTING=OFF -DBUILD_TOOLS=OFF "${ccache_launcher[@]}"
   cmake --build "$BUILD_DIR" --config Release --target AutoMixMasterApp --parallel 3
   if command -v ccache >/dev/null 2>&1; then
     ccache --show-stats
   fi
+
 fi
 
 BINARY_PATH=""
@@ -179,6 +180,13 @@ build_deb() {
   cp -a "$SOURCE_ASSETS_PATH" "$app_root/assets"
   sanitize_linux_assets "$app_root"
 
+  # Bundle ONNX Runtime and WebGPU plugin libraries if present
+  if [[ -d "$BUILD_DIR/lib" ]]; then
+    cp -a "$BUILD_DIR/lib" "$app_root/lib"
+  elif [[ -d "$(dirname "$BINARY_PATH")/lib" ]]; then
+    cp -a "$(dirname "$BINARY_PATH")/lib" "$app_root/lib"
+  fi
+
   install -Dm755 /dev/null "$stage_dir/usr/bin/$PACKAGE_NAME"
   cat > "$stage_dir/usr/bin/$PACKAGE_NAME" <<'WRAPPER'
 #!/bin/sh
@@ -201,6 +209,7 @@ Priority: optional
 Architecture: $deb_arch
 Maintainer: AutoMixMaster
 Depends: libc6 (>= 2.31), libstdc++6 (>= 11), libgcc-s1, libasound2, libfontconfig1, libfreetype6, libexpat1, zlib1g, libbz2-1.0, libpng16-16, libbrotli1
+Recommends: libvulkan1
 Installed-Size: $installed_size
 Description: Deterministic auto mix and mastering desktop app
  AutoMixMaster provides one-click mix/master workflows, batch processing,
@@ -242,11 +251,21 @@ build_appimage() {
   cp -a "$SOURCE_ASSETS_PATH" "$stage_dir/usr/bin/assets"
   sanitize_linux_assets "$stage_dir/usr/bin"
 
+  # Bundle ONNX Runtime and WebGPU plugin libraries beside the binary or in usr/lib
+  if [[ -d "$BUILD_DIR/lib" ]]; then
+    mkdir -p "$stage_dir/usr/bin/lib"
+    cp -a "$BUILD_DIR/lib/." "$stage_dir/usr/bin/lib/"
+  elif [[ -d "$(dirname "$BINARY_PATH")/lib" ]]; then
+    mkdir -p "$stage_dir/usr/bin/lib"
+    cp -a "$(dirname "$BINARY_PATH")/lib/." "$stage_dir/usr/bin/lib/"
+  fi
+
   install -Dm644 "$REPO_ROOT/packaging/linux/automixmaster.svg" "$stage_dir/$PACKAGE_NAME.svg"
   install -Dm644 "$REPO_ROOT/packaging/linux/automixmaster.svg" "$stage_dir/usr/share/icons/hicolor/scalable/apps/$PACKAGE_NAME.svg"
 
   create_desktop_file "$stage_dir/$PACKAGE_NAME.desktop" "$APP_NAME" "$PACKAGE_NAME"
   cp "$stage_dir/$PACKAGE_NAME.desktop" "$stage_dir/usr/share/applications/$PACKAGE_NAME.desktop"
+
 
   ln -sf "$PACKAGE_NAME.svg" "$stage_dir/.DirIcon"
 

@@ -6,6 +6,9 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "renderers/PhaseLimiterDiscovery.h"
+#include "renderers/PhaseLimiterPins.h"
+#include <regex>
+#include <set>
 
 namespace {
 
@@ -249,5 +252,25 @@ TEST_CASE("PhaseLimiter defaultPhaseLimiterDownloadPin supports AUTOMIX_PHASELIM
   REQUIRE(pin->url == "https://example.com/custom_phaselimiter.zip");
 
   setEnvValue("AUTOMIX_PHASELIMITER_DOWNLOAD_URL", previousUrl);
+}
+
+TEST_CASE("PhaseLimiter pin table comes from the generated header", "[phaselimiter]") {
+  const auto table = automix::renderers::phaseLimiterDownloadPinTable();
+  REQUIRE(table.size() == std::size(automix::renderers::kPhaseLimiterPins));
+
+  const std::set<std::string> validKeys = {
+      "windows-x64", "macos-arm64", "macos-x86_64", "linux-x64", "linux-arm64"
+  };
+  const std::regex shaRegex("^[0-9a-f]{64}$");
+
+  std::set<std::string> seenKeys;
+  for (const auto& pin : table) {
+    REQUIRE(validKeys.find(pin.platformKey) != validKeys.end());
+    REQUIRE(pin.url.rfind("https://github.com/", 0) == 0);
+    REQUIRE(std::regex_match(pin.sha256, shaRegex));
+
+    REQUIRE(seenKeys.find(pin.platformKey) == seenKeys.end());
+    seenKeys.insert(pin.platformKey);
+  }
 }
 

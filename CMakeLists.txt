@@ -159,7 +159,11 @@ add_library(automix_core
   src/util/WavWriter.cpp
 )
 
-target_include_directories(automix_core PUBLIC src)
+target_include_directories(automix_core PUBLIC src "${CMAKE_BINARY_DIR}/generated")
+
+include(cmake/PhaseLimiterPins.cmake)
+automix_generate_phaselimiter_pins_header()
+
 if(WIN32)
   # GpuRuntimePack reads adapter memory through DXGI to decide whether to offer CUDA.
   target_link_libraries(automix_core PRIVATE dxgi)

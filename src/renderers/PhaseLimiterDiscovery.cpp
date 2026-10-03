@@ -74,7 +74,7 @@ std::vector<std::string> executableNames() {
 #if defined(_WIN32)
   return {"phase_limiter.exe", "phaselimiter.exe", "phase_limiter", "phaselimiter"};
 #else
-  return {"phase_limiter", "phaselimiter", "phase_limiter.bin", "phaselimiter.bin", "phase_limiter.exe"};
+  return {"phase_limiter", "phaselimiter", "phase_limiter.bin", "phaselimiter.bin"};
 #endif
 }
 

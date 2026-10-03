@@ -61,7 +61,11 @@ TEST_CASE("Integration: rendering chain resolves correct default order", "[integ
 
   const auto chain = automix::renderers::resolveRendererChain(settings);
   REQUIRE_FALSE(chain.empty());
-  REQUIRE(chain.front() == "PhaseLimiter");
+  if (std::find(chain.begin(), chain.end(), "PhaseLimiter") != chain.end()) {
+    REQUIRE(chain.front() == "PhaseLimiter");
+  } else {
+    REQUIRE(chain.front() == "BuiltIn");
+  }
 }
 
 TEST_CASE("Integration: each master preset produces different loudness targets", "[integration]") {

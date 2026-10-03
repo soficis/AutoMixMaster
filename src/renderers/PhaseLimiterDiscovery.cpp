@@ -289,11 +289,11 @@ std::vector<PhaseLimiterDownloadPin> phaseLimiterDownloadPinTable() {
        "https://github.com/ai-mastering/phaselimiter/releases/download/v0.2.0/phaselimiter-win.zip",
        "cab2d30ad8d993a383749b30d9f6dc1911198d3aa309d5f631b70206e0162145"},
       {"linux-x64",
-       "https://github.com/ai-mastering/phaselimiter/releases/download/v0.2.0/release.tar.xz",
-       "0b382ba78b030926f706345d1b00d5f45890ba384c8a4e960320e3ee992bd163"},
+       "https://github.com/soficis/phaselimiter/releases/download/v0.2.0-native1/phaselimiter-0.2.0-linux-x86_64.tar.xz",
+       "208ad1bdc3811b001d0f1f96801cb73c0b6a2ee749c7568170a068493458df15"},
       {"macos-arm64",
        "https://github.com/soficis/phaselimiter/releases/download/v0.2.0-native1/phaselimiter-0.2.0-macos-arm64.tar.xz",
-       ""},
+       "bffd93614efc9f7d74b3ac148eef3731339dabbdaffaf9ab8912fc562473b722"},
       {"macos-x86_64",
        "https://github.com/soficis/phaselimiter/releases/download/v0.2.0-native1/phaselimiter-0.2.0-macos-x86_64.tar.xz",
        ""},
@@ -481,13 +481,17 @@ std::optional<PhaseLimiterBinaryInfo> PhaseLimiterDiscovery::downloadAndInstall(
     return std::nullopt;
   }
 
-  if (const auto cachedInfo = resolveFromCacheInstall(); cachedInfo.has_value()) {
-    return cachedInfo;
+  if (!customPin.has_value()) {
+    if (const auto cachedInfo = resolveFromCacheInstall(); cachedInfo.has_value()) {
+      return cachedInfo;
+    }
   }
 
   std::scoped_lock lock(gDownloadMutex);
-  if (const auto cachedInfo = resolveFromCacheInstall(); cachedInfo.has_value()) {
-    return cachedInfo;
+  if (!customPin.has_value()) {
+    if (const auto cachedInfo = resolveFromCacheInstall(); cachedInfo.has_value()) {
+      return cachedInfo;
+    }
   }
   if (gAttemptedDownload) {
     return std::nullopt;
@@ -573,11 +577,11 @@ std::optional<PhaseLimiterBinaryInfo> PhaseLimiterDiscovery::find() const {
   if (const auto fromEnv = resolveFromEnvironment(); fromEnv.has_value()) {
     return fromEnv;
   }
-  if (const auto cached = toBinaryInfo(cacheBinaryPath()); cached.has_value()) {
-    return cached;
-  }
   if (const auto fromLocal = findInRoots(defaultRoots()); fromLocal.has_value()) {
     return fromLocal;
+  }
+  if (const auto cached = resolveFromCacheInstall(); cached.has_value()) {
+    return cached;
   }
   return downloadAndInstall();
 }

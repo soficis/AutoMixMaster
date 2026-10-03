@@ -274,9 +274,14 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
     const auto exitCode = process.getExitCode();
     const bool hasOutput = pathExists(tempPhaseOutputPath);
     if (!hasOutput) {
-      const std::string outputHint = processOutput.empty()
-                                         ? ""
-                                         : (" output=" + processOutput.substr(0, 240));
+      std::string snippet;
+      if (processOutput.size() <= 500) {
+        snippet = processOutput;
+      } else {
+        snippet = processOutput.substr(0, 200) + "\n...[snip]...\n" +
+                  processOutput.substr(processOutput.size() - 300);
+      }
+      const std::string outputHint = snippet.empty() ? "" : (" output=" + snippet);
       return fallbackToBuiltIn(session, settings, onProgress, cancelFlag,
                                "phase_limiter failed (exit=" + std::to_string(exitCode) + ")" + outputHint);
     }

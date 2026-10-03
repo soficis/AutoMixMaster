@@ -12,13 +12,18 @@ param(
   [string]$OnnxRuntimeDir = "",
   [string]$WebGpuPluginDir = "",
   [string]$BuildDir = "build-release",
-  [string]$Generator = "Visual Studio 18 2026",
+  [string]$OutputDir = "",
+  [string]$Generator = "",
   [switch]$SkipTests
 )
 
 $ErrorActionPreference = "Stop"
 $repo = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 Set-Location $repo
+
+if ($OutputDir -and -not [System.IO.Path]::IsPathRooted($OutputDir)) {
+  $OutputDir = [System.IO.Path]::GetFullPath((Join-Path $repo $OutputDir))
+}
 
 if (-not $WebGpuPluginDir) {
   $defaultWebGpu = "C:\lib\webgpu-win-x64\runtimes\win-x64\native"
@@ -56,7 +61,12 @@ if ($OnnxRuntimeDir) {
   }
 }
 
-cmake -S . -B $BuildDir -G $Generator -A x64 `
+$generatorArgs = @("-A", "x64")
+if ($Generator) {
+  $generatorArgs = @("-G", $Generator, "-A", "x64")
+}
+
+cmake -S . -B $BuildDir @generatorArgs `
   -DENABLE_ONNX=ON `
   @cmakeExtraArgs
 if ($LASTEXITCODE -ne 0) { throw "configure failed" }
@@ -74,7 +84,20 @@ Push-Location $BuildDir
 try {
   cpack -C Release
   if ($LASTEXITCODE -ne 0) { throw "packaging failed" }
-  Get-ChildItem -Filter "AutoMixMaster-*.zip" | ForEach-Object { "Package: $($_.FullName) ($([math]::Round($_.Length / 1MB)) MB)" }
+  Get-ChildItem -Filter "AutoMixMaster-*.zip" | ForEach-Object {
+    "Package: $($_.FullName) ($([math]::Round($_.Length / 1MB)) MB)"
+    if ($OutputDir) {
+      if (-not (Test-Path $OutputDir)) {
+        New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
+      }
+      $destZip = Join-Path $OutputDir $_.Name
+      Copy-Item $_.FullName -Destination $destZip -Force
+      $hash = (Get-FileHash -Path $destZip -Algorithm SHA256).Hash.ToLower()
+      "$hash  $($_.Name)" | Set-Content "$destZip.sha256"
+      Write-Host "Staged $destZip with SHA256 $hash"
+    }
+  }
 } finally {
   Pop-Location
 }
+

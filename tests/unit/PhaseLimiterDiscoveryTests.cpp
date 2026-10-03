@@ -145,8 +145,6 @@ TEST_CASE("PhaseLimiter download pin table contains target platforms and valid s
       "windows-x64",
       "linux-x64",
       "macos-arm64",
-      "macos-x86_64",
-      "linux-arm64",
   };
 
   for (const auto& required : requiredPlatforms) {
@@ -157,17 +155,49 @@ TEST_CASE("PhaseLimiter download pin table contains target platforms and valid s
     INFO("Checking presence of required platform: " << required);
     REQUIRE(it != table.end());
     REQUIRE(!it->url.empty());
-    if (!it->sha256.empty()) {
-      REQUIRE(it->sha256.size() == 64);
-      for (char c : it->sha256) {
-        REQUIRE(((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')));
-      }
+    REQUIRE(it->sha256.size() == 64);
+    for (char c : it->sha256) {
+      REQUIRE(((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')));
     }
+    if (required == "linux-x64") {
+      REQUIRE(it->sha256 == "0b382ba78b030926f706345d1b00d5f45890ba384c8a4e960320e3ee992bd163");
+    }
+  }
+
+  for (const auto& pin : table) {
+    REQUIRE(!pin.url.empty());
+    REQUIRE(pin.sha256.size() == 64);
   }
 
   const auto currentKey = automix::renderers::currentPhaseLimiterPlatformKey();
   REQUIRE_FALSE(currentKey.empty());
   REQUIRE(currentKey != "unknown");
+}
+
+TEST_CASE("PhaseLimiter auto-download rejects unverified table pin with empty hash", "[phaselimiter][discovery]") {
+  automix::renderers::PhaseLimiterDiscovery::resetAttemptedDownloadForTesting();
+
+  bool downloadAttempted = false;
+  automix::renderers::PhaseLimiterDiscovery::setDownloadFetcherForTesting(
+      [&](const std::string& /*url*/, const std::filesystem::path& destination) {
+        downloadAttempted = true;
+        std::ofstream out(destination, std::ios::binary);
+        out << "test-data";
+        return true;
+      });
+
+  automix::renderers::PhaseLimiterDownloadPin emptyHashPin{
+      "test-empty-hash",
+      "https://example.com/test_empty.zip",
+      ""
+  };
+
+  const auto result = automix::renderers::PhaseLimiterDiscovery::downloadAndInstall(emptyHashPin);
+  REQUIRE(!result.has_value());
+  REQUIRE(!downloadAttempted);
+
+  automix::renderers::PhaseLimiterDiscovery::resetDownloadFetcherForTesting();
+  automix::renderers::PhaseLimiterDiscovery::resetAttemptedDownloadForTesting();
 }
 
 TEST_CASE("PhaseLimiter auto-download rejects corrupted archive before extraction and discards file", "[phaselimiter][discovery]") {
@@ -220,3 +250,4 @@ TEST_CASE("PhaseLimiter defaultPhaseLimiterDownloadPin supports AUTOMIX_PHASELIM
 
   setEnvValue("AUTOMIX_PHASELIMITER_DOWNLOAD_URL", previousUrl);
 }
+

@@ -326,6 +326,9 @@ sudo cp -R "$APP_BUNDLE" /Applications/
 open /Applications/AutoMixMaster.app
 ```
 
+> **macOS Note:** On first launch of the unsigned application, macOS Gatekeeper may prompt that the developer cannot be verified. To allow the application to open, go to **System Settings → Privacy & Security**, scroll down to the Security section, and click **Open Anyway**.
+
+
 ### Linux Package Builds (.deb + AppImage)
 
 After building, create distributable Linux packages with:

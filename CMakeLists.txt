@@ -464,34 +464,18 @@ target_compile_definitions(AutoMixMasterApp PRIVATE
   JUCE_USE_CURL=0
 )
 
-# Only PhaseLimiter's real content is staged. Its folder also collects renderer
-# scratch audio (tmp/, many GB) and stray downloaded models (assets/), which
-# must never be copied next to the app or into a package.
-set(AUTOMIX_PHASELIMITER_DIRS bin resource licenses)
-set(AUTOMIX_PHASELIMITER_FILES LICENSE README.md)
-if(EXISTS "${CMAKE_SOURCE_DIR}/assets/phaselimiter")
-  set(_automix_pl_commands)
-  foreach(_dir IN LISTS AUTOMIX_PHASELIMITER_DIRS)
-    if(EXISTS "${CMAKE_SOURCE_DIR}/assets/phaselimiter/${_dir}")
-      list(APPEND _automix_pl_commands COMMAND ${CMAKE_COMMAND} -E copy_directory
-           "${CMAKE_SOURCE_DIR}/assets/phaselimiter/${_dir}"
-           "$<TARGET_FILE_DIR:AutoMixMasterApp>/assets/phaselimiter/${_dir}")
-    endif()
-  endforeach()
-  foreach(_file IN LISTS AUTOMIX_PHASELIMITER_FILES)
-    if(EXISTS "${CMAKE_SOURCE_DIR}/assets/phaselimiter/${_file}")
-      list(APPEND _automix_pl_commands COMMAND ${CMAKE_COMMAND} -E copy_if_different
-           "${CMAKE_SOURCE_DIR}/assets/phaselimiter/${_file}"
-           "$<TARGET_FILE_DIR:AutoMixMasterApp>/assets/phaselimiter/${_file}")
-    endif()
-  endforeach()
-  add_custom_command(TARGET AutoMixMasterApp POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:AutoMixMasterApp>/assets/phaselimiter"
-    ${_automix_pl_commands}
-    COMMENT "Copying bundled PhaseLimiter assets next to AutoMixMaster executable"
-    VERBATIM
-  )
+# Pinned PhaseLimiter fetching and staging (default ON when BUILD_TESTING=ON)
+if(BUILD_TESTING)
+  set(AUTOMIX_FETCH_PHASELIMITER_DEFAULT ON)
+else()
+  set(AUTOMIX_FETCH_PHASELIMITER_DEFAULT OFF)
 endif()
+option(AUTOMIX_FETCH_PHASELIMITER "Fetch and stage pinned PhaseLimiter release archive" ${AUTOMIX_FETCH_PHASELIMITER_DEFAULT})
+
+if(AUTOMIX_FETCH_PHASELIMITER)
+  include(cmake/FetchPhaseLimiter.cmake)
+endif()
+
 
 if(EXISTS "${CMAKE_SOURCE_DIR}/assets/limiters")
   add_custom_command(TARGET AutoMixMasterApp POST_BUILD
@@ -623,20 +607,32 @@ endif()
 set(AUTOMIX_CUDA_RUNTIME_DIR "" CACHE PATH "Folder of CUDA runtime + cuDNN DLLs staged next to executables (optional)")
 
 automix_stage_ort(AutoMixMasterApp)
+if(COMMAND automix_stage_phaselimiter)
+  automix_stage_phaselimiter(AutoMixMasterApp)
+endif()
 automix_set_rpath(AutoMixMasterApp)
 
 if(TARGET automix_dev_tools)
   automix_stage_ort(automix_dev_tools)
+  if(COMMAND automix_stage_phaselimiter)
+    automix_stage_phaselimiter(automix_dev_tools)
+  endif()
   automix_set_rpath(automix_dev_tools)
 endif()
 
 if(TARGET automix_tests)
   automix_stage_ort(automix_tests)
+  if(COMMAND automix_stage_phaselimiter)
+    automix_stage_phaselimiter(automix_tests)
+  endif()
   automix_set_rpath(automix_tests)
 endif()
 
 if(TARGET automix_regression_cli)
   automix_stage_ort(automix_regression_cli)
+  if(COMMAND automix_stage_phaselimiter)
+    automix_stage_phaselimiter(automix_regression_cli)
+  endif()
   automix_set_rpath(automix_regression_cli)
 endif()
 
@@ -659,16 +655,25 @@ if(AUTOMIX_HAS_NATIVE_ORT AND AUTOMIX_ORT_RUNTIME_FILES)
   endif()
 endif()
 
-foreach(_dir IN LISTS AUTOMIX_PHASELIMITER_DIRS)
-  if(EXISTS "${CMAKE_SOURCE_DIR}/assets/phaselimiter/${_dir}")
-    install(DIRECTORY "${CMAKE_SOURCE_DIR}/assets/phaselimiter/${_dir}" DESTINATION assets/phaselimiter COMPONENT application)
-  endif()
-endforeach()
-foreach(_file IN LISTS AUTOMIX_PHASELIMITER_FILES)
-  if(EXISTS "${CMAKE_SOURCE_DIR}/assets/phaselimiter/${_file}")
-    install(FILES "${CMAKE_SOURCE_DIR}/assets/phaselimiter/${_file}" DESTINATION assets/phaselimiter COMPONENT application)
-  endif()
-endforeach()
+set(_automix_pl_install_root "")
+if(AUTOMIX_PHASELIMITER_ROOT)
+  set(_automix_pl_install_root "${AUTOMIX_PHASELIMITER_ROOT}")
+elseif(EXISTS "${CMAKE_SOURCE_DIR}/assets/phaselimiter")
+  set(_automix_pl_install_root "${CMAKE_SOURCE_DIR}/assets/phaselimiter")
+endif()
+
+if(_automix_pl_install_root)
+  foreach(_dir bin resource licenses)
+    if(EXISTS "${_automix_pl_install_root}/${_dir}")
+      install(DIRECTORY "${_automix_pl_install_root}/${_dir}" DESTINATION assets/phaselimiter COMPONENT application)
+    endif()
+  endforeach()
+  foreach(_file LICENSE README.md)
+    if(EXISTS "${_automix_pl_install_root}/${_file}")
+      install(FILES "${_automix_pl_install_root}/${_file}" DESTINATION assets/phaselimiter COMPONENT application)
+    endif()
+  endforeach()
+endif()
 if(EXISTS "${CMAKE_SOURCE_DIR}/assets/limiters")
   install(DIRECTORY "${CMAKE_SOURCE_DIR}/assets/limiters" DESTINATION assets COMPONENT application)
 endif()

@@ -15,9 +15,6 @@ jobs:
   native-ort:
     name: Native ORT (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        shell: bash
     strategy:
       fail-fast: false
       matrix:
@@ -58,15 +55,15 @@ jobs:
             deps-ort-1.30.0-${{ matrix.os }}-
 
       - name: Configure CMake
-        run: |
-          cmake -S . -B build \
-            -G "${{ matrix.generator }}" \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DENABLE_ONNX=ON \
-            -DAUTOMIX_FETCH_ORT=ON \
-            -DAUTOMIX_ORT_FLAVOR=cpu \
-            -DBUILD_TESTING=ON \
-            -DBUILD_TOOLS=ON
+        run: >
+          cmake -S . -B build
+          -G "${{ matrix.generator }}"
+          -DCMAKE_BUILD_TYPE=Release
+          -DENABLE_ONNX=ON
+          -DAUTOMIX_FETCH_ORT=ON
+          -DAUTOMIX_ORT_FLAVOR=cpu
+          -DBUILD_TESTING=ON
+          -DBUILD_TOOLS=ON
 
       - name: Build
         run: cmake --build build --config Release --parallel 3

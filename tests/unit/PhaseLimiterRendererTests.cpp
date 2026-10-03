@@ -144,7 +144,7 @@ TEST_CASE("A selected PhaseLimiter really renders and leaves no scratch behind",
   std::filesystem::remove_all(tempDir);
 }
 
-TEST_CASE("PhaseLimiter render reports missing ffmpeg instead of falling back", "[phaselimiter][renderer]") {
+TEST_CASE("PhaseLimiter stays available without ffmpeg and fails the render with a clear message", "[phaselimiter][renderer]") {
   const std::filesystem::path tempDir = std::filesystem::temp_directory_path() / "automix_pl_test_missing_ffmpeg";
   std::filesystem::remove_all(tempDir);
   std::filesystem::create_directories(tempDir);
@@ -206,6 +206,7 @@ TEST_CASE("PhaseLimiter render reports missing ffmpeg instead of falling back", 
   settings.outputPath = (tempDir / "out.wav").string();
 
   automix::renderers::PhaseLimiterRenderer renderer;
+  REQUIRE(renderer.isAvailable());
   const auto result = renderer.render(session, settings, {}, nullptr);
 
   REQUIRE(result.success == false);

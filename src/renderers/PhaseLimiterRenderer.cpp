@@ -150,7 +150,7 @@ void drainProcessOutput(juce::ChildProcess& process, std::string& outputCapture)
 
 bool PhaseLimiterRenderer::isAvailable() const {
   const auto found = PhaseLimiterDiscovery{}.find();
-  return found.has_value() && isCompleteInstall(*found) && ffmpegForPhaseLimiter().has_value();
+  return found.has_value() && isCompleteInstall(*found);
 }
 
 RenderResult PhaseLimiterRenderer::render(const domain::Session& session,

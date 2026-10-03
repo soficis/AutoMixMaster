@@ -165,7 +165,9 @@ TEST_CASE("PhaseLimiter download pin table contains target platforms and valid s
   const std::vector<std::string> requiredPlatforms = {
       "windows-x64",
       "linux-x64",
+      "linux-arm64",
       "macos-arm64",
+      "macos-x86_64",
   };
 
   for (const auto& required : requiredPlatforms) {
@@ -181,7 +183,7 @@ TEST_CASE("PhaseLimiter download pin table contains target platforms and valid s
       REQUIRE(((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')));
     }
     if (required == "linux-x64") {
-      REQUIRE(it->sha256 == "0b382ba78b030926f706345d1b00d5f45890ba384c8a4e960320e3ee992bd163");
+      REQUIRE(it->sha256 == "994b587feee68b7ca3e95868ae8984df42806607a04acd6d4e854aaaa5389792");
     }
   }
 
@@ -289,6 +291,11 @@ TEST_CASE("PhaseLimiter pin table comes from the generated header", "[phaselimit
 
     REQUIRE(seenKeys.find(pin.platformKey) == seenKeys.end());
     seenKeys.insert(pin.platformKey);
+  }
+
+  REQUIRE(seenKeys.size() == 5);
+  for (const auto& key : validKeys) {
+    REQUIRE(seenKeys.find(key) != seenKeys.end());
   }
 }
 

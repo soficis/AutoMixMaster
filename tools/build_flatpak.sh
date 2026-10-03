@@ -44,13 +44,6 @@ fi
 if flatpak-builder --help 2>&1 | grep -q -- "--ccache"; then
   EXTRA_ARGS+=(--ccache)
 fi
-if [[ "${AUTOMIX_FLATPAK_DISABLE_SANDBOX:-0}" == "1" ]]; then
-  if flatpak-builder --help 2>&1 | grep -q -- "--disable-sandbox"; then
-    EXTRA_ARGS+=(--disable-sandbox)
-  else
-    echo "Warning: this flatpak-builder does not support --disable-sandbox; continuing without it."
-  fi
-fi
 if [[ -n "$FLATPAK_ARCH" ]]; then
   EXTRA_ARGS+=(--arch="$FLATPAK_ARCH")
 fi

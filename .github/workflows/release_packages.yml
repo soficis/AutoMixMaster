@@ -30,21 +30,19 @@ concurrency:
 jobs:
   linux-packages:
     name: Linux (${{ matrix.arch }})
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: x64
-            emulated: false
+            runner: ubuntu-24.04
           - arch: arm64
-            emulated: true
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Persist compiler output so emulated arm64 rebuilds (failure retries)
-      # do not recompile the whole tree under QEMU.
       - name: Cache ccache
         uses: actions/cache@v4
         with:
@@ -53,12 +51,7 @@ jobs:
           restore-keys: |
             ccache-linux-${{ matrix.arch }}-
 
-      - name: Set up QEMU for arm64 emulation
-        if: matrix.emulated
-        uses: docker/setup-qemu-action@v3
-
       - name: Install build dependencies
-        if: ${{ !matrix.emulated }}
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -69,44 +62,10 @@ jobs:
             libglu1-mesa-dev mesa-common-dev libcurl4-openssl-dev \
             dpkg-dev fakeroot flatpak flatpak-builder
 
-      # Public ubuntu-24.04-arm64 runners are frequently starved for 10h+,
-      # so arm64 packages are built on the x64 runner inside an emulated
-      # arm64v8/ubuntu:24.04 container (docker/setup-qemu-action registers
-      # binfmt_misc, docker run --platform linux/arm64 executes native arm64
-      # binaries under QEMU user-mode emulation).
       - name: Build .deb + AppImage
-        if: ${{ !matrix.emulated }}
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: bash ./tools/package_linux.sh
-
-      - name: Build .deb + AppImage (arm64, QEMU-emulated)
-        if: matrix.emulated
-        run: |
-          docker run --rm --platform linux/arm64 \
-            -v "${{ github.workspace }}:/workspace" \
-            -w /workspace \
-            -e CCACHE_DIR=/workspace/.ccache \
-            -e AUTOMIX_QEMU_EMULATED=1 \
-            arm64v8/ubuntu:24.04 \
-            bash -c 'set -euo pipefail; \
-              apt-get update && apt-get install -y --no-install-recommends \
-                build-essential cmake ninja-build pkg-config curl git ca-certificates \
-                ccache unzip file xz-utils \
-                libasound2-dev libjack-jackd2-dev libfreetype6-dev libfontconfig1-dev \
-                libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev \
-                libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libgtk-3-dev \
-                libglu1-mesa-dev mesa-common-dev libcurl4-openssl-dev \
-                dpkg-dev fakeroot; \
-              bash ./tools/package_linux.sh'
-          sudo chown -R "$(id -u):$(id -g)" dist
-          if [[ -d .ccache ]]; then sudo chown -R "$(id -u):$(id -g)" .ccache; fi
-
-      - name: Install Flatpak host dependencies (arm64)
-        if: matrix.emulated
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y flatpak flatpak-builder
 
       - name: Verify Flatpak prefetch wiring
         run: |
@@ -118,7 +77,7 @@ jobs:
       # Keep manifest prefetch sources + FETCHCONTENT_SOURCE_DIR_* overrides in sync.
       - name: Build Flatpak bundle
         env:
-          FLATPAK_ARCH: ${{ matrix.arch }}
+          FLATPAK_ARCH: ${{ matrix.arch == 'arm64' && 'aarch64' || 'x86_64' }}
           CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: bash ./tools/build_flatpak.sh
 

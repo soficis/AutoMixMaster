@@ -58,6 +58,8 @@ class TestCheckRepoHygiene(unittest.TestCase):
             "x/handoff-2.md",
             "job-logs1.txt",
             "a/b.jsonl",
+            "docs/architecture/x.md",
+            "docs/architecture/github_support_pr_purge_request.md",
         ]
         allowed_samples = [
             "docs/model-licensing-audit.json",

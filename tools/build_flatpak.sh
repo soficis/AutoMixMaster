@@ -30,9 +30,19 @@ if ! flatpak remote-ls --user flathub 2>/dev/null | grep -q "org.freedesktop.Pla
   flatpak remote-add --user --if-not-exists flathub "$FLATHUB_REMOTE_URL"
 fi
 
+FLATPAK_ARCH="${FLATPAK_ARCH:-${1:-}}"
+if [[ "$FLATPAK_ARCH" == "arm64" ]]; then
+  FLATPAK_ARCH="aarch64"
+elif [[ "$FLATPAK_ARCH" == "x64" || "$FLATPAK_ARCH" == "x86_64" ]]; then
+  FLATPAK_ARCH="x86_64"
+fi
+
 EXTRA_ARGS=()
 if flatpak-builder --help 2>&1 | grep -q -- "--disable-rofiles-fuse"; then
   EXTRA_ARGS+=(--disable-rofiles-fuse)
+fi
+if flatpak-builder --help 2>&1 | grep -q -- "--ccache"; then
+  EXTRA_ARGS+=(--ccache)
 fi
 if [[ "${AUTOMIX_FLATPAK_DISABLE_SANDBOX:-0}" == "1" ]]; then
   if flatpak-builder --help 2>&1 | grep -q -- "--disable-sandbox"; then
@@ -40,6 +50,9 @@ if [[ "${AUTOMIX_FLATPAK_DISABLE_SANDBOX:-0}" == "1" ]]; then
   else
     echo "Warning: this flatpak-builder does not support --disable-sandbox; continuing without it."
   fi
+fi
+if [[ -n "$FLATPAK_ARCH" ]]; then
+  EXTRA_ARGS+=(--arch="$FLATPAK_ARCH")
 fi
 
 flatpak-builder \
@@ -51,7 +64,12 @@ flatpak-builder \
   "$BUILD_DIR" \
   "$MANIFEST"
 
+BUILD_BUNDLE_ARGS=()
+if [[ -n "$FLATPAK_ARCH" ]]; then
+  BUILD_BUNDLE_ARGS+=(--arch="$FLATPAK_ARCH")
+fi
+
 BUNDLE_PATH="$DIST_DIR/AutoMixMaster.flatpak"
-flatpak build-bundle "$REPO_DIR" "$BUNDLE_PATH" "$APP_ID"
+flatpak build-bundle "${BUILD_BUNDLE_ARGS[@]}" "$REPO_DIR" "$BUNDLE_PATH" "$APP_ID"
 
 echo "Built Flatpak bundle: $BUNDLE_PATH"

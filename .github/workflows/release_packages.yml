@@ -102,6 +102,12 @@ jobs:
           sudo chown -R "$(id -u):$(id -g)" dist
           if [[ -d .ccache ]]; then sudo chown -R "$(id -u):$(id -g)" .ccache; fi
 
+      - name: Install Flatpak host dependencies (arm64)
+        if: matrix.emulated
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder
+
       - name: Verify Flatpak prefetch wiring
         run: |
           grep -q "FETCHCONTENT_FULLY_DISCONNECTED=ON" packaging/flatpak/io.automixmaster.AutoMixMaster.yml
@@ -111,22 +117,10 @@ jobs:
       # Flatpak sandbox builds can fail if CMake FetchContent tries live GitHub clone.
       # Keep manifest prefetch sources + FETCHCONTENT_SOURCE_DIR_* overrides in sync.
       - name: Build Flatpak bundle
-        if: ${{ !matrix.emulated }}
+        env:
+          FLATPAK_ARCH: ${{ matrix.arch }}
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: bash ./tools/build_flatpak.sh
-
-      - name: Build Flatpak bundle (arm64, QEMU-emulated)
-        if: matrix.emulated
-        run: |
-          docker run --rm --platform linux/arm64 \
-            -v "${{ github.workspace }}:/workspace" \
-            -w /workspace \
-            -e AUTOMIX_FLATPAK_DISABLE_SANDBOX=1 \
-            arm64v8/ubuntu:24.04 \
-            bash -c 'set -euo pipefail; \
-              apt-get update && apt-get install -y --no-install-recommends \
-                flatpak flatpak-builder git ca-certificates; \
-              bash ./tools/build_flatpak.sh'
-          sudo chown -R "$(id -u):$(id -g)" dist
 
       - name: Collect Linux release assets
         run: |
@@ -134,7 +128,7 @@ jobs:
           cp dist/linux/*.deb dist/release/linux/
           cp dist/linux/*.AppImage dist/release/linux/
           cp dist/linux/*.sha256 dist/release/linux/ || true
-          cp dist/flatpak/AutoMixMaster.flatpak "dist/release/linux/AutoMixMaster-linux-${{ matrix.arch }}.flatpak"
+          cp dist/flatpak/AutoMixMaster.flatpak "dist/release/linux/AutoMixMaster-linux-${{ matrix.arch }}.flatpak" || true
           (cd dist/release/linux && sha256sum * > "SHA256SUMS-linux-${{ matrix.arch }}.txt")
 
       - name: Upload Linux assets

@@ -1,6 +1,8 @@
 name: Nightly Golden Eval
 
 on:
+  push:
+    branches: [master, "feat/**"]
   schedule:
     - cron: "0 2 * * *"
   workflow_dispatch:

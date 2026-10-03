@@ -1,5 +1,6 @@
 #include "renderers/PhaseLimiterDiscovery.h"
 #include "renderers/PhaseLimiterPins.h"
+#include "renderers/FfmpegDiscovery.h"
 
 #include <algorithm>
 #include <cctype>
@@ -596,6 +597,36 @@ std::optional<PhaseLimiterBinaryInfo> PhaseLimiterDiscovery::findInRoots(
       }
       current = current.parent_path();
     }
+  }
+  return std::nullopt;
+}
+
+namespace {
+std::mutex s_ffmpegResolverMutex;
+FfmpegResolver s_ffmpegResolverForTesting = nullptr;
+} // namespace
+
+void setFfmpegResolverForTesting(FfmpegResolver resolver) {
+  std::lock_guard<std::mutex> lock(s_ffmpegResolverMutex);
+  s_ffmpegResolverForTesting = std::move(resolver);
+}
+
+void resetFfmpegResolverForTesting() {
+  std::lock_guard<std::mutex> lock(s_ffmpegResolverMutex);
+  s_ffmpegResolverForTesting = nullptr;
+}
+
+std::optional<std::filesystem::path> ffmpegForPhaseLimiter() {
+  {
+    std::lock_guard<std::mutex> lock(s_ffmpegResolverMutex);
+    if (s_ffmpegResolverForTesting) {
+      return s_ffmpegResolverForTesting();
+    }
+  }
+
+  FfmpegDiscovery discovery;
+  if (const auto ffmpeg = discovery.find(); ffmpeg.has_value()) {
+    return ffmpeg->executablePath;
   }
   return std::nullopt;
 }

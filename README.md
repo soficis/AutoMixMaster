@@ -122,6 +122,7 @@ AutoMixMaster is designed to benefit from **GPU acceleration** via ONNX Runtime 
   - macOS (Apple Silicon): **CoreML / ANE**
   - *(Note: Intel Macs do not support AI tensor/model inference; heuristics and audio processing remain functional)*
 - **Storage:** ~10 GB free (models, temp files, exports)
+- **PhaseLimiter rendering:** requires ffmpeg (install ffmpeg on Windows; `brew install ffmpeg` / `apt install ffmpeg` elsewhere, or set `FFMPEG_BIN`).
 
 ### Recommended (smoother)
 

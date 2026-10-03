@@ -150,7 +150,7 @@ void drainProcessOutput(juce::ChildProcess& process, std::string& outputCapture)
 
 bool PhaseLimiterRenderer::isAvailable() const {
   const auto found = PhaseLimiterDiscovery{}.find();
-  return found.has_value() && isCompleteInstall(*found);
+  return found.has_value() && isCompleteInstall(*found) && ffmpegForPhaseLimiter().has_value();
 }
 
 RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
@@ -172,6 +172,16 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
       return fallbackToBuiltIn(session, settings, onProgress, cancelFlag,
                                "PhaseLimiter install is incomplete: missing " +
                                    pathToUtf8(masteringReferencePath(*binaryInfo)));
+    }
+
+    const auto ffmpegPath = ffmpegForPhaseLimiter();
+    if (!ffmpegPath.has_value()) {
+      RenderResult result;
+      result.success = false;
+      result.rendererName = "PhaseLimiter";
+      result.logs.push_back(
+          "PhaseLimiter needs ffmpeg, which was not found. Install ffmpeg or set FFMPEG_BIN.");
+      return result;
     }
 
     engine::OfflineRenderPipeline pipeline;
@@ -238,6 +248,7 @@ RenderResult PhaseLimiterRenderer::render(const domain::Session& session,
     command.add(pathToUtf8(binaryInfo->executablePath));
     command.add("-input=" + pathToUtf8(tempInputPath));
     command.add("-output=" + pathToUtf8(tempPhaseOutputPath));
+    command.add("-ffmpeg=" + pathToUtf8(*ffmpegPath));
     command.add("-mastering_reference_file=" + pathToUtf8(masteringReferencePath(*binaryInfo)));
     command.add("-sound_quality2_cache=" + pathToUtf8(soundQualityCachePath(*binaryInfo)));
     command.add("-disable_input_encode=true");

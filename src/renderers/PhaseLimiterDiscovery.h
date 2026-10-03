@@ -41,6 +41,12 @@ std::vector<PhaseLimiterDownloadPin> phaseLimiterDownloadPinTable();
 std::optional<PhaseLimiterDownloadPin> defaultPhaseLimiterDownloadPin();
 std::string currentPhaseLimiterPlatformKey();
 
+using FfmpegResolver = std::function<std::optional<std::filesystem::path>()>;
+
+std::optional<std::filesystem::path> ffmpegForPhaseLimiter();
+void setFfmpegResolverForTesting(FfmpegResolver resolver);
+void resetFfmpegResolverForTesting();
+
 class PhaseLimiterDiscovery {
  public:
   using DownloadFetcher = std::function<bool(const std::string& url, const std::filesystem::path& destination)>;
@@ -54,6 +60,13 @@ class PhaseLimiterDiscovery {
   static void setDownloadFetcherForTesting(DownloadFetcher fetcher);
   static void resetDownloadFetcherForTesting();
   static void resetAttemptedDownloadForTesting();
+
+  static void setFfmpegResolverForTesting(FfmpegResolver resolver) {
+    ::automix::renderers::setFfmpegResolverForTesting(std::move(resolver));
+  }
+  static void resetFfmpegResolverForTesting() {
+    ::automix::renderers::resetFfmpegResolverForTesting();
+  }
 };
 
 } // namespace automix::renderers

@@ -1,5 +1,6 @@
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <string>
 
 #include <catch2/catch_test_macros.hpp>
@@ -10,6 +11,18 @@
 #include "util/WavWriter.h"
 
 namespace {
+
+void setEnvValue(const char* key, const std::string& value) {
+#if defined(_WIN32)
+  _putenv_s(key, value.c_str());
+#else
+  if (value.empty()) {
+    unsetenv(key);
+  } else {
+    setenv(key, value.c_str(), 1);
+  }
+#endif
+}
 
 automix::engine::AudioBuffer makeTone(const double sampleRate,
                                       const int samples,
@@ -129,4 +142,109 @@ TEST_CASE("A selected PhaseLimiter really renders and leaves no scratch behind",
   REQUIRE(countEntries(installRoot / "tmp") <= legacyBefore);     // nothing new in the install
   REQUIRE(std::filesystem::current_path() == workingDirectory);   // no process-wide cwd change
   std::filesystem::remove_all(tempDir);
+}
+
+TEST_CASE("PhaseLimiter render reports missing ffmpeg instead of falling back", "[phaselimiter][renderer]") {
+  const std::filesystem::path tempDir = std::filesystem::temp_directory_path() / "automix_pl_test_missing_ffmpeg";
+  std::filesystem::remove_all(tempDir);
+  std::filesystem::create_directories(tempDir);
+
+  const std::filesystem::path fakeInstall = tempDir / "fake_phaselimiter";
+  const std::filesystem::path fakeBinDir = fakeInstall / "bin";
+  const std::filesystem::path fakeResourceDir = fakeInstall / "resource";
+  std::filesystem::create_directories(fakeBinDir);
+  std::filesystem::create_directories(fakeResourceDir);
+
+#if defined(_WIN32)
+  const std::filesystem::path fakeExe = fakeBinDir / "phase_limiter.exe";
+#else
+  const std::filesystem::path fakeExe = fakeBinDir / "phase_limiter";
+#endif
+  {
+    std::ofstream out(fakeExe);
+    out << "binary stub\n";
+  }
+  {
+    std::ofstream out(fakeResourceDir / "mastering_reference.json");
+    out << "{}\n";
+  }
+#if !defined(_WIN32)
+  std::filesystem::permissions(fakeExe, std::filesystem::perms::owner_exec | std::filesystem::perms::owner_read, std::filesystem::perm_options::add);
+#endif
+
+  setEnvValue("PHASELIMITER_BIN", fakeExe.string());
+  automix::renderers::setFfmpegResolverForTesting([]() -> std::optional<std::filesystem::path> {
+    return std::nullopt;
+  });
+
+  struct CleanupGuard {
+    std::filesystem::path dir;
+    ~CleanupGuard() {
+      automix::renderers::resetFfmpegResolverForTesting();
+      setEnvValue("PHASELIMITER_BIN", "");
+      std::filesystem::remove_all(dir);
+    }
+  } cleanup{tempDir};
+
+  automix::util::WavWriter writer;
+  const auto stemA = makeTone(44100.0, 22050, 220.0, 0.40);
+  const auto stemPathA = tempDir / "tone.wav";
+  writer.write(stemPathA, stemA, 24);
+
+  automix::domain::Session session;
+  automix::domain::Stem s1;
+  s1.id = "s1";
+  s1.name = "Tone";
+  s1.filePath = stemPathA.string();
+  session.stems.push_back(s1);
+
+  automix::domain::RenderSettings settings;
+  settings.outputSampleRate = 44100;
+  settings.blockSize = 1024;
+  settings.outputBitDepth = 24;
+  settings.rendererName = "PhaseLimiter";
+  settings.outputPath = (tempDir / "out.wav").string();
+
+  automix::renderers::PhaseLimiterRenderer renderer;
+  const auto result = renderer.render(session, settings, {}, nullptr);
+
+  REQUIRE(result.success == false);
+  REQUIRE(result.rendererName == "PhaseLimiter");
+  const std::string expectedMessage = "PhaseLimiter needs ffmpeg, which was not found. Install ffmpeg or set FFMPEG_BIN.";
+  REQUIRE_FALSE(result.logs.empty());
+  REQUIRE(result.logs.back() == expectedMessage);
+}
+
+TEST_CASE("ffmpegForPhaseLimiter honours FFMPEG_BIN first", "[phaselimiter][discovery]") {
+  const std::filesystem::path tempDir = std::filesystem::temp_directory_path() / "automix_test_ffmpeg_bin";
+  std::filesystem::remove_all(tempDir);
+  std::filesystem::create_directories(tempDir);
+
+#if defined(_WIN32)
+  const auto fakeFfmpeg = tempDir / "fake_ffmpeg.exe";
+#else
+  const auto fakeFfmpeg = tempDir / "fake_ffmpeg";
+#endif
+  {
+    std::ofstream out(fakeFfmpeg);
+    out << "stub\n";
+  }
+#if !defined(_WIN32)
+  std::filesystem::permissions(fakeFfmpeg, std::filesystem::perms::owner_exec | std::filesystem::perms::owner_read, std::filesystem::perm_options::add);
+#endif
+
+  automix::renderers::resetFfmpegResolverForTesting();
+  setEnvValue("FFMPEG_BIN", fakeFfmpeg.string());
+
+  struct CleanupGuard {
+    std::filesystem::path dir;
+    ~CleanupGuard() {
+      setEnvValue("FFMPEG_BIN", "");
+      std::filesystem::remove_all(dir);
+    }
+  } cleanup{tempDir};
+
+  const auto found = automix::renderers::ffmpegForPhaseLimiter();
+  REQUIRE(found.has_value());
+  REQUIRE(std::filesystem::equivalent(*found, fakeFfmpeg));
 }

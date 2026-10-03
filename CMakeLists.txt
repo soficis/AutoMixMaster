@@ -600,6 +600,7 @@ if(BUILD_TESTING)
   include(CTest)
   include(${Catch2_SOURCE_DIR}/extras/Catch.cmake)
   catch_discover_tests(automix_tests)
+  add_test(NAME cmake_phaselimiter_arch COMMAND ${CMAKE_COMMAND} -P ${CMAKE_SOURCE_DIR}/tests/cmake/phaselimiter_arch_test.cmake)
 endif()
 
 # Stage ONNX Runtime (and, optionally, CUDA/cuDNN) DLLs beside each executable,

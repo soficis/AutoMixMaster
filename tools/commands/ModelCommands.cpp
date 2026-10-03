@@ -14,6 +14,7 @@
 #include "ai/ModelStorage.h"
 #include "ai/OnnxModelInference.h"
 #include "ai/OnnxTensorInference.h"
+#include "ai/OrtRuntime.h"
 #include "ai/StemSeparator.h"
 #include "renderers/ExternalLimiterRenderer.h"
 #include "util/LameDownloader.h"
@@ -603,6 +604,7 @@ int commandGpuRuntime(const std::vector<std::string>& args) {
     std::string provider;
     const bool gpu = automix::ai::gpuTensorSessionAvailable(&provider);
     std::cout << "  GPU tensor session: " << (gpu ? provider : std::string("unavailable")) << "\n";
+    std::cout << "  ORT diagnostics: " << automix::ai::OrtRuntime::instance().diagnostics() << "\n";
     return 0;
   }
   if (action == "install") {
@@ -658,14 +660,15 @@ int commandModelBench(const CommandArgs& args) {
   std::vector<double> cpuLatencies;
   std::string actualProvider = "unknown";
   double maxDelta = 0.0;
+  const bool isTensor = pack.tensorContract.has_value();
 
-  if (pack.tensorContract.has_value()) {
+  if (isTensor) {
     automix::ai::OnnxTensorInference cpuInference;
     cpuInference.setTensorContract(pack.tensorContract);
     cpuInference.setExecutionProvider("cpu");
     if (!cpuInference.loadModel(pack.rootPath / pack.modelFile)) {
-      std::cerr << "Model benchmark failed: could not load model on CPU: " << cpuInference.backendDiagnostics() << "\n";
-      return 1;
+      std::cerr << "ERROR: could not load tensor model on CPU: " << cpuInference.backendDiagnostics() << "\n";
+      return 3;
     }
 
     const auto inputSpecs = cpuInference.inputSpecs();
@@ -694,9 +697,9 @@ int commandModelBench(const CommandArgs& args) {
     provInference.setExecutionProvider(providerArg);
     provInference.setGpuProviderAllowList(pack.gpuProviders);
     if (!provInference.loadModel(pack.rootPath / pack.modelFile)) {
-      std::cerr << "Model benchmark failed: could not load model with provider '" << providerArg
+      std::cerr << "ERROR: could not load tensor model with provider '" << providerArg
                 << "': " << provInference.backendDiagnostics() << "\n";
-      return 1;
+      return 3;
     }
     actualProvider = provInference.activeExecutionProvider();
 
@@ -726,14 +729,20 @@ int commandModelBench(const CommandArgs& args) {
     automix::ai::OnnxModelInference cpuInference;
     cpuInference.setExecutionProviderPreference("cpu");
     if (!cpuInference.loadModel(pack.rootPath / pack.modelFile)) {
-      std::cerr << "Model benchmark failed: could not load model on CPU: " << cpuInference.backendDiagnostics() << "\n";
-      return 1;
+      std::cerr << "ERROR: could not load model on CPU: " << cpuInference.backendDiagnostics() << "\n";
+      return 3;
     }
     const size_t featureCount = pack.inputFeatureCount.value_or(automix::ai::FeatureSchemaV1::featureCount());
     const automix::ai::InferenceRequest request{
         .task = taskFromModelType(pack.type),
         .features = deterministicFeatures(featureCount),
     };
+
+    const auto cpuProbe = cpuInference.run(request);
+    if (!cpuProbe.usedModel || !cpuInference.usingNativeSession()) {
+      std::cerr << "ERROR: model did not execute (deterministic fallback); nothing measured\n";
+      return 3;
+    }
 
     for (int i = 0; i < warmupRuns; ++i) {
       cpuInference.run(request);
@@ -749,11 +758,17 @@ int commandModelBench(const CommandArgs& args) {
     automix::ai::OnnxModelInference provInference;
     provInference.setExecutionProviderPreference(providerArg);
     if (!provInference.loadModel(pack.rootPath / pack.modelFile)) {
-      std::cerr << "Model benchmark failed: could not load model with provider '" << providerArg
+      std::cerr << "ERROR: could not load model with provider '" << providerArg
                 << "': " << provInference.backendDiagnostics() << "\n";
-      return 1;
+      return 3;
     }
     actualProvider = provInference.activeExecutionProvider();
+
+    const auto provProbe = provInference.run(request);
+    if (!provProbe.usedModel || !provInference.usingNativeSession()) {
+      std::cerr << "ERROR: model did not execute (deterministic fallback); nothing measured\n";
+      return 3;
+    }
 
     for (int i = 0; i < warmupRuns; ++i) {
       provInference.run(request);
@@ -785,23 +800,35 @@ int commandModelBench(const CommandArgs& args) {
   const double cpuMedianMs = computeMedian(cpuLatencies);
   const double minMs = provLatencies.empty() ? 0.0 : *std::min_element(provLatencies.begin(), provLatencies.end());
   const double maxMs = provLatencies.empty() ? 0.0 : *std::max_element(provLatencies.begin(), provLatencies.end());
-  const double speedup = (medianMs > 1e-6) ? (cpuMedianMs / medianMs) : 1.0;
+
+  const bool providerMatches = (providerArg == "auto") || (actualProvider == providerArg);
+  const bool shouldReportSpeedup = (actualProvider != "cpu") && providerMatches;
+  const std::optional<double> speedup = shouldReportSpeedup && (medianMs > 1e-6)
+                                            ? std::optional<double>(cpuMedianMs / medianMs)
+                                            : std::nullopt;
+
+  const auto ortDiagnostics = automix::ai::OrtRuntime::instance().diagnostics();
 
   nlohmann::json payload = {
       {"model", pack.id},
       {"requestedProvider", providerArg},
       {"actualProvider", actualProvider},
+      {isTensor ? "loaded" : "usedModel", true},
+      {"diagnostics", ortDiagnostics},
       {"warmupRuns", warmupRuns},
       {"timedRuns", timedRuns},
       {"medianLatencyMs", medianMs},
       {"minLatencyMs", minMs},
       {"maxLatencyMs", maxMs},
       {"cpuMedianLatencyMs", cpuMedianMs},
-      {"speedupVsCpu", speedup},
       {"maxDeltaVsCpu", maxDelta},
       {"latenciesMs", provLatencies},
       {"passedParity", maxDelta < 1e-3},
   };
+
+  if (speedup.has_value()) {
+    payload["speedupVsCpu"] = *speedup;
+  }
 
   if (const auto outArg = argValue(args, "--out"); outArg.has_value()) {
     writeJsonFile(*outArg, payload);
@@ -814,11 +841,15 @@ int commandModelBench(const CommandArgs& args) {
     std::cout << "Model benchmark: " << pack.id << "\n";
     std::cout << "  Requested provider: " << providerArg << "\n";
     std::cout << "  Actual provider: " << actualProvider << "\n";
+    std::cout << "  " << (isTensor ? "Loaded" : "Used real model") << ": true\n";
+    std::cout << "  ORT diagnostics: " << ortDiagnostics << "\n";
     std::cout << "  Warm-up runs: " << warmupRuns << "\n";
     std::cout << "  Timed runs: " << timedRuns << "\n";
     std::cout << "  Median latency: " << medianMs << " ms (min: " << minMs << " ms, max: " << maxMs << " ms)\n";
     std::cout << "  CPU median latency: " << cpuMedianMs << " ms\n";
-    std::cout << "  Speedup vs CPU: " << speedup << "x\n";
+    if (speedup.has_value()) {
+      std::cout << "  Speedup vs CPU: " << *speedup << "x\n";
+    }
     std::cout << "  Max |Δ| vs CPU: " << maxDelta << "\n";
   }
 

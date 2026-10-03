@@ -584,7 +584,7 @@ if(BUILD_TESTING)
     src/app/controllers/OriginalMixController.cpp
   )
 
-  target_include_directories(automix_tests PRIVATE src tests/regression tests/integration)
+  target_include_directories(automix_tests PRIVATE src tests/regression tests/integration tools)
   target_link_libraries(automix_tests PRIVATE automix_core Catch2::Catch2WithMain juce::juce_gui_extra)
   target_compile_definitions(automix_tests PRIVATE
     AUTOMIX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"

@@ -44,3 +44,30 @@ TEST_CASE("ONNX model load failure is graceful", "[benchmark][onnx]") {
   REQUIRE_FALSE(loaded);
   REQUIRE_FALSE(inference.isAvailable());
 }
+
+#include <juce_core/juce_core.h>
+
+TEST_CASE("Model benchmark on demo-mix-v1 stub exits with code 3", "[benchmark][model]") {
+  const juce::File exe = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+  const auto devTools = exe.getSiblingFile("automix_dev_tools"
+#if defined(_WIN32)
+                                          ".exe"
+#endif
+  );
+  if (!devTools.existsAsFile()) {
+    SKIP("automix_dev_tools executable not found in test directory");
+  }
+
+  juce::StringArray args;
+  args.add(devTools.getFullPathName());
+  args.add("model");
+  args.add("bench");
+  args.add("--pack");
+  args.add("assets/models/demo-mix-v1");
+
+  juce::ChildProcess process;
+  REQUIRE(process.start(args));
+  REQUIRE(process.waitForProcessToFinish(30000));
+  REQUIRE(process.getExitCode() == 3);
+}
+

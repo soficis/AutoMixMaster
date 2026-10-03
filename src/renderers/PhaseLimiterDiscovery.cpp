@@ -165,6 +165,7 @@ std::vector<std::filesystem::path> baseAssetDirectories(const std::filesystem::p
       root / "resources" / "assets",
       root / "Resources" / "assets",
       root / "Contents" / "Resources" / "assets",
+      root / "Contents" / "MacOS" / "assets",
   };
 }
 

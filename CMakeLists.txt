@@ -468,11 +468,20 @@ target_compile_definitions(AutoMixMasterApp PRIVATE
   JUCE_USE_CURL=0
 )
 
-# Pinned PhaseLimiter fetching and staging (default ON when BUILD_TESTING=ON)
-if(BUILD_TESTING)
-  set(AUTOMIX_FETCH_PHASELIMITER_DEFAULT ON)
+# Pinned PhaseLimiter fetching and staging
+# Defaults ON whenever assets/phaselimiter/bin has no native binary for the platform key.
+include(cmake/FetchPhaseLimiter.cmake)
+automix_phaselimiter_platform_key(_automix_host_pl_key)
+if(_automix_host_pl_key STREQUAL "windows-x64")
+  set(_automix_native_bin_name "phase_limiter.exe")
 else()
+  set(_automix_native_bin_name "phase_limiter")
+endif()
+
+if(EXISTS "${CMAKE_SOURCE_DIR}/assets/phaselimiter/bin/${_automix_native_bin_name}")
   set(AUTOMIX_FETCH_PHASELIMITER_DEFAULT OFF)
+else()
+  set(AUTOMIX_FETCH_PHASELIMITER_DEFAULT ON)
 endif()
 option(AUTOMIX_FETCH_PHASELIMITER "Fetch and stage pinned PhaseLimiter release archive" ${AUTOMIX_FETCH_PHASELIMITER_DEFAULT})
 
@@ -605,6 +614,8 @@ if(BUILD_TESTING)
   include(${Catch2_SOURCE_DIR}/extras/Catch.cmake)
   catch_discover_tests(automix_tests)
   add_test(NAME cmake_phaselimiter_arch COMMAND ${CMAKE_COMMAND} -P ${CMAKE_SOURCE_DIR}/tests/cmake/phaselimiter_arch_test.cmake)
+  add_test(NAME cmake_phaselimiter_install_guard COMMAND ${CMAKE_COMMAND} -P ${CMAKE_SOURCE_DIR}/tests/cmake/phaselimiter_install_guard_test.cmake)
+  set_tests_properties(cmake_phaselimiter_install_guard PROPERTIES LABELS "slow")
 endif()
 
 # Stage ONNX Runtime (and, optionally, CUDA/cuDNN) DLLs beside each executable,
@@ -660,6 +671,12 @@ if(AUTOMIX_HAS_NATIVE_ORT AND AUTOMIX_ORT_RUNTIME_FILES)
   endif()
 endif()
 
+if(APPLE)
+  set(_automix_pl_dest "AutoMixMaster.app/Contents/MacOS/assets/phaselimiter")
+else()
+  set(_automix_pl_dest "assets/phaselimiter")
+endif()
+
 set(_automix_pl_install_root "")
 if(AUTOMIX_PHASELIMITER_ROOT)
   set(_automix_pl_install_root "${AUTOMIX_PHASELIMITER_ROOT}")
@@ -670,14 +687,25 @@ endif()
 if(_automix_pl_install_root)
   foreach(_dir bin resource licenses)
     if(EXISTS "${_automix_pl_install_root}/${_dir}")
-      install(DIRECTORY "${_automix_pl_install_root}/${_dir}" DESTINATION assets/phaselimiter COMPONENT application)
+      install(DIRECTORY "${_automix_pl_install_root}/${_dir}" DESTINATION "${_automix_pl_dest}" COMPONENT application)
     endif()
   endforeach()
   foreach(_file LICENSE README.md)
     if(EXISTS "${_automix_pl_install_root}/${_file}")
-      install(FILES "${_automix_pl_install_root}/${_file}" DESTINATION assets/phaselimiter COMPONENT application)
+      install(FILES "${_automix_pl_install_root}/${_file}" DESTINATION "${_automix_pl_dest}" COMPONENT application)
     endif()
   endforeach()
+endif()
+
+# Hard guard for PhaseLimiter: fail the install if no native PhaseLimiter binary or reference file is packaged
+if(ENABLE_PHASELIMITER)
+  install(CODE "
+    set(_pl_bin_check \"\${CMAKE_INSTALL_PREFIX}/${_automix_pl_dest}/bin/${_automix_native_bin_name}\")
+    set(_pl_res_check \"\${CMAKE_INSTALL_PREFIX}/${_automix_pl_dest}/resource/mastering_reference.json\")
+    if(NOT EXISTS \"\${_pl_bin_check}\" OR NOT EXISTS \"\${_pl_res_check}\")
+      message(FATAL_ERROR \"Package has no native PhaseLimiter for ${_automix_host_pl_key}\")
+    endif()
+  " COMPONENT application)
 endif()
 if(EXISTS "${CMAKE_SOURCE_DIR}/assets/limiters")
   install(DIRECTORY "${CMAKE_SOURCE_DIR}/assets/limiters" DESTINATION assets COMPONENT application)

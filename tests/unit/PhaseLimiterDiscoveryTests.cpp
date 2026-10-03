@@ -72,6 +72,24 @@ TEST_CASE("PhaseLimiter discovery finds binary inside assets folder", "[phaselim
   std::filesystem::remove_all(root);
 }
 
+TEST_CASE("PhaseLimiter discovery finds binary inside macOS bundle layout", "[phaselimiter][discovery]") {
+  const std::filesystem::path appBundle = std::filesystem::temp_directory_path() / "AutoMixMaster.app";
+  const std::filesystem::path binDir = appBundle / "Contents" / "MacOS" / "assets" / "phaselimiter" / "bin";
+  const std::filesystem::path binary = binDir / binaryNameForPlatform();
+
+  std::filesystem::remove_all(appBundle);
+  std::filesystem::create_directories(binDir);
+  std::ofstream(binary).put('\n');
+
+  automix::renderers::PhaseLimiterDiscovery discovery;
+  const auto result = discovery.findInRoots({appBundle});
+  REQUIRE(result.has_value());
+  REQUIRE(lowerPath(result->executablePath) == lowerPath(binary));
+  REQUIRE(lowerPath(result->installRoot) == lowerPath(appBundle / "Contents" / "MacOS" / "assets" / "phaselimiter"));
+
+  std::filesystem::remove_all(appBundle);
+}
+
 TEST_CASE("PhaseLimiter discovery supports PHASELIMITER_BIN override", "[phaselimiter][discovery]") {
   const std::filesystem::path root = std::filesystem::temp_directory_path() / "automix_phaselimiter_discovery_env";
   const std::filesystem::path binDir = root / "custom_bin";

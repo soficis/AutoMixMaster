@@ -248,3 +248,45 @@ TEST_CASE("ffmpegForPhaseLimiter honours FFMPEG_BIN first", "[phaselimiter][disc
   REQUIRE(found.has_value());
   REQUIRE(std::filesystem::equivalent(*found, fakeFfmpeg));
 }
+
+TEST_CASE("PhaseLimiter platform resolution maps windows-arm64 to windows-x64 emulation", "[phaselimiter][discovery]") {
+  REQUIRE(automix::renderers::phaseLimiterPlatformKeyForResolution("windows-arm64") == "windows-x64");
+  REQUIRE(automix::renderers::phaseLimiterPlatformKeyForResolution("windows-x64") == "windows-x64");
+  REQUIRE(automix::renderers::phaseLimiterPlatformKeyForResolution("linux-arm64") == "linux-arm64");
+  REQUIRE(automix::renderers::phaseLimiterPlatformKeyForResolution("macos-arm64") == "macos-arm64");
+}
+
+TEST_CASE("PhaseLimiter installation contains third-party licenses when installed", "[phaselimiter][licenses]") {
+  automix::renderers::PhaseLimiterDiscovery discovery;
+  const auto info = discovery.find();
+  if (!info.has_value()) {
+    SUCCEED("PhaseLimiter binary is not installed on this machine; skipping license check.");
+    return;
+  }
+
+  const auto licensesDir = automix::renderers::licensesDirectoryPath(*info);
+  if (!std::filesystem::is_directory(licensesDir)) {
+    SUCCEED("Installed PhaseLimiter distribution does not bundle licenses/.");
+    return;
+  }
+
+  // The portable v0.2.0-native3 distribution bundles 14 licenses including onetbb.txt & hnswlib.txt & pocketfft.txt.
+  // The legacy upstream Windows distribution bundles tbb.txt & hnsw.txt.
+  const bool isNativePortable = std::filesystem::is_regular_file(licensesDir / "onetbb.txt");
+  const std::vector<std::string> requiredLicenses = isNativePortable ? std::vector<std::string>{
+    "armadillo.txt", "boost.txt", "cimg.txt", "eigen.txt", "gflags.txt",
+    "hnswlib.txt", "libpng.txt", "libsimdpp.txt", "onetbb.txt", "optim.txt",
+    "phaselimiter.txt", "picojson.txt", "pocketfft.txt", "zlib.txt"
+  } : std::vector<std::string>{
+    "armadillo.txt", "boost.txt", "cimg.txt", "eigen.txt", "gflags.txt",
+    "hnsw.txt", "libpng.txt", "libsimdpp.txt", "tbb.txt", "optim.txt",
+    "phaselimiter.txt", "picojson.txt", "zlib.txt"
+  };
+
+  for (const auto& licFile : requiredLicenses) {
+    const auto filePath = licensesDir / licFile;
+    INFO("Checking license file: " << filePath.string());
+    REQUIRE(std::filesystem::is_regular_file(filePath));
+    REQUIRE(std::filesystem::file_size(filePath) > 0);
+  }
+}

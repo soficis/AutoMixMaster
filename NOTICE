@@ -141,3 +141,35 @@ dependency details are listed in docs/third_party_registry.json.
 Note that ONNX Runtime is an OPTIONAL dependency. Builds made without it fall
 back to a deterministic adapter and model-backed features degrade to
 heuristics rather than failing.
+
+
+8. Optional external renderers: PhaseLimiter
+--------------------------------------------
+
+PhaseLimiter (https://github.com/ai-mastering/phaselimiter) is an optional
+external mastering renderer executing as a standalone child process. On Windows
+x64, it uses upstream release binaries. On Linux (x86_64, aarch64) and macOS
+(Apple Silicon, x86_64), it uses modernized portable builds
+(https://github.com/soficis/phaselimiter) release v0.2.0-native3.
+
+The PhaseLimiter portable distribution bundles third-party open-source components,
+whose full license texts are preserved under the licenses/ subdirectory:
+  - PhaseLimiter: MIT (Copyright (c) 2018-2020 Bakuage Co., Ltd.)
+  - oneTBB: Apache License 2.0 (Copyright (c) 2005-2024 Intel Corporation)
+  - PocketFFT: BSD-3-Clause (Copyright (c) 2010-2019 Max-Planck-Society)
+  - Boost: Boost Software License 1.0 (BSL-1.0)
+  - Eigen: Mozilla Public License 2.0 (MPL-2.0)
+  - Armadillo: Apache License 2.0 (Copyright 2008-2024 Conrad Sanderson and Ryan Curtin)
+  - libpng: libpng license (Copyright (c) 1995-2024 The PNG Reference Library Authors)
+  - zlib: zlib license (Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler)
+  - gflags: BSD-3-Clause (Copyright (c) 2006 Google Inc.)
+  - picojson: BSD-2-Clause (Copyright 2009-2010 Kazuho Oku)
+  - hnswlib: Apache License 2.0 (Copyright (c) 2017 Yury Malkov)
+  - libsimdpp: Boost Software License 1.0 (Copyright (c) 2011-2015 Povilas Kanapickas)
+  - OptimLib: Apache License 2.0 (Copyright (c) 2017-present Keith O'Hara)
+  - CImg: CeCILL-C (Copyright (c) David Tschumperle)
+
+Neither upstream PhaseLimiter nor the portable v0.2.0-native3 distribution links
+to or redistributes LGPL-licensed libsndfile: audio I/O uses an in-tree WAV
+implementation, and encoding/decoding relies on the user's system FFmpeg binary.
+

@@ -24,6 +24,9 @@ inline std::filesystem::path masteringReferencePath(const PhaseLimiterBinaryInfo
 inline std::filesystem::path soundQualityCachePath(const PhaseLimiterBinaryInfo& info) {
   return info.installRoot / "resource" / "sound_quality2_cache";
 }
+inline std::filesystem::path licensesDirectoryPath(const PhaseLimiterBinaryInfo& info) {
+  return info.installRoot / "licenses";
+}
 
 // A binary without its mastering reference cannot master; treat it as absent.
 inline bool isCompleteInstall(const PhaseLimiterBinaryInfo& info) {
@@ -40,6 +43,7 @@ struct PhaseLimiterDownloadPin {
 std::vector<PhaseLimiterDownloadPin> phaseLimiterDownloadPinTable();
 std::optional<PhaseLimiterDownloadPin> defaultPhaseLimiterDownloadPin();
 std::string currentPhaseLimiterPlatformKey();
+std::string phaseLimiterPlatformKeyForResolution(const std::string& platformKey);
 
 using FfmpegResolver = std::function<std::optional<std::filesystem::path>()>;
 

@@ -183,7 +183,7 @@ TEST_CASE("PhaseLimiter download pin table contains target platforms and valid s
       REQUIRE(((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')));
     }
     if (required == "linux-x64") {
-      REQUIRE(it->sha256 == "994b587feee68b7ca3e95868ae8984df42806607a04acd6d4e854aaaa5389792");
+      REQUIRE(it->sha256 == "8ba28b31f823555c3c368a6d3b4757c1980c981b6abe726e80d724f050aeefaa");
     }
   }
 

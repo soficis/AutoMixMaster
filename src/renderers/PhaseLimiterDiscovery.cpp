@@ -286,6 +286,13 @@ std::string currentPhaseLimiterPlatformKey() {
 #endif
 }
 
+std::string phaseLimiterPlatformKeyForResolution(const std::string& platformKey) {
+  if (platformKey == "windows-arm64") {
+    return "windows-x64";
+  }
+  return platformKey;
+}
+
 std::vector<PhaseLimiterDownloadPin> phaseLimiterDownloadPinTable() {
   std::vector<PhaseLimiterDownloadPin> table;
   table.reserve(std::size(kPhaseLimiterPins));
@@ -307,9 +314,10 @@ std::optional<PhaseLimiterDownloadPin> defaultPhaseLimiterDownloadPin() {
   }
 
   const auto currentKey = currentPhaseLimiterPlatformKey();
+  const auto resolutionKey = phaseLimiterPlatformKeyForResolution(currentKey);
   const auto table = phaseLimiterDownloadPinTable();
   for (const auto& pin : table) {
-    if (pin.platformKey == currentKey) {
+    if (pin.platformKey == resolutionKey) {
       if (pin.url.empty() || pin.sha256.empty()) {
         return std::nullopt;
       }

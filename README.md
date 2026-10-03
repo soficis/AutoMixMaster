@@ -105,11 +105,12 @@ AutoMixMaster is designed to benefit from **GPU acceleration** via ONNX Runtime 
 
 ### Minimum OS requirements (release artifacts)
 
-- **Windows:** **Windows 10 or Windows 11** (x64 or ARM64)
+- **Windows:** **Windows 10 or Windows 11** (x64 or ARM64¹)
 - **macOS (Apple Silicon / ARM64):** **macOS 14+**
 - **macOS (Intel / x64):** **macOS 15+**
 - **Linux:** **Ubuntu 24.04 LTS+** for current prebuilt `.deb`/AppImage artifacts
 
+> ¹ *Note: On Windows 11 ARM64, PhaseLimiter runs seamlessly via Windows on ARM built-in x64 emulation (WOW64/Prism); AI tensor inference runs natively on ARM64.*
 > Note: Ubuntu 22.04 may still work if you build from source on 22.04 with compatible dependencies, but official CI/release packaging currently targets Ubuntu 24.04.
 
 ### Minimum workable

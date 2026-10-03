@@ -63,7 +63,12 @@ TEST_CASE("Model benchmark on demo-mix-v1 stub exits with code 3", "[benchmark][
   args.add("model");
   args.add("bench");
   args.add("--pack");
+#if defined(AUTOMIX_SOURCE_DIR)
+  const auto packPath = std::filesystem::path(AUTOMIX_SOURCE_DIR) / "assets" / "models" / "demo-mix-v1";
+  args.add(juce::String(packPath.string()));
+#else
   args.add("assets/models/demo-mix-v1");
+#endif
 
   juce::ChildProcess process;
   REQUIRE(process.start(args));

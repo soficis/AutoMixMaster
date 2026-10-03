@@ -594,7 +594,7 @@ OverlapAddResult runModelBackedOverlapAdd(const engine::AudioBuffer& mixBuffer,
     return result;
   }
 
-  result.stems.reserve(result.stemCount);
+  result.stems.reserve(static_cast<size_t>(result.stemCount));
   for (int index = 0; index < result.stemCount; ++index) {
     result.stems.emplace_back(channels, samples, mixBuffer.getSampleRate());
   }
@@ -1153,6 +1153,11 @@ bool StemSeparator::isModelAvailable() const {
 bool StemSeparator::isTensorModelAvailable() const {
   std::string reason;
   return loadTensorPack(modelRoot_, reason).has_value();
+}
+
+StemSeparator::SeparationResult StemSeparator::separate(const std::filesystem::path& mixPath,
+                                                        const std::filesystem::path& outputDir) const {
+  return separate(mixPath, outputDir, SeparationOptions{});
 }
 
 StemSeparator::SeparationResult StemSeparator::separate(const std::filesystem::path& mixPath,

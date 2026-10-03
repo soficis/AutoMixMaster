@@ -45,7 +45,7 @@ std::string canonicalProviderName(const std::string& rawProvider) {
   return gpu::canonicalProviderName(rawProvider);
 }
 
-std::string platformPreferredProvider() {
+[[maybe_unused]] std::string platformPreferredProvider() {
   return gpu::platformPreferredProvider();
 }
 

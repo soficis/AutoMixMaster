@@ -58,8 +58,10 @@ class StemSeparator final {
   // file exists. Says nothing about whether ONNX Runtime can open it.
   [[nodiscard]] bool isTensorModelAvailable() const;
   SeparationResult separate(const std::filesystem::path& mixPath,
+                            const std::filesystem::path& outputDir) const;
+  SeparationResult separate(const std::filesystem::path& mixPath,
                             const std::filesystem::path& outputDir,
-                            const SeparationOptions& options = {}) const;
+                            const SeparationOptions& options) const;
 
  private:
   [[nodiscard]] std::filesystem::path resolveModelPath() const;

@@ -875,7 +875,7 @@ bool waitForAsync(const std::function<bool()>& predicate, const int timeoutMs = 
 }
 
 struct ModelInstallProbe {
-  int installCalls = 0;
+  std::atomic<int> installCalls{0};
 };
 
 automix::app::ModelController::ModelHubOps makeProbeModelHubOps(ModelInstallProbe& probe) {

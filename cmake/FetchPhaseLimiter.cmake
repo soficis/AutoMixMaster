@@ -68,7 +68,7 @@ function(automix_phaselimiter_platform_key OUT_VAR)
     endif()
 
   elseif(_os STREQUAL "Windows")
-    if(_proc MATCHES "x86_64|amd64")
+    if(_proc MATCHES "x86_64|amd64|arm64|aarch64")
       set(${OUT_VAR} "windows-x64" PARENT_SCOPE)
       return()
     else()

@@ -159,6 +159,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install dependencies (Windows)
+        shell: pwsh
+        run: |
+          choco install ffmpeg --no-progress
+          $ffmpegDir = "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin"
+          if (Test-Path $ffmpegDir) {
+            echo "$ffmpegDir" >> $env:GITHUB_PATH
+          }
+
       - name: Build & Package Windows x64 (CUDA + WebGPU)
         if: matrix.arch == 'x64'
         shell: pwsh
@@ -169,7 +178,7 @@ jobs:
         if: matrix.arch == 'arm64'
         shell: pwsh
         run: |
-          cmake -S . -B build_windows_arm64 -A ARM64 -DENABLE_ONNX=ON -DAUTOMIX_FETCH_ORT=ON -DAUTOMIX_ORT_FLAVOR=cpu -DBUILD_TESTING=OFF -DBUILD_TOOLS=OFF
+          cmake -S . -B build_windows_arm64 -A ARM64 -DCMAKE_SYSTEM_PROCESSOR=ARM64 -DENABLE_ONNX=ON -DAUTOMIX_FETCH_ORT=ON -DAUTOMIX_ORT_FLAVOR=cpu -DBUILD_TESTING=OFF -DBUILD_TOOLS=OFF
           cmake --build build_windows_arm64 --config Release --target AutoMixMasterApp --parallel 3
           $releaseRoot = "dist/release/windows"
           $packageDir = "$releaseRoot/AutoMixMaster-windows-arm64"

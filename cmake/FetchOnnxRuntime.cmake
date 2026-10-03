@@ -21,7 +21,9 @@ endif()
 # Determine OS and Architecture keys
 if(WIN32)
   set(_os "win")
-  if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64")
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64"
+     OR CMAKE_GENERATOR_PLATFORM MATCHES "ARM64|arm64"
+     OR CMAKE_VS_PLATFORM_NAME MATCHES "ARM64|arm64")
     set(_arch "arm64")
   else()
     set(_arch "x64")

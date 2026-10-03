@@ -41,10 +41,10 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Cache ccache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .ccache
           key: ccache-linux-${{ matrix.arch }}-${{ github.sha }}
@@ -86,12 +86,19 @@ jobs:
           mkdir -p dist/release/linux
           cp dist/linux/*.deb dist/release/linux/
           cp dist/linux/*.AppImage dist/release/linux/
-          cp dist/linux/*.sha256 dist/release/linux/ || true
-          cp dist/flatpak/AutoMixMaster.flatpak "dist/release/linux/AutoMixMaster-linux-${{ matrix.arch }}.flatpak" || true
+          cp dist/linux/*.sha256 dist/release/linux/
+          cp dist/flatpak/AutoMixMaster.flatpak "dist/release/linux/AutoMixMaster-linux-${{ matrix.arch }}.flatpak"
           (cd dist/release/linux && sha256sum * > "SHA256SUMS-linux-${{ matrix.arch }}.txt")
 
+      - name: Assert Linux release packages exist
+        run: |
+          test -s "dist/release/linux/AutoMixMaster-linux-${{ matrix.arch }}.flatpak"
+          for f in dist/release/linux/*.deb dist/release/linux/*.AppImage; do
+            test -s "$f"
+          done
+
       - name: Upload Linux assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-linux-${{ matrix.arch }}
           path: dist/release/linux/*
@@ -110,7 +117,7 @@ jobs:
             vs_platform: ARM64
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install dependencies (Windows)
         shell: pwsh
@@ -157,7 +164,7 @@ jobs:
           "$hash  $zipName" | Set-Content "$zipPath.sha256"
 
       - name: Upload Windows assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-windows-${{ matrix.arch }}
           path: |
@@ -182,7 +189,7 @@ jobs:
             enable_onnx: "ON"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Configure
         run: >
@@ -219,7 +226,7 @@ jobs:
           shasum -a 256 "$ZIP_PATH" > "${ZIP_PATH}.sha256"
 
       - name: Upload macOS assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-macos-${{ matrix.arch }}
           path: |
@@ -237,7 +244,7 @@ jobs:
       - macos-package
     steps:
       - name: Download all packaged artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: release-*
           merge-multiple: true
@@ -301,7 +308,7 @@ jobs:
           fi
 
       - name: Publish assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ steps.release-meta.outputs.tag }}
           name: ${{ steps.release-meta.outputs.name }}

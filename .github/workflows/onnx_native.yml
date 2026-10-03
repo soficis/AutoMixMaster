@@ -30,7 +30,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -55,7 +55,7 @@ jobs:
           echo "C:\ProgramData\chocolatey\bin" >> $env:GITHUB_PATH
 
       - name: Cache fetched dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: build/_deps
           key: deps-ort-1.30.0-${{ matrix.os }}-${{ hashFiles('cmake/FetchOnnxRuntime.cmake', 'CMakeLists.txt') }}
@@ -78,6 +78,3 @@ jobs:
 
       - name: Run Tests (Full Suite)
         run: ctest --test-dir build -C Release --output-on-failure
-
-      - name: Run Native Tagged Tests
-        run: ctest --test-dir build -C Release -L native --output-on-failure || true

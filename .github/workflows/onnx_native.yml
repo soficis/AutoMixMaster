@@ -58,9 +58,9 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: build/_deps
-          key: deps-ort-1.30.0-${{ matrix.os }}-${{ hashFiles('cmake/FetchOnnxRuntime.cmake', 'CMakeLists.txt') }}
+          key: deps-ort-1.30.0-${{ matrix.os }}-${{ runner.arch }}-${{ hashFiles('cmake/FetchOnnxRuntime.cmake', 'CMakeLists.txt') }}
           restore-keys: |
-            deps-ort-1.30.0-${{ matrix.os }}-
+            deps-ort-1.30.0-${{ matrix.os }}-${{ runner.arch }}-
 
       - name: Configure CMake
         run: >

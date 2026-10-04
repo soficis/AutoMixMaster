@@ -78,3 +78,18 @@ jobs:
 
       - name: Run Tests (Full Suite)
         run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: HTTPS download smoke (Linux, curl)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          tools_bin="$(find build -type f -name automix_dev_tools -perm -u+x | head -n1)"
+          test -n "$tools_bin"
+          ok=0
+          for attempt in 1 2 3; do
+            if "$tools_bin" model browse --limit 1 --out browse.json; then
+              if python3 -c "import json,sys; d=json.load(open('browse.json')); sys.exit(0 if len(d)>=1 else 1)"; then ok=1; break; fi
+            fi
+            sleep 10
+          done
+          test "$ok" = 1

@@ -208,7 +208,7 @@ Section: sound
 Priority: optional
 Architecture: $deb_arch
 Maintainer: AutoMixMaster
-Depends: libc6 (>= 2.31), libstdc++6 (>= 11), libgcc-s1, libasound2, libfontconfig1, libfreetype6, libexpat1, zlib1g, libbz2-1.0, libpng16-16, libbrotli1
+Depends: libc6 (>= 2.31), libstdc++6 (>= 11), libgcc-s1, libasound2, libfontconfig1, libfreetype6, libexpat1, zlib1g, libbz2-1.0, libpng16-16, libbrotli1, libcurl4t64 | libcurl4
 Recommends: libvulkan1
 Installed-Size: $installed_size
 Description: Deterministic auto mix and mastering desktop app

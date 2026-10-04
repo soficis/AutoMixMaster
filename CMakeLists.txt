@@ -38,6 +38,14 @@ option(ENABLE_CLANG_TIDY "Enable clang-tidy analysis while compiling" OFF)
 option(BUILD_TESTING "Build tests" ON)
 option(BUILD_TOOLS "Build developer tools" ON)
 
+# Linux has no native HTTPS client in JUCE: without libcurl, JUCE falls back to a raw-socket client that cannot
+# speak TLS, so model/tool downloads fail. Windows (WinINet) and macOS (NSURLSession) must keep JUCE_USE_CURL=0.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(AUTOMIX_JUCE_USE_CURL 1)
+else()
+  set(AUTOMIX_JUCE_USE_CURL 0)
+endif()
+
 if(DISTRIBUTION_MODE STREQUAL "PROPRIETARY" AND ENABLE_GPL_BUNDLED_LIMITERS)
   message(WARNING "ENABLE_GPL_BUNDLED_LIMITERS is disabled in PROPRIETARY mode.")
   set(ENABLE_GPL_BUNDLED_LIMITERS OFF CACHE BOOL "Enable bundled GPL limiters (OSS mode only)" FORCE)
@@ -354,6 +362,11 @@ target_link_libraries(automix_core
     juce::juce_dsp
 )
 
+if(AUTOMIX_JUCE_USE_CURL)
+  find_package(CURL REQUIRED)
+  target_link_libraries(automix_core PUBLIC CURL::libcurl)
+endif()
+
 set(LIBEBUR128_BACKEND_AVAILABLE OFF)
 if(ENABLE_LIBEBUR128)
   if(DEFINED libebur128_SOURCE_DIR)
@@ -379,7 +392,7 @@ target_compile_definitions(automix_core
     SESSION_SCHEMA_VERSION=2
     DISTRIBUTION_MODE_${DISTRIBUTION_MODE}=1
     JUCE_WEB_BROWSER=0
-    JUCE_USE_CURL=0
+    JUCE_USE_CURL=${AUTOMIX_JUCE_USE_CURL}
     $<$<BOOL:${ENABLE_PHASELIMITER}>:ENABLE_PHASELIMITER=1>
     $<$<BOOL:${ENABLE_ONNX}>:ENABLE_ONNX=1>
     $<$<BOOL:${ENABLE_RTNEURAL}>:ENABLE_RTNEURAL=1>
@@ -417,7 +430,13 @@ if(ENABLE_SANITIZERS)
   endif()
 endif()
 
+set(_automix_needs_curl FALSE)
+if(AUTOMIX_JUCE_USE_CURL)
+  set(_automix_needs_curl TRUE)
+endif()
+
 juce_add_gui_app(AutoMixMasterApp
+  NEEDS_CURL ${_automix_needs_curl}
   PRODUCT_NAME "AutoMixMaster"
   COMPANY_NAME "AutoMixMaster"
   ICON_BIG "assets/icon.png"
@@ -465,7 +484,7 @@ target_link_libraries(AutoMixMasterApp
 
 target_compile_definitions(AutoMixMasterApp PRIVATE
   JUCE_WEB_BROWSER=0
-  JUCE_USE_CURL=0
+  JUCE_USE_CURL=${AUTOMIX_JUCE_USE_CURL}
 )
 
 # Pinned PhaseLimiter fetching and staging

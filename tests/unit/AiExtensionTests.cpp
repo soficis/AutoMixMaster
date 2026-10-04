@@ -1314,3 +1314,11 @@ TEST_CASE("Model strategy returns base plans unchanged when no model inference i
   REQUIRE(masterPass.targetLufs == Catch::Approx(-16.0));
   REQUIRE(masterPass.decisionLog.size() == 1);
 }
+
+TEST_CASE("Linux builds enable libcurl so HTTPS downloads work", "[build-config]") {
+#if defined(__linux__)
+  REQUIRE(JUCE_USE_CURL == 1);
+#else
+  SUCCEED("JUCE_USE_CURL is only required on Linux; Windows and macOS use native HTTP stacks.");
+#endif
+}

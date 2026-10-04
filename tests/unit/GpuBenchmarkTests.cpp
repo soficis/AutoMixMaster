@@ -697,3 +697,24 @@ TEST_CASE("tensorProviderUsable per-provider probe cache semantics", "[gpu][tens
   CHECK(winner == "cuda");
 }
 
+
+TEST_CASE("benchProviderMatches compares canonical provider names", "[gpu][bench]") {
+  using automix::ai::gpu::benchProviderMatches;
+  CHECK(benchProviderMatches("auto", "cpu") == true);
+  CHECK(benchProviderMatches("cuda", "cuda") == true);
+  CHECK(benchProviderMatches("webgpu", "cuda") == false);
+  CHECK(benchProviderMatches("webgpu", "cpu") == false);
+  CHECK(benchProviderMatches("cuda", "") == false);
+  CHECK(benchProviderMatches("cuda", "unknown") == false);
+  // canonicalProviderName maps "wgpu" to "webgpu" and ignores case.
+  CHECK(benchProviderMatches("WGPU", "webgpu") == true);
+}
+
+TEST_CASE("nearestRankPercentile uses the nearest-rank method", "[gpu][bench]") {
+  using automix::ai::gpu::nearestRankPercentile;
+  CHECK(nearestRankPercentile({}, 0.9) == 0.0);
+  CHECK(nearestRankPercentile({5.0}, 0.9) == 5.0);
+  CHECK(nearestRankPercentile({1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, 0.9) == 9.0);
+  CHECK(nearestRankPercentile({3.0, 1.0, 2.0}, 0.5) == 2.0);
+  CHECK(nearestRankPercentile({1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, 1.0) == 10.0);
+}

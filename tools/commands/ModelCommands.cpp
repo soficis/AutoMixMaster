@@ -8,6 +8,7 @@
 #include <unordered_set>
 
 #include "ai/FeatureSchema.h"
+#include "ai/GpuProvider.h"
 #include "ai/GpuRuntimePack.h"
 #include "ai/HuggingFaceModelHub.h"
 #include "ai/ModelPackLoader.h"
@@ -640,6 +641,8 @@ int commandGpuRuntime(const std::vector<std::string>& args) {
 }
 
 // model bench --provider <name> [--pack <dir>] [--runs N] [--warmup N] [--json] [--out <file>]
+// Exit codes: 0 ok, 1 pack load failure, 3 model load/execution failure,
+//             4 the model ran on a different provider than the one requested.
 int commandModelBench(const CommandArgs& args) {
   const auto packArg = argValue(args, "--pack").value_or("assets/models/demo-mix-v1");
   const auto providerArg = argValue(args, "--provider").value_or("auto");
@@ -659,6 +662,7 @@ int commandModelBench(const CommandArgs& args) {
   std::vector<double> provLatencies;
   std::vector<double> cpuLatencies;
   std::string actualProvider = "unknown";
+  std::string providerBackendDiagnostics;
   double maxDelta = 0.0;
   const bool isTensor = pack.tensorContract.has_value();
 
@@ -695,13 +699,15 @@ int commandModelBench(const CommandArgs& args) {
     automix::ai::OnnxTensorInference provInference;
     provInference.setTensorContract(pack.tensorContract);
     provInference.setExecutionProvider(providerArg);
-    provInference.setGpuProviderAllowList(pack.gpuProviders);
+    // The bench deliberately ignores the pack's allow-list so it measures the requested provider.
+    provInference.setGpuProviderAllowList({});
     if (!provInference.loadModel(pack.rootPath / pack.modelFile)) {
       std::cerr << "ERROR: could not load tensor model with provider '" << providerArg
                 << "': " << provInference.backendDiagnostics() << "\n";
       return 3;
     }
     actualProvider = provInference.activeExecutionProvider();
+    providerBackendDiagnostics = provInference.backendDiagnostics();
 
     std::vector<automix::ai::TensorBinding> provBindings = cpuBindings;
 
@@ -763,6 +769,7 @@ int commandModelBench(const CommandArgs& args) {
       return 3;
     }
     actualProvider = provInference.activeExecutionProvider();
+    providerBackendDiagnostics = provInference.backendDiagnostics();
 
     const auto provProbe = provInference.run(request);
     if (!provProbe.usedModel || !provInference.usingNativeSession()) {
@@ -801,8 +808,17 @@ int commandModelBench(const CommandArgs& args) {
   const double minMs = provLatencies.empty() ? 0.0 : *std::min_element(provLatencies.begin(), provLatencies.end());
   const double maxMs = provLatencies.empty() ? 0.0 : *std::max_element(provLatencies.begin(), provLatencies.end());
 
-  const bool providerMatches = (providerArg == "auto") || (actualProvider == providerArg);
-  const bool shouldReportSpeedup = (actualProvider != "cpu") && providerMatches;
+  const bool providerMatches = automix::ai::gpu::benchProviderMatches(providerArg, actualProvider);
+  const bool shouldReportSpeedup =
+      (automix::ai::gpu::canonicalProviderName(actualProvider) != automix::ai::gpu::kProviderCpu) && providerMatches;
+  const double p90Ms = automix::ai::gpu::nearestRankPercentile(provLatencies, 0.9);
+  const double cpuP90Ms = automix::ai::gpu::nearestRankPercentile(cpuLatencies, 0.9);
+  const auto canonicalRequested = automix::ai::gpu::canonicalProviderName(providerArg);
+  const bool outsideAllowList =
+      canonicalRequested != "auto" && !pack.gpuProviders.empty() &&
+      std::none_of(pack.gpuProviders.begin(), pack.gpuProviders.end(), [&](const std::string& allowed) {
+        return automix::ai::gpu::canonicalProviderName(allowed) == canonicalRequested;
+      });
   const std::optional<double> speedup = shouldReportSpeedup && (medianMs > 1e-6)
                                             ? std::optional<double>(cpuMedianMs / medianMs)
                                             : std::nullopt;
@@ -824,6 +840,10 @@ int commandModelBench(const CommandArgs& args) {
       {"maxDeltaVsCpu", maxDelta},
       {"latenciesMs", provLatencies},
       {"passedParity", maxDelta < 1e-3},
+      {"providerMatches", providerMatches},
+      {"packAllowList", pack.gpuProviders},
+      {"p90LatencyMs", p90Ms},
+      {"cpuP90LatencyMs", cpuP90Ms},
   };
 
   if (speedup.has_value()) {
@@ -846,11 +866,22 @@ int commandModelBench(const CommandArgs& args) {
     std::cout << "  Warm-up runs: " << warmupRuns << "\n";
     std::cout << "  Timed runs: " << timedRuns << "\n";
     std::cout << "  Median latency: " << medianMs << " ms (min: " << minMs << " ms, max: " << maxMs << " ms)\n";
+    std::cout << "  p90: " << p90Ms << " ms\n";
     std::cout << "  CPU median latency: " << cpuMedianMs << " ms\n";
+    std::cout << "  Provider match: " << (providerMatches ? "yes" : "no") << "\n";
+    if (outsideAllowList) {
+      std::cout << "  Note: '" << providerArg << "' is outside this pack's allow-list; measured anyway\n";
+    }
     if (speedup.has_value()) {
       std::cout << "  Speedup vs CPU: " << *speedup << "x\n";
     }
     std::cout << "  Max |Δ| vs CPU: " << maxDelta << "\n";
+  }
+
+  if (!providerMatches) {
+    std::cerr << "ERROR: requested provider '" << providerArg << "' but the model ran on '" << actualProvider << "'. "
+              << providerBackendDiagnostics << "\n";
+    return 4;
   }
 
   return 0;

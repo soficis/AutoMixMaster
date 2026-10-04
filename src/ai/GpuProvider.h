@@ -1,6 +1,8 @@
 #pragma once
 
 #include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -50,6 +52,25 @@ inline std::string canonicalProviderName(const std::string& raw) {
   if (lower.find("rocm") != std::string::npos) return "rocm";
 
   return lower;
+}
+
+/// True when a bench run that asked for `requested` actually ran on `actual`.
+/// "auto" matches anything; an empty or "unknown" actual provider never matches a concrete request.
+inline bool benchProviderMatches(const std::string& requested, const std::string& actual) {
+  const auto wanted = canonicalProviderName(requested);
+  if (wanted == "auto") return true;
+  if (actual.empty() || actual == "unknown") return false;
+  return wanted == canonicalProviderName(actual);
+}
+
+/// Nearest-rank percentile (p in (0, 1]); returns 0.0 for an empty input.
+inline double nearestRankPercentile(std::vector<double> values, double p) {
+  if (values.empty()) return 0.0;
+  std::sort(values.begin(), values.end());
+  const auto n = static_cast<long long>(values.size());
+  auto idx = static_cast<long long>(std::ceil(p * static_cast<double>(n))) - 1;
+  idx = std::clamp<long long>(idx, 0, n - 1);
+  return values[static_cast<size_t>(idx)];
 }
 
 inline std::string platformPreferredProvider() {

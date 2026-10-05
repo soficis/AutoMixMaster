@@ -127,6 +127,17 @@ void HeroWaveform::mouseDrag(const juce::MouseEvent& event) {
     onSeek(progress);
 }
 
+void HeroWaveform::mouseUp(const juce::MouseEvent& /*event*/) {
+  if (waveformPeaks_.empty() && onImportRequested)
+    onImportRequested();
+}
+
+juce::MouseCursor HeroWaveform::getMouseCursor() {
+  if (waveformPeaks_.empty())
+    return juce::MouseCursor::PointingHandCursor;
+  return juce::Component::getMouseCursor();
+}
+
 void HeroWaveform::mouseWheelMove(const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel) {
   const double zoomSensitivity = 0.3;
   double zoomDelta = -wheel.deltaY * zoomSensitivity;
@@ -355,16 +366,32 @@ void HeroWaveform::paint(juce::Graphics& g) {
   float midY = h * 0.5f;
 
   if (waveformPeaks_.empty()) {
+    const auto zone = bounds.reduced(12.0f);
+    if (isDragOver_) {
+      g.setColour(colour(colours::primary).withAlpha(0.08f));
+      g.fillRoundedRectangle(zone, metrics::cornerRadiusLarge);
+      g.setColour(colour(colours::primary));
+      g.drawRoundedRectangle(zone, metrics::cornerRadiusLarge, 2.0f);
+    } else {
+      juce::Path zonePath;
+      zonePath.addRoundedRectangle(zone, metrics::cornerRadiusLarge);
+      juce::Path dashedPath;
+      const float dashes[] = {6.0f, 4.0f};
+      juce::PathStrokeType(1.5f).createDashedStroke(dashedPath, zonePath, dashes, 2);
+      g.setColour(colour(colours::surfaceBorder));
+      g.fillPath(dashedPath);
+    }
+
     auto upperHalf = bounds.withHeight(h * 0.5f);
     g.setFont(typography::subhead());
-    g.setColour(colour(colours::primary).withAlpha(0.85f));
-    g.drawText("Drop stems here  or  click Import (Ctrl+I)", upperHalf, juce::Justification::centredBottom);
+    g.setColour(colour(colours::text));
+    g.drawText("Drop stems here or click to import", upperHalf, juce::Justification::centredBottom);
 
     auto lowerHalf = bounds.withY(h * 0.5f).withHeight(h * 0.5f);
     g.setFont(typography::caption());
     g.setColour(colour(colours::textMuted));
-    g.drawText("1  Import Stems    ->    2  Mix + Master    ->    3  Export\n"
-               "Tip: enable 'AI Stem Separation' in the control deck to split one full mix into stems.",
+    const auto arrow = juce::String(juce::CharPointer_UTF8("\xe2\x86\x92"));
+    g.drawText("1 Import stems  " + arrow + "  2 Mix + Master  " + arrow + "  3 Export",
                lowerHalf.reduced(0.0f, 8.0f), juce::Justification::centredTop);
   } else {
     // Draw stem overlay if we have per-stem data
@@ -440,7 +467,7 @@ void HeroWaveform::paint(juce::Graphics& g) {
     drawZoomControls(g);
   }
 
-  if (isDragOver_) {
+  if (isDragOver_ && !waveformPeaks_.empty()) {
     g.setColour(colour(colours::primary).withAlpha(0.12f));
     g.fillAll();
     g.setColour(colour(colours::primary));

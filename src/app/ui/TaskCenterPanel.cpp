@@ -1,5 +1,7 @@
 #include "app/ui/TaskCenterPanel.h"
 
+#include "app/style/AutoMixLookAndFeel.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -43,6 +45,8 @@ TaskCenterPanel::TaskCenterPanel() : progressBar_(progressValue_), batchProgress
     juce::SystemClipboard::copyTextToClipboard(historyEditor_.getText());
   };
 
+  setButtonVariant(copyLogButton_, buttonVariant::quiet);
+  setButtonVariant(cancelButton_, buttonVariant::secondary);
   cancelButton_.setEnabled(false);
   cancelButton_.onClick = [this] {
     if (onCancel)

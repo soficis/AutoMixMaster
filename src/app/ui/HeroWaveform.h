@@ -21,6 +21,8 @@ public:
   void paint(juce::Graphics& g) override;
   void mouseDown(const juce::MouseEvent& event) override;
   void mouseDrag(const juce::MouseEvent& event) override;
+  void mouseUp(const juce::MouseEvent& event) override;
+  juce::MouseCursor getMouseCursor() override;
   void mouseWheelMove(const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel) override;
   void resized() override;
 
@@ -38,6 +40,7 @@ public:
   void setStemGroups(const std::vector<StemGroup>& groups);
 
   // Callbacks
+  std::function<void()> onImportRequested;                   // empty-state zone clicked
   std::function<void(double)> onSeek;                        // progress fraction 0..1
   std::function<void(double)> onZoomChanged;                 // new zoom factor
   std::function<void(std::vector<juce::File>)> onFilesDropped; // audio/preset files dropped

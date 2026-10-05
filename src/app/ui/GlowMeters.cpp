@@ -8,6 +8,7 @@ namespace automix::app {
 using namespace theme;
 
 GlowMeters::GlowMeters() {
+  setTitle("Loudness meters");
   lufsLabel_.setText("I: -- LUFS", juce::dontSendNotification);
   lufsLabel_.setFont(typography::caption());
   lufsLabel_.setColour(juce::Label::textColourId, colour(colours::textMuted));

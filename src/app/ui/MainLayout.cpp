@@ -13,10 +13,12 @@
 #include "app/ui/TaskOrchestrator.h"
 #include "app/ui/TransportBar.h"
 #include "app/ui/VerificationEngine.h"
+#include "ai/BsRoformerPack.h"
 #include "ai/GpuRuntimePack.h"
 #include "ai/HuggingFaceModelHub.h"
 #include "ai/ModelStorage.h"
 #include "ai/OnnxTensorInference.h"
+#include "ai/UmxPack.h"
 #include "renderers/RendererPipeline.h"
 #include "util/FileUtils.h"
 
@@ -111,12 +113,9 @@ MainLayout::MainLayout() {
   addAndMakeVisible(*taskCenter_);
 
   // Destructive Clear: MainLayout-owned (not part of TransportBar), confirmed on click.
-  clearTracksButton_.setTooltip("Clear Imported Tracks (asks for confirmation)");
+  clearTracksButton_.setTooltip("Remove all stems from the session");
   clearTracksButton_.setWantsKeyboardFocus(true);
-  clearTracksButton_.setColour(juce::TextButton::buttonColourId, colour(colours::surface));
-  clearTracksButton_.setColour(juce::TextButton::buttonOnColourId, colour(colours::surfaceLight));
-  clearTracksButton_.setColour(juce::TextButton::textColourOffId, colour(colours::warning));
-  clearTracksButton_.setColour(juce::TextButton::textColourOnId, colour(colours::warning));
+  setButtonVariant(clearTracksButton_, buttonVariant::danger);
   clearTracksButton_.onClick = [this] { onClearTracks(); };
   addAndMakeVisible(clearTracksButton_);
 
@@ -161,6 +160,16 @@ MainLayout::MainLayout() {
   commandManager_.registerAllCommandsForTarget(this);
 
   sessionManager_.markSaved();
+  refreshStemDependentUi();
+}
+
+void MainLayout::refreshStemDependentUi() {
+  const bool hasStems = !sessionManager_.session().stems.empty();
+  if (controlDeck_ != nullptr)
+    controlDeck_->setHasStems(hasStems);
+  if (transportBar_ != nullptr)
+    transportBar_->setHasMedia(hasStems);
+  clearTracksButton_.setEnabled(hasStems);
 }
 
 // ── Controllers factory ────────────────────────────────────────
@@ -290,6 +299,7 @@ void MainLayout::initControllers() {
         safe->sessionManager_.session().stems = result.stems;
         safe->sessionManager_.session().originalMixPath = result.originalMixPath;
         updateStemPanelFromSession(safe->controlDeck_->getStemPanel(), safe->sessionManager_.session());
+        safe->refreshStemDependentUi();
         safe->taskOrchestrator_->finishTaskCompleted(ActiveTask::Import, "Import complete");
         safe->rebuildPreview();
 
@@ -1011,6 +1021,7 @@ void MainLayout::performClearTracks() {
   transportBar_->setTimeDisplay(0.0, 0.0);
   sessionManager_.session().stems.clear();
   detail::updateStemPanelFromSession(controlDeck_->getStemPanel(), sessionManager_.session());
+  refreshStemDependentUi();
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1100,6 +1111,7 @@ void MainLayout::wireControlDeckCallbacks() {
     const bool enabled = controlDeck_->getSeparatedStemsToggle().getToggleState();
     sessionManager_.session().aiStemsEnabled = enabled;
     controlDeck_->getTensorSeparationToggle().setEnabled(enabled);
+    controlDeck_->setSeparationControlsVisible(enabled);
   };
   controlDeck_->getTensorSeparationToggle().onClick = [this] {
     const bool enabled = controlDeck_->getTensorSeparationToggle().getToggleState();
@@ -1132,6 +1144,7 @@ void MainLayout::wireHeroWaveformCallbacks() {
   heroWaveform_->onSeek = [this](double progress) {
     transportController_.seekToFraction(std::clamp(progress, 0.0, 1.0));
   };
+  heroWaveform_->onImportRequested = [this] { onImport(); };
   heroWaveform_->onFilesDropped = [this](std::vector<juce::File> files) {
     importFiles(std::move(files));
   };
@@ -1900,6 +1913,7 @@ void MainLayout::applyLoadedSession(domain::Session loadedSession, const juce::S
   sessionShownModified_ = false;
   setSessionDisplayName(juce::File(sourcePath).getFileNameWithoutExtension());
   updateStemPanelFromSession(controlDeck_->getStemPanel(), session);
+  refreshStemDependentUi();
   transportBar_->setLoopEnabled(session.timeline.loopEnabled);
   heroWaveform_->setZoom(session.timeline.zoom, 0.5);
   refreshRenderers();
@@ -2092,9 +2106,10 @@ void MainLayout::updateSeparationModelBadge() {
     return;
   }
 
+  const juce::String noneText(juce::CharPointer_UTF8("Model: none installed \xe2\x80\x94 open Models"));
   const auto activeId = modelManager_.activePackId("separation");
   if (activeId.empty()) {
-    controlDeck_->setSeparationModelStatus("Separation model: none", false);
+    controlDeck_->setSeparationModelStatus(noneText, false);
     return;
   }
 
@@ -2103,7 +2118,7 @@ void MainLayout::updateSeparationModelBadge() {
     return util::toLower(pack.taskScope) == "separation" && pack.id == activeId;
   });
   if (selected == packs.end()) {
-    controlDeck_->setSeparationModelStatus("Separation model: none", false);
+    controlDeck_->setSeparationModelStatus(noneText, false);
     return;
   }
 
@@ -2111,7 +2126,21 @@ void MainLayout::updateSeparationModelBadge() {
   const auto modelPath = selected->rootPath / selected->modelFile;
   const bool ready = std::filesystem::is_regular_file(modelPath, error) && !error;
   const auto displayName = selected->name.empty() ? selected->id : selected->name;
-  auto badgeText = juce::String("Separation model: ") + juce::String(displayName);
+  const auto mentions = [&](const char* repoId) {
+    const juce::String repo(repoId);
+    const auto sanitizedRepo = repo.replaceCharacter('/', '_');
+    for (const auto& field : {selected->id, selected->name, selected->source}) {
+      const juce::String value(field);
+      if (value.containsIgnoreCase(repo) || value.containsIgnoreCase(sanitizedRepo))
+        return true;
+    }
+    return false;
+  };
+  juce::String badgeText = "Model: " + juce::String(displayName);
+  if (mentions(ai::kBsRoformerRepoId))
+    badgeText = "Model: BS-RoFormer (best quality, GPU recommended)";
+  else if (mentions(ai::kUmxVocalsRepoId))
+    badgeText = "Model: Open-Unmix (fast, lower quality)";
   if (!ready) {
     badgeText << " (missing)";
   }
@@ -2217,6 +2246,7 @@ void MainLayout::applySessionUiSelections() {
   controlDeck_->getTensorSeparationToggle().setToggleState(session.renderSettings.tensorSeparationEnabled,
                                                            juce::dontSendNotification);
   controlDeck_->getTensorSeparationToggle().setEnabled(session.aiStemsEnabled);
+  controlDeck_->setSeparationControlsVisible(session.aiStemsEnabled);
   controlDeck_->getBatchRecursiveToggle().setToggleState(session.batchRecursiveEnabled, juce::dontSendNotification);
   controlDeck_->getRendererChainToggle().setToggleState(
       session.renderSettings.rendererChainEnabled,

@@ -1,5 +1,7 @@
 #include "app/ui/HeaderBar.h"
 
+#include "app/style/AutoMixLookAndFeel.h"
+
 namespace automix::app {
 
 using namespace theme;
@@ -16,6 +18,10 @@ HeaderBar::HeaderBar() {
   addAndMakeVisible(modelsButton_);
   addAndMakeVisible(settingsButton_);
   addAndMakeVisible(profileSelector_);
+
+  for (juce::Button* btn : {static_cast<juce::Button*>(&saveButton_), static_cast<juce::Button*>(&loadButton_),
+                            static_cast<juce::Button*>(&modelsButton_), static_cast<juce::Button*>(&settingsButton_)})
+    setButtonVariant(*btn, buttonVariant::quiet);
 
   saveButton_.setTooltip("Save Session (Ctrl+S)");
   loadButton_.setTooltip("Load Session (Ctrl+O)");

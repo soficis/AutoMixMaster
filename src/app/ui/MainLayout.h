@@ -179,6 +179,7 @@ private:
   void onSaveSession(std::function<void(bool)> done = {});
   void finishPendingSave(bool success);
   void refreshSessionTitle();
+  void refreshStemDependentUi();
   void setSessionDisplayName(const juce::String& name);
   void onLoadSession();
   void onModelsDialog();

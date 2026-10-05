@@ -88,6 +88,10 @@ class HuggingFaceModelHub {
                                   const std::string& fallbackQuery);
 };
 
+// Overrides the live revision and file hash with the pinned values for curated
+// repos that have them (Open-Unmix); other repos are left untouched.
+void applyCuratedPin(HubModelInfo& info);
+
 // Curated model catalogue (catalog-only discovery source). Exposed for
 // license-coverage tests and downstream hub tooling.
 std::vector<std::string> curatedModelIds();

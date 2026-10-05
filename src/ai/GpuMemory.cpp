@@ -60,8 +60,8 @@ bool coreMlAutoAllowed(const std::uint64_t physicalMemoryBytes, const bool expli
 }
 
 std::string vocalModelCpuWarning(const std::uint64_t physicalMemoryBytes, const bool gpuSessionUsable,
-                                 const bool isMac) {
-  if (!isMac || gpuSessionUsable || physicalMemoryBytes == 0 || physicalMemoryBytes >= kCoreMlAutoMinMemoryBytes) {
+                                 const bool isMac, const bool lightModelActive) {
+  if (lightModelActive || !isMac || gpuSessionUsable || physicalMemoryBytes == 0 || physicalMemoryBytes >= kCoreMlAutoMinMemoryBytes) {
     return {};
   }
   const auto gib = physicalMemoryBytes / (1024ull * 1024 * 1024);
@@ -72,13 +72,14 @@ std::string vocalModelCpuWarning(const std::uint64_t physicalMemoryBytes, const 
          "a CPU) from the Model Hub, or leave Vocal Model off.";
 }
 
-std::string vocalModelCpuWarning() {
+std::string vocalModelCpuWarning(const bool lightModelActive) {
 #if JUCE_MAC
   std::string provider;
   const bool gpuUsable = gpuTensorSessionAvailable(&provider);
   const auto physicalBytes = static_cast<std::uint64_t>(juce::SystemStats::getMemorySizeInMegabytes()) * 1024 * 1024;
-  return vocalModelCpuWarning(physicalBytes, gpuUsable, true);
+  return vocalModelCpuWarning(physicalBytes, gpuUsable, true, lightModelActive);
 #else
+  (void)lightModelActive;
   return {};
 #endif
 }

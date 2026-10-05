@@ -15,6 +15,9 @@ namespace automix::ai {
 // the mix phase is kept and the model's output is applied as a ratio mask.
 inline constexpr const char* kUmxVocalsRepoId = "MixDirective/open-unmix-umxhq-vocals-onnx";
 inline constexpr const char* kUmxVocalsFile = "model.onnx";
+// Pinned so a later push to the repo cannot change what installs; bump both deliberately.
+inline constexpr const char* kUmxVocalsRevision = "e06097d3193a4c3168b5ddd2a479a680b1176c16";
+inline constexpr const char* kUmxVocalsSha256 = "f27742bb52b24cb039614dc76d0764e279df3eb2a9d6daa82c6daee3369ec747";
 inline constexpr const char* kUmxVocalsIntendedUse =
     "Vocal separation (Open-Unmix UMX-HQ, 36 MB, CPU friendly). Lower quality than BS-RoFormer but "
     "needs little memory. The graph produces vocals only; the instrumental stem is the residual "

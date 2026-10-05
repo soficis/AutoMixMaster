@@ -169,12 +169,13 @@ TEST_CASE("CoreML and ANE are opt-in for auto on low-memory Macs", "[gpu][tensor
 TEST_CASE("Vocal model warns about CPU only on low-memory Macs", "[gpu][coreml]") {
   using automix::ai::vocalModelCpuWarning;
   constexpr std::uint64_t GiB = 1024ull * 1024 * 1024;
-  CHECK_FALSE(vocalModelCpuWarning(8 * GiB, false, true).empty());
-  CHECK(vocalModelCpuWarning(8 * GiB, false, true).find("8 GB") != std::string::npos);
-  CHECK(vocalModelCpuWarning(8 * GiB, true, true).empty());    // a GPU session is usable
-  CHECK(vocalModelCpuWarning(16 * GiB, false, true).empty());  // roomy
-  CHECK(vocalModelCpuWarning(8 * GiB, false, false).empty());  // not a Mac: no measurement behind it
-  CHECK(vocalModelCpuWarning(0, false, true).empty());         // unknown memory
+  CHECK_FALSE(vocalModelCpuWarning(8 * GiB, false, true, false).empty());
+  CHECK(vocalModelCpuWarning(8 * GiB, false, true, false).find("8 GB") != std::string::npos);
+  CHECK(vocalModelCpuWarning(8 * GiB, true, true, false).empty());    // a GPU session is usable
+  CHECK(vocalModelCpuWarning(16 * GiB, false, true, false).empty());  // roomy
+  CHECK(vocalModelCpuWarning(8 * GiB, false, false, false).empty());  // not a Mac: no measurement behind it
+  CHECK(vocalModelCpuWarning(0, false, true, false).empty());         // unknown memory
+  CHECK(vocalModelCpuWarning(8 * GiB, false, true, true).empty());    // Open-Unmix already active
 }
 
 TEST_CASE("tensorProviderCandidates allow-list filtering", "[gpu][tensor]") {

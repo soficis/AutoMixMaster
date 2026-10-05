@@ -25,6 +25,7 @@
 #include "ai/ModelManager.h"
 #include "ai/ModelPackLoader.h"
 #include "ai/ModelStrategy.h"
+#include "ai/UmxPack.h"
 #include "app/controllers/ModelController.h"
 #include "ai/ModelLicensePolicy.h"
 #include "app/ui/HeroWaveform.h"
@@ -1007,6 +1008,25 @@ TEST_CASE("Stem separator only claims model-backed separation when a model weigh
   const auto claim = content.find("result.usedModel = true;", gateEnd);
   REQUIRE(claim != std::string::npos);
   REQUIRE(claim - gateEnd < 400);
+}
+
+TEST_CASE("Curated pin overrides the live revision and hash for Open-Unmix only", "[ai][hub]") {
+  automix::ai::HubModelInfo umx;
+  umx.repoId = automix::ai::kUmxVocalsRepoId;
+  umx.revision = "main";
+  umx.fileSha256[automix::ai::kUmxVocalsFile] = "bogus";
+  automix::ai::applyCuratedPin(umx);
+  CHECK(umx.revision == automix::ai::kUmxVocalsRevision);
+  CHECK(umx.fileSha256.at(automix::ai::kUmxVocalsFile) == automix::ai::kUmxVocalsSha256);
+
+  automix::ai::HubModelInfo other;
+  other.repoId = "xycld/BS-RoFormer-ONNX";
+  other.revision = "main";
+  other.fileSha256["model.onnx"] = "bogus";
+  automix::ai::applyCuratedPin(other);
+  CHECK(other.revision == "main");
+  CHECK(other.fileSha256.at("model.onnx") == "bogus");
+  CHECK(other.fileSha256.size() == 1);
 }
 
 TEST_CASE("Curated hub includes ITO-Master mapped to mastering-assistant with three-asset pack metadata", "[ai][licensing]") {

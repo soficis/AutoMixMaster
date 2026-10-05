@@ -605,6 +605,13 @@ std::string HuggingFaceModelHub::resolveToken(const std::string& explicitToken) 
   return "";
 }
 
+void applyCuratedPin(HubModelInfo& info) {
+  if (info.repoId == kUmxVocalsRepoId) {
+    info.revision = kUmxVocalsRevision;
+    info.fileSha256[kUmxVocalsFile] = kUmxVocalsSha256;
+  }
+}
+
 std::optional<HubModelInfo> HuggingFaceModelHub::modelInfo(const std::string& modelIdOrRepoId,
                                                            const std::string& token) const {
   auto repoId = trim(modelIdOrRepoId);
@@ -672,6 +679,8 @@ std::optional<HubModelInfo> HuggingFaceModelHub::modelInfo(const std::string& mo
       }
     }
   }
+
+  applyCuratedPin(info);
 
   // Only repos with a GPU variant pay for the probe.
   const bool preferGpuBuild = info.repoId == kBsRoformerRepoId && bsRoformerGpuBuildQualifies();

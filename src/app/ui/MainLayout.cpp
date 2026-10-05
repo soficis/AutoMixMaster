@@ -1081,7 +1081,10 @@ void MainLayout::wireControlDeckCallbacks() {
     const bool enabled = controlDeck_->getTensorSeparationToggle().getToggleState();
     sessionManager_.session().renderSettings.tensorSeparationEnabled = enabled;
     if (enabled) {
-      if (const auto warning = ai::vocalModelCpuWarning(); !warning.empty()) {
+      const auto separationPack = resolveActiveModelPackForTask("separation");
+      const bool lightModelActive = separationPack.has_value() && separationPack->tensorContract.has_value() &&
+                                    separationPack->tensorContract->engine == "open_unmix";
+      if (const auto warning = ai::vocalModelCpuWarning(lightModelActive); !warning.empty()) {
         taskOrchestrator_->appendHistory("Vocal Model warning: " + juce::String(warning));
         juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Vocal Model will be slow",
                                                juce::String(warning));

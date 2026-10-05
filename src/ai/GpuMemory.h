@@ -44,10 +44,12 @@ bool coreMlAutoAllowed(std::uint64_t physicalMemoryBytes, bool explicitOptIn);
 // Warning for the Vocal Model toggle: empty unless the model would run on the CPU of a
 // low-memory Mac (below kCoreMlAutoMinMemoryBytes, no GPU session usable). The 8 GiB
 // MacBook Neo needed over 5 minutes per chunk on the CPU against about 25 s on a desktop.
-std::string vocalModelCpuWarning(std::uint64_t physicalMemoryBytes, bool gpuSessionUsable, bool isMac);
+// Empty too when the light vocal model (Open-Unmix) is already the active separation pack.
+std::string vocalModelCpuWarning(std::uint64_t physicalMemoryBytes, bool gpuSessionUsable, bool isMac,
+                                 bool lightModelActive);
 
 // Live version for this machine; probes for a usable GPU session.
-std::string vocalModelCpuWarning();
+std::string vocalModelCpuWarning(bool lightModelActive);
 
 // Live policy for this machine. Always true off macOS, where CoreML does not exist.
 bool coreMlAutoAllowed();

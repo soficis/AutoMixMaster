@@ -7,6 +7,12 @@ namespace automix::app {
 
 using namespace theme;
 
+juce::String GlowMeters::formatReadout(const juce::String& prefix, const double value, const juce::String& unit) {
+  if (!std::isfinite(value) || value <= kNoSignalDb)
+    return prefix + "--" + unit;
+  return prefix + juce::String(value, 1) + unit;
+}
+
 GlowMeters::GlowMeters() {
   setTitle("Loudness meters");
   lufsLabel_.setText("I: -- LUFS", juce::dontSendNotification);
@@ -108,10 +114,10 @@ void GlowMeters::timerCallback() {
   }
 
   // Pre-allocated string updates (avoid ostringstream allocation per frame)
-  lufsText_ = "I: " + juce::String(integratedLufs_, 1) + " LUFS";
-  stText_ = "S: " + juce::String(shortTermLufs_, 1) + " LUFS";
-  tpText_ = "TP: " + juce::String(truePeakDbtp_, 1) + " dBTP";
-  momentText_ = "M: " + juce::String(momentaryLufs_, 1) + " LUFS";
+  lufsText_ = formatReadout("I: ", integratedLufs_, " LUFS");
+  stText_ = formatReadout("S: ", shortTermLufs_, " LUFS");
+  tpText_ = formatReadout("TP: ", truePeakDbtp_, " dBTP");
+  momentText_ = formatReadout("M: ", momentaryLufs_, " LUFS");
 
   lufsLabel_.setText(lufsText_, juce::dontSendNotification);
   shortTermLabel_.setText(stText_, juce::dontSendNotification);

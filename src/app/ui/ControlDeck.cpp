@@ -188,8 +188,8 @@ void ControlDeck::resized() {
   auto area = getLocalBounds().reduced(static_cast<int>(metrics::paddingMedium));
 
   // Three-column layout
-  int stemWidth = std::max(200, area.getWidth() * 35 / 100);
-  int meterWidth = std::max(100, area.getWidth() * 15 / 100);
+  int stemWidth = juce::jlimit(200, 360, area.getWidth() * 28 / 100);
+  int meterWidth = juce::jlimit(110, 180, area.getWidth() * 13 / 100);
 
   auto stemArea = area.removeFromLeft(stemWidth);
   area.removeFromLeft(spacing::gapMedium);
@@ -201,26 +201,49 @@ void ControlDeck::resized() {
   glowMeters_->setBounds(meterArea);
 
   // Action row
-  // Slots: import(1) | autoMix(1) | autoMaster(1) | Mix+Master(2) | batch(1) | export(1) = 7 slots
+  // Slots: import(1) | autoMix(1) | autoMaster(1) | Mix+Master(1.5) | batch(1) | export(1) = 6.5 slots
   auto actionRow = centerArea.removeFromTop(44);
-  const int slotW = actionRow.getWidth() / 7;
+  const int slotW = juce::roundToInt(static_cast<float>(actionRow.getWidth()) / 6.5f);
+  const bool compact = slotW < 90;
+  for (auto* b : {&importButton_, &autoMixButton_, &autoMasterButton_, &autoMixMasterButton_,
+                  &batchButton_, &exportButton_})
+    b->getProperties().set("compact", compact);
   importButton_.setBounds(actionRow.removeFromLeft(slotW).reduced(2));
   autoMixButton_.setBounds(actionRow.removeFromLeft(slotW).reduced(2));
   autoMasterButton_.setBounds(actionRow.removeFromLeft(slotW).reduced(2));
-  autoMixMasterButton_.setBounds(actionRow.removeFromLeft(slotW * 2).reduced(2));
+  autoMixMasterButton_.setBounds(actionRow.removeFromLeft(juce::roundToInt(static_cast<float>(slotW) * 1.5f)).reduced(2));
   batchButton_.setBounds(actionRow.removeFromLeft(slotW).reduced(2));
   exportButton_.setBounds(actionRow.reduced(2));
 
   centerArea.removeFromTop(spacing::gapSmall);
 
   // Always-visible context rows: Profile/Master/Platform, then the separation row
-  auto settingsRow1 = centerArea.removeFromTop(28);
-  profileLabel_.setBounds(settingsRow1.removeFromLeft(50).reduced(1));
-  profileBox_.setBounds(settingsRow1.removeFromLeft(200).reduced(1));
-  masterPresetLabel_.setBounds(settingsRow1.removeFromLeft(50).reduced(1));
-  masterPresetBox_.setBounds(settingsRow1.removeFromLeft(170).reduced(1));
-  platformPresetLabel_.setBounds(settingsRow1.removeFromLeft(64).reduced(1));
-  platformPresetBox_.setBounds(settingsRow1.removeFromLeft(150).reduced(1));
+  // Pairs wrap onto a new row when they do not fit; combos shrink toward their minimum first.
+  {
+    struct Pair {
+      juce::Label* label;
+      juce::ComboBox* box;
+      int labelW, prefW, minW;
+    };
+    const Pair pairs[] = {{&profileLabel_, &profileBox_, 50, 200, 150},
+                          {&masterPresetLabel_, &masterPresetBox_, 50, 170, 130},
+                          {&platformPresetLabel_, &platformPresetBox_, 64, 150, 120}};
+    const int rowWidth = centerArea.getWidth();
+    auto row = centerArea.removeFromTop(28);
+    int x = 0;
+    for (const auto& p : pairs) {
+      const int avail = rowWidth - x - p.labelW;
+      if (x > 0 && avail < p.minW) {
+        row = centerArea.removeFromTop(28);
+        x = 0;
+      }
+      const int comboW = std::min(p.prefW, std::max(p.minW, rowWidth - x - p.labelW));
+      p.label->setBounds(row.getX() + x, row.getY(), p.labelW, row.getHeight());
+      p.label->setBounds(p.label->getBounds().reduced(1));
+      p.box->setBounds(juce::Rectangle<int>(row.getX() + x + p.labelW, row.getY(), comboW, row.getHeight()).reduced(1));
+      x += p.labelW + comboW;
+    }
+  }
 
   auto separationRow = centerArea.removeFromTop(28);
   separatedStemsToggle_.setBounds(separationRow.removeFromLeft(180).reduced(1));

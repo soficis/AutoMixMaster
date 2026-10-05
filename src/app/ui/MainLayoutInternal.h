@@ -257,6 +257,15 @@ class SettingsPanel final : public juce::Component {
     addAndMakeVisible(gpuStatusLabel_);
     addChildComponent(gpuButton_);
 
+    for (auto* heading : {&exportHeading_, &gpuHeading_, &audioHeading_}) {
+      heading->setFont(theme::typography::subhead());
+      heading->setColour(juce::Label::textColourId, theme::colour(theme::colours::textMuted));
+      addAndMakeVisible(*heading);
+    }
+    exportHeading_.setText("Export", juce::dontSendNotification);
+    gpuHeading_.setText("GPU acceleration", juce::dontSendNotification);
+    audioHeading_.setText("Audio output", juce::dontSendNotification);
+
     reportSidecarToggle_.setButtonText("Write .report.json sidecar next to each exported file");
     reportSidecarToggle_.setTooltip("Disable to export only audio files without per-file JSON report sidecars.");
     reportSidecarToggle_.setToggleState(writeReportJsonSidecar, juce::dontSendNotification);
@@ -273,8 +282,10 @@ class SettingsPanel final : public juce::Component {
   void resized() override {
     styleAudioSelectorButtons(audioSelector_);
     auto area = getLocalBounds().reduced(10);
+    exportHeading_.setBounds(area.removeFromTop(24));
     reportSidecarToggle_.setBounds(area.removeFromTop(28));
-    area.removeFromTop(6);
+    area.removeFromTop(10);
+    gpuHeading_.setBounds(area.removeFromTop(24));
     auto gpuRow = area.removeFromTop(28);
     if (gpuButton_.isVisible()) {
       gpuButton_.setBounds(gpuRow.removeFromRight(130));
@@ -282,6 +293,7 @@ class SettingsPanel final : public juce::Component {
     }
     gpuStatusLabel_.setBounds(gpuRow);
     area.removeFromTop(10);
+    audioHeading_.setBounds(area.removeFromTop(24));
     audioSelector_.setBounds(area);
   }
 
@@ -301,6 +313,9 @@ class SettingsPanel final : public juce::Component {
   juce::AudioDeviceSelectorComponent audioSelector_;
   juce::ToggleButton reportSidecarToggle_;
   std::function<void(bool)> onWriteReportSidecarChanged_;
+  juce::Label exportHeading_;
+  juce::Label gpuHeading_;
+  juce::Label audioHeading_;
   juce::Label gpuStatusLabel_;
   juce::TextButton gpuButton_;
   std::function<void()> onGpuButton_;

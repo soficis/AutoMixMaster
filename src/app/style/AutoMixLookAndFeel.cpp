@@ -83,7 +83,13 @@ void AutoMixLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& b
   const auto variant = variantOf(button);
   const bool enabled = button.isEnabled();
 
-  if (variant == buttonVariant::secondary) {
+  if (!enabled) {
+    // Disabled: no fill, outline only for primary/secondary so it never out-shouts an enabled button.
+    if (variant != buttonVariant::quiet && variant != buttonVariant::danger) {
+      g.setColour(colour(colours::surfaceBorder));
+      g.drawRoundedRectangle(bounds, cornerSize, 1.0f);
+    }
+  } else if (variant == buttonVariant::secondary) {
     juce::Colour bg = colour(colours::surfaceLight);
     if (enabled && shouldDrawButtonAsDown)
       bg = bg.darker(0.1f);
@@ -101,9 +107,7 @@ void AutoMixLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& b
     }
   } else {
     juce::Colour bg;
-    if (!enabled) {
-      bg = colour(colours::surfaceBorder);
-    } else if (shouldDrawButtonAsDown) {
+    if (shouldDrawButtonAsDown) {
       bg = colour(colours::primaryPressed);
     } else if (shouldDrawButtonAsHighlighted) {
       bg = colour(colours::primary).interpolatedWith(colour(colours::primaryHover), 0.6f);
@@ -399,7 +403,9 @@ void AutoMixLookAndFeel::drawToggleButton(juce::Graphics& g, juce::ToggleButton&
 // Fonts
 // ─────────────────────────────────────────────────────────────────
 
-juce::Font AutoMixLookAndFeel::getTextButtonFont(juce::TextButton& /*button*/, int /*buttonHeight*/) {
+juce::Font AutoMixLookAndFeel::getTextButtonFont(juce::TextButton& button, int /*buttonHeight*/) {
+  if (static_cast<bool>(button.getProperties().getWithDefault("compact", false)))
+    return typography::caption();
   return typography::body();
 }
 

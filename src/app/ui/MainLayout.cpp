@@ -146,6 +146,7 @@ MainLayout::MainLayout() {
   wireControlDeckCallbacks();
   wireHeroWaveformCallbacks();
 
+  taskCenter_->onPreferredHeightChanged = [this] { resized(); };
   taskCenter_->onCancel = [this] { taskOrchestrator_->cancelActiveTask(); };
 
   // 5. Audio device & transport
@@ -606,7 +607,7 @@ void MainLayout::resized() {
   fb.items.add(juce::FlexItem(*headerBar_).withHeight(static_cast<float>(kHeaderHeight)));
   fb.items.add(juce::FlexItem(*heroWaveform_).withFlex(1.5f).withMinHeight(120.0f));
   fb.items.add(juce::FlexItem(*controlDeck_).withFlex(2.5f).withMinHeight(180.0f));
-  fb.items.add(juce::FlexItem(*taskCenter_).withFlex(1.2f).withMinHeight(160.0f));
+  fb.items.add(juce::FlexItem(*taskCenter_).withHeight(static_cast<float>(taskCenter_->getPreferredHeight())));
 
   fb.performLayout(area);
 }
@@ -1814,8 +1815,9 @@ void MainLayout::onModelsDialog() {
   options.escapeKeyTriggersCloseButton = true;
   options.useNativeTitleBar = true;
   options.resizable = true;
-  options.launchAsync();
-  taskOrchestrator_->appendHistory("Model browser opened");
+  panel->setSize(760, 560);
+  if (auto* dialog = options.launchAsync())
+    dialog->setResizeLimits(640, 460, 4096, 4096);
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1834,7 +1836,7 @@ void MainLayout::onSettings() {
                                              : "Export sidecar JSON disabled");
       },
       gpuRuntimeStatusText(), gpuRuntimeButtonText(), [this] { onGpuRuntimeButton(); });
-  settingsPanel->setSize(540, 430);
+  settingsPanel->setSize(540, 520);
 
   juce::DialogWindow::LaunchOptions options;
   options.content.setOwned(settingsPanel);
@@ -1844,7 +1846,6 @@ void MainLayout::onSettings() {
   options.useNativeTitleBar = true;
   options.resizable = false;
   options.launchAsync();
-  taskOrchestrator_->appendHistory("Settings dialog opened");
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -2483,9 +2484,23 @@ juce::String MainLayout::gpuRuntimeButtonText() const {
 void MainLayout::onGpuRuntimeButton() {
   namespace pack = ai::GpuRuntimePack;
   if (pack::isInstalled(pack::defaultRoot())) {
-    const auto removed = pack::uninstall();
-    ai::invalidateTensorProviderProbeCache();
-    taskOrchestrator_->appendHistory(juce::String(removed.message));
+    juce::AlertWindow::showAsync(
+        juce::MessageBoxOptions::makeOptionsOkCancel(
+            juce::MessageBoxIconType::WarningIcon,
+            "Remove GPU runtime?",
+            "This deletes the downloaded NVIDIA libraries. The vocal model will run on the CPU until you install them "
+            "again.",
+            "Remove",
+            "Cancel"),
+        [safe = juce::Component::SafePointer<MainLayout>(this)](const int result) {
+          if (result == 0 || safe == nullptr) {
+            return;
+          }
+          namespace pack = ai::GpuRuntimePack;
+          const auto removed = pack::uninstall();
+          ai::invalidateTensorProviderProbeCache();
+          safe->taskOrchestrator_->appendHistory(juce::String(removed.message));
+        });
     return;
   }
   gpuRuntimeOffered_ = true;  // asked explicitly; no need to offer again this run

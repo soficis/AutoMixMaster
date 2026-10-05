@@ -55,7 +55,14 @@ public:
   /// Current item-status counts text ("completed/failed/total").
   juce::String batchCountsText() const;
 
+  /// Height needed for the top row, the batch strip (when active) and the log (when shown).
+  int getPreferredHeight() const;
+  bool isBatchStripVisible() const;
+  bool isLogVisible() const;
+  bool isProgressPercentVisible() const { return progressLabel_.isVisible(); }
+
   // Callbacks
+  std::function<void()> onPreferredHeightChanged;
   std::function<void()> onCancel;
   std::function<void(int fromIndex, int toIndex)> onQueueItemMoved;
   std::function<void(int index)> onQueueItemRemoved;
@@ -65,6 +72,8 @@ private:
   static constexpr int kHistoryTrimChunkLines = 300;
   static constexpr int kQueueItemHeight = 24;
   static constexpr int kMaxVisibleQueueItems = 8;
+  static constexpr int kTopRowHeight = 24;
+  static constexpr int kLogAreaHeight = 160;
 
   static juce::Colour stateColour(TaskState state);
   static juce::Colour stateTextColour(TaskState state);
@@ -72,12 +81,15 @@ private:
   void drawQueueItem(juce::Graphics& g, juce::Rectangle<float> bounds, const BatchQueueItem& item, int index);
   static juce::String formatEta(const juce::RelativeTime& eta);
   void updateBatchSummary();
+  void refreshBatchVisibility();
+  void setLogVisible(bool visible);
 
   juce::Label taskLabel_;
   juce::Label stateBadge_;
   double progressValue_ = 0.0;
   juce::ProgressBar progressBar_;
   juce::Label progressLabel_;
+  juce::TextButton toggleLogButton_{"Show log"};
   juce::TextButton copyLogButton_{"Copy Log"};
   juce::TextButton cancelButton_{"Cancel"};
   juce::TextEditor historyEditor_;
@@ -97,6 +109,8 @@ private:
   juce::ProgressBar batchProgressBar_;
 
   TaskState currentState_ = TaskState::Idle;
+  bool batchActive_ = false;
+  bool logVisible_ = false;
   bool hasHistoryEntries_ = false;
   int historyLineCount_ = 0;
 

@@ -17,6 +17,7 @@ class LameDownloader {
 
   struct PinnedSource {
     std::string platformKey;
+    std::string type; // "zip", "deb" or "ghcr"
     std::string url;
     std::string sha256;
   };
@@ -26,6 +27,9 @@ class LameDownloader {
   static bool cachedBinaryIsVerified();
   /// Every built-in download with the SHA-256 it must match, for all platforms.
   static std::vector<PinnedSource> pinnedSources();
+  /// Parses the published pin list (assets/lame-pins.json). Any entry that is malformed or
+  /// points outside the known download hosts rejects the whole list (returns empty).
+  static std::vector<PinnedSource> parsePinManifest(const std::string& jsonText, std::string* detail);
   /// Checks a downloaded file against its pinned SHA-256; a mismatch deletes the file.
   static bool verifyDownload(const std::filesystem::path& file, const std::string& expectedSha256, std::string* detail);
   static bool isSupportedOnCurrentPlatform();

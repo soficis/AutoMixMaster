@@ -51,6 +51,18 @@ struct DownloadSource {
 
 const std::string kGhcrBlobBaseUrl = "https://ghcr.io/v2/homebrew/core/lame/blobs/sha256:";
 
+// The pin list on the default branch, kept current by tools/update_lame_pins.py.
+// It lets installed copies follow upstream LAME updates without a release. It
+// can only name files on the hosts below, so changing it is not enough to make
+// the app run something else: the named host must also serve the matching file.
+constexpr const char* kPinManifestUrl =
+    "https://raw.githubusercontent.com/soficis/AutoMixMaster/master/assets/lame-pins.json";
+constexpr int kPinManifestTimeoutMs = 8000;
+constexpr const char* kAllowedDownloadPrefixes[] = {
+    "https://www.rarewares.org/files/mp3/",
+    "https://deb.debian.org/debian/pool/main/l/lame/",
+};
+
 struct TempDirectory {
   explicit TempDirectory(const std::string& prefix) {
     const auto base =
@@ -207,9 +219,36 @@ std::vector<DownloadSource> sourcesForPlatform(const std::string& key, const std
   return {};
 }
 
+std::optional<nlohmann::json> fetchJson(const std::string& url,
+                                        const std::string& extraHeaders,
+                                        std::string* detail,
+                                        int timeoutMs = 45000);
+
+// Sources for this platform from the published pin list, or none when it cannot
+// be fetched or does not validate.
+std::vector<DownloadSource> publishedSources() {
+  const auto manifest = fetchJson(kPinManifestUrl, "", nullptr, kPinManifestTimeoutMs);
+  if (!manifest.has_value()) {
+    return {};
+  }
+
+  std::vector<DownloadSource> sources;
+  for (const auto& pin : LameDownloader::parsePinManifest(manifest->dump(), nullptr)) {
+    if (pin.platformKey != platformKey()) {
+      continue;
+    }
+    const auto type = pin.type == "zip" ? SourceType::Zip : pin.type == "deb" ? SourceType::Debian : SourceType::Ghcr;
+    sources.push_back({type, type == SourceType::Ghcr ? std::string() : pin.url, pin.sha256});
+  }
+  return sources;
+}
+
 // AUTOMIX_LAME_DOWNLOAD_URL and AUTOMIX_LAME_VERSION point at files the built-in
 // hashes do not cover, so they only work together with AUTOMIX_LAME_DOWNLOAD_SHA256.
-std::vector<DownloadSource> platformSources() {
+// With `allowPublished`, the published pin list is tried first and the built-in
+// pins stay as the fallback (offline, list unreachable, or a newer build that
+// does not run on this machine).
+std::vector<DownloadSource> platformSources(const bool allowPublished = false) {
   const auto manualSha = toLower(readEnvironment("AUTOMIX_LAME_DOWNLOAD_SHA256").value_or(""));
   if (const auto manualUrl = readEnvironment("AUTOMIX_LAME_DOWNLOAD_URL"); manualUrl.has_value()) {
     const auto lower = toLower(*manualUrl);
@@ -228,6 +267,19 @@ std::vector<DownloadSource> platformSources() {
     for (auto& source : sources) {
       source.sha256 = manualSha;
     }
+    return sources;
+  }
+
+  if (allowPublished && !flagEnabled("AUTOMIX_LAME_SKIP_PIN_UPDATE")) {
+    auto published = publishedSources();
+    for (auto& source : sources) {
+      const bool known = std::any_of(published.begin(), published.end(),
+                                     [&source](const DownloadSource& other) { return other.sha256 == source.sha256; });
+      if (!known) {
+        published.push_back(std::move(source));
+      }
+    }
+    return published;
   }
   return sources;
 }
@@ -349,11 +401,12 @@ bool downloadVerified(const std::string& url,
 
 std::optional<nlohmann::json> fetchJson(const std::string& url,
                                         const std::string& extraHeaders,
-                                        std::string* detail) {
+                                        std::string* detail,
+                                        const int timeoutMs) {
   int statusCode = 0;
   const auto baseOptions =
       juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
-          .withConnectionTimeoutMs(45000)
+          .withConnectionTimeoutMs(timeoutMs)
           .withNumRedirectsToFollow(8)
           .withStatusCode(&statusCode);
   const auto input = juce::URL(url).createInputStream(
@@ -812,9 +865,61 @@ std::vector<LameDownloader::PinnedSource> LameDownloader::pinnedSources() {
   for (const char* key : {"win32-x64", "win32-ia32", "win32-arm64", "linux-x64", "linux-arm64", "linux-arm",
                           "darwin-x64", "darwin-arm64"}) {
     for (const auto& source : sourcesForPlatform(key, kDefaultLameVersion)) {
-      pins.push_back({key, source.type == SourceType::Ghcr ? kGhcrBlobBaseUrl + source.sha256 : source.url,
+      const char* type = source.type == SourceType::Zip ? "zip" : source.type == SourceType::Debian ? "deb" : "ghcr";
+      pins.push_back({key, type, source.type == SourceType::Ghcr ? kGhcrBlobBaseUrl + source.sha256 : source.url,
                       source.sha256});
     }
+  }
+  return pins;
+}
+
+std::vector<LameDownloader::PinnedSource> LameDownloader::parsePinManifest(const std::string& jsonText,
+                                                                           std::string* detail) {
+  const auto reject = [detail](const std::string& reason) {
+    if (detail != nullptr) {
+      *detail = "LAME pin list rejected: " + reason;
+    }
+    return std::vector<PinnedSource>{};
+  };
+
+  const auto json = nlohmann::json::parse(jsonText, nullptr, false);
+  if (!json.is_object() || json.value("schema", 0) != 1 || !json.contains("sources") || !json["sources"].is_array()) {
+    return reject("not a schema 1 pin list.");
+  }
+
+  std::vector<PinnedSource> pins;
+  for (const auto& entry : json["sources"]) {
+    if (!entry.is_object() || !entry.value("platform", nlohmann::json()).is_string() ||
+        !entry.value("type", nlohmann::json()).is_string() || !entry.value("sha256", nlohmann::json()).is_string() ||
+        !entry.value("url", nlohmann::json("")).is_string()) {
+      return reject("an entry has missing or non-text fields.");
+    }
+
+    PinnedSource pin;
+    pin.platformKey = entry["platform"].get<std::string>();
+    pin.type = entry["type"].get<std::string>();
+    pin.sha256 = toLower(entry["sha256"].get<std::string>());
+    if (!isSha256Hex(pin.sha256)) {
+      return reject("an entry has no valid SHA-256.");
+    }
+
+    if (pin.type == "ghcr") {
+      pin.url = kGhcrBlobBaseUrl + pin.sha256;
+    } else if (pin.type == "zip" || pin.type == "deb") {
+      pin.url = entry.value("url", "");
+      const bool allowedHost = std::any_of(std::begin(kAllowedDownloadPrefixes), std::end(kAllowedDownloadPrefixes),
+                                           [&pin](const char* prefix) { return pin.url.rfind(prefix, 0) == 0; });
+      const auto fileName = pin.url.substr(pin.url.find_last_of('/') + 1);
+      const bool plainFile = !fileName.empty() && fileName.ends_with("." + pin.type) &&
+                             pin.url.find_first_of("?#\\%") == std::string::npos &&
+                             pin.url.find("..") == std::string::npos;
+      if (!allowedHost || !plainFile) {
+        return reject("an entry points outside the known download locations: " + pin.url);
+      }
+    } else {
+      return reject("unknown source type '" + pin.type + "'.");
+    }
+    pins.push_back(std::move(pin));
   }
   return pins;
 }
@@ -859,7 +964,7 @@ LameDownloader::DownloadResult LameDownloader::ensureAvailable(const bool forceD
     return result;
   }
 
-  const auto sources = platformSources();
+  const auto sources = platformSources(true);
   if (sources.empty()) {
     result.detail = "No fallback LAME downloader source configured for this platform.";
     return result;

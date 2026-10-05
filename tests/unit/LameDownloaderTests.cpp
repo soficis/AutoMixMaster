@@ -1,5 +1,6 @@
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <set>
 #include <string>
 
@@ -26,6 +27,60 @@ TEST_CASE("Every LAME download source is pinned to a SHA-256 over HTTPS", "[util
     INFO(key);
     CHECK(platforms.count(key) == 1);
   }
+}
+
+TEST_CASE("The published LAME pin list in the repo is valid and covers every platform", "[util][lame]") {
+  std::ifstream file(std::filesystem::path(AUTOMIX_SOURCE_DIR) / "assets" / "lame-pins.json", std::ios::binary);
+  REQUIRE(file.is_open());
+  const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+
+  std::string detail;
+  const auto pins = LameDownloader::parsePinManifest(text, &detail);
+  INFO(detail);
+  REQUIRE(!pins.empty());
+
+  std::set<std::string> platforms;
+  for (const auto& pin : pins) {
+    platforms.insert(pin.platformKey);
+  }
+  for (const auto& builtIn : LameDownloader::pinnedSources()) {
+    INFO(builtIn.platformKey);
+    CHECK(platforms.count(builtIn.platformKey) == 1);
+  }
+}
+
+TEST_CASE("A LAME pin list that could redirect the download is rejected whole", "[util][lame]") {
+  const std::string sha(64, 'a');
+  const auto list = [](const std::string& entry) { return R"({"schema":1,"sources":[)" + entry + "]}"; };
+  const auto zip = [&sha](const std::string& url) {
+    return R"({"platform":"win32-x64","type":"zip","url":")" + url + R"(","sha256":")" + sha + R"("})";
+  };
+  const std::string good = zip("https://www.rarewares.org/files/mp3/lame4.0-x64.zip");
+
+  REQUIRE(LameDownloader::parsePinManifest(list(good), nullptr).size() == 1);
+  CHECK(LameDownloader::parsePinManifest(list(R"({"platform":"darwin-arm64","type":"ghcr","sha256":")" + sha + R"("})"),
+                                         nullptr)
+            .size() == 1);
+
+  std::string detail;
+  for (const auto& bad : {
+           zip("https://evil.example/lame.zip"),
+           zip("http://www.rarewares.org/files/mp3/lame.zip"),
+           zip("https://www.rarewares.org.evil.example/files/mp3/lame.zip"),
+           zip("https://www.rarewares.org/files/mp3/../../x/lame.zip"),
+           zip("https://www.rarewares.org/files/mp3/lame.exe"),
+           zip("https://www.rarewares.org/files/mp3/lame.zip?x=.zip"),
+           std::string(R"({"platform":"win32-x64","type":"zip","url":"https://www.rarewares.org/files/mp3/l.zip","sha256":"abc"})"),
+           std::string(R"({"platform":"win32-x64","type":"exe","url":"https://www.rarewares.org/files/mp3/l.zip","sha256":")") +
+               sha + R"("})",
+       }) {
+    INFO(bad);
+    // One bad entry poisons the list even next to a good one.
+    CHECK(LameDownloader::parsePinManifest(list(good + "," + bad), &detail).empty());
+    CHECK(!detail.empty());
+  }
+  CHECK(LameDownloader::parsePinManifest("not json", &detail).empty());
+  CHECK(LameDownloader::parsePinManifest(R"({"schema":2,"sources":[]})", &detail).empty());
 }
 
 TEST_CASE("A LAME download that does not match its pin is rejected and deleted", "[util][lame]") {

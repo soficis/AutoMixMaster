@@ -641,6 +641,9 @@ int commandGpuRuntime(const std::vector<std::string>& args) {
 }
 
 // model bench --provider <name> [--pack <dir>] [--runs N] [--warmup N] [--json] [--out <file>]
+//             [--skip-cpu-baseline]
+// Tensor packs print one progress line per run to stderr. --skip-cpu-baseline skips the CPU
+// reference (no parity check, no speedup); `--provider cpu` runs the CPU model once, not twice.
 // Exit codes: 0 ok, 1 pack load failure, 3 model load/execution failure,
 //             4 the model ran on a different provider than the one requested,
 //             5 one or more inference calls failed (latencies and parity are invalid).
@@ -650,6 +653,7 @@ int commandModelBench(const CommandArgs& args) {
   const int warmupRuns = std::clamp(parseIntArg(args, "--warmup").value_or(2), 0, 50);
   const int timedRuns = std::clamp(parseIntArg(args, "--runs").value_or(10), 1, 1000);
   const bool jsonOutput = hasFlag(args, "--json");
+  const bool skipCpuBaseline = hasFlag(args, "--skip-cpu-baseline");
 
   const std::filesystem::path packDir(packArg);
   automix::ai::ModelPackLoader loader;
@@ -669,6 +673,7 @@ int commandModelBench(const CommandArgs& args) {
   // A run that throws inside ORT still returns quickly with usedModel=false; its
   // latency is meaningless, so every call is checked and any failure voids the bench.
   int failedRuns = 0;
+  bool parityChecked = false;
   std::string firstFailure;
   const auto checkRun = [&](const auto& result) {
     if (!result.usedModel) {
@@ -677,73 +682,98 @@ int commandModelBench(const CommandArgs& args) {
     }
   };
 
+  const bool requestedIsCpu =
+      automix::ai::gpu::canonicalProviderName(providerArg) == automix::ai::gpu::kProviderCpu;
+
+  // The CPU reference feeds parity and speedup. Requesting cpu makes the reference the measurement.
+  const bool runCpuBaseline = !skipCpuBaseline || requestedIsCpu;
+
   if (isTensor) {
-    automix::ai::OnnxTensorInference cpuInference;
-    cpuInference.setTensorContract(pack.tensorContract);
-    cpuInference.setExecutionProvider("cpu");
-    if (!cpuInference.loadModel(pack.rootPath / pack.modelFile)) {
-      std::cerr << "ERROR: could not load tensor model on CPU: " << cpuInference.backendDiagnostics() << "\n";
-      return 3;
-    }
+    const auto timedRun = [&](auto& inference, const auto& bindings, const char* label, int index, int total,
+                              std::vector<double>& latencies) {
+      const auto start = std::chrono::steady_clock::now();
+      auto result = inference.run(bindings);
+      const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+      checkRun(result);
+      latencies.push_back(ms);
+      // stderr keeps --json stdout parseable.
+      std::cerr << "[bench] " << label << " " << index << "/" << total << ": " << ms << " ms" << std::endl;
+      return result;
+    };
+    const auto makeBindings = [](const automix::ai::OnnxTensorInference& inference) {
+      std::vector<automix::ai::TensorBinding> bindings;
+      for (const auto& spec : inference.inputSpecs()) {
+        size_t count = automix::ai::elementCount(spec).value_or(1024);
+        bindings.push_back(automix::ai::TensorBinding{
+            .expected = spec,
+            .data = std::vector<float>(count, 0.1f),
+        });
+      }
+      return bindings;
+    };
 
-    const auto inputSpecs = cpuInference.inputSpecs();
-    std::vector<automix::ai::TensorBinding> cpuBindings;
-    for (const auto& spec : inputSpecs) {
-      size_t count = automix::ai::elementCount(spec).value_or(1024);
-      cpuBindings.push_back(automix::ai::TensorBinding{
-          .expected = spec,
-          .data = std::vector<float>(count, 0.1f),
-      });
-    }
-
-    for (int i = 0; i < warmupRuns; ++i) {
-      checkRun(cpuInference.run(cpuBindings));
-    }
+    std::vector<automix::ai::TensorBinding> bindings;
     automix::ai::TensorInferenceResult cpuResult;
-    for (int i = 0; i < timedRuns; ++i) {
-      const auto start = std::chrono::steady_clock::now();
-      cpuResult = cpuInference.run(cpuBindings);
-      const auto end = std::chrono::steady_clock::now();
-      checkRun(cpuResult);
-      cpuLatencies.push_back(std::chrono::duration<double, std::milli>(end - start).count());
-    }
-
-    automix::ai::OnnxTensorInference provInference;
-    provInference.setTensorContract(pack.tensorContract);
-    provInference.setExecutionProvider(providerArg);
-    // The bench deliberately ignores the pack's allow-list so it measures the requested provider.
-    provInference.setGpuProviderAllowList({});
-    if (!provInference.loadModel(pack.rootPath / pack.modelFile)) {
-      std::cerr << "ERROR: could not load tensor model with provider '" << providerArg
-                << "': " << provInference.backendDiagnostics() << "\n";
-      return 3;
-    }
-    actualProvider = provInference.activeExecutionProvider();
-    providerBackendDiagnostics = provInference.backendDiagnostics();
-
-    std::vector<automix::ai::TensorBinding> provBindings = cpuBindings;
-
-    for (int i = 0; i < warmupRuns; ++i) {
-      checkRun(provInference.run(provBindings));
-    }
-    automix::ai::TensorInferenceResult provResult;
-    for (int i = 0; i < timedRuns; ++i) {
-      const auto start = std::chrono::steady_clock::now();
-      provResult = provInference.run(provBindings);
-      const auto end = std::chrono::steady_clock::now();
-      checkRun(provResult);
-      provLatencies.push_back(std::chrono::duration<double, std::milli>(end - start).count());
-    }
-
-    for (size_t i = 0; i < cpuResult.outputs.size() && i < provResult.outputs.size(); ++i) {
-      const auto& cOut = cpuResult.outputs[i];
-      const auto& pOut = provResult.outputs[i];
-      const size_t sz = std::min(cOut.data.size(), pOut.data.size());
-      for (size_t j = 0; j < sz; ++j) {
-        double diff = std::abs(static_cast<double>(cOut.data[j]) - static_cast<double>(pOut.data[j]));
-        if (diff > maxDelta) maxDelta = diff;
+    automix::ai::OnnxTensorInference cpuInference;
+    if (runCpuBaseline) {
+      cpuInference.setTensorContract(pack.tensorContract);
+      cpuInference.setExecutionProvider("cpu");
+      if (!cpuInference.loadModel(pack.rootPath / pack.modelFile)) {
+        std::cerr << "ERROR: could not load tensor model on CPU: " << cpuInference.backendDiagnostics() << "\n";
+        return 3;
+      }
+      bindings = makeBindings(cpuInference);
+      for (int i = 0; i < warmupRuns; ++i) {
+        checkRun(cpuInference.run(bindings));
+        std::cerr << "[bench] cpu warmup " << (i + 1) << "/" << warmupRuns << " done" << std::endl;
+      }
+      for (int i = 0; i < timedRuns; ++i) {
+        cpuResult = timedRun(cpuInference, bindings, "cpu", i + 1, timedRuns, cpuLatencies);
       }
     }
+
+    if (requestedIsCpu) {
+      actualProvider = "cpu";
+      providerBackendDiagnostics = cpuInference.backendDiagnostics();
+      provLatencies = cpuLatencies;
+    } else {
+      automix::ai::OnnxTensorInference provInference;
+      provInference.setTensorContract(pack.tensorContract);
+      provInference.setExecutionProvider(providerArg);
+      // The bench deliberately ignores the pack's allow-list so it measures the requested provider.
+      provInference.setGpuProviderAllowList({});
+      if (!provInference.loadModel(pack.rootPath / pack.modelFile)) {
+        std::cerr << "ERROR: could not load tensor model with provider '" << providerArg
+                  << "': " << provInference.backendDiagnostics() << "\n";
+        return 3;
+      }
+      actualProvider = provInference.activeExecutionProvider();
+      providerBackendDiagnostics = provInference.backendDiagnostics();
+      if (bindings.empty()) {
+        bindings = makeBindings(provInference);
+      }
+
+      for (int i = 0; i < warmupRuns; ++i) {
+        checkRun(provInference.run(bindings));
+        std::cerr << "[bench] " << actualProvider << " warmup " << (i + 1) << "/" << warmupRuns << " done"
+                  << std::endl;
+      }
+      automix::ai::TensorInferenceResult provResult;
+      for (int i = 0; i < timedRuns; ++i) {
+        provResult = timedRun(provInference, bindings, actualProvider.c_str(), i + 1, timedRuns, provLatencies);
+      }
+
+      for (size_t i = 0; i < cpuResult.outputs.size() && i < provResult.outputs.size(); ++i) {
+        const auto& cOut = cpuResult.outputs[i];
+        const auto& pOut = provResult.outputs[i];
+        const size_t sz = std::min(cOut.data.size(), pOut.data.size());
+        for (size_t j = 0; j < sz; ++j) {
+          double diff = std::abs(static_cast<double>(cOut.data[j]) - static_cast<double>(pOut.data[j]));
+          if (diff > maxDelta) maxDelta = diff;
+        }
+      }
+    }
+    parityChecked = runCpuBaseline;
   } else {
     automix::ai::OnnxModelInference cpuInference;
     cpuInference.setExecutionProviderPreference("cpu");
@@ -825,7 +855,8 @@ int commandModelBench(const CommandArgs& args) {
 
   const bool providerMatches = automix::ai::gpu::benchProviderMatches(providerArg, actualProvider);
   const bool allRunsSucceeded = failedRuns == 0;
-  const bool shouldReportSpeedup = allRunsSucceeded &&
+  if (!isTensor) parityChecked = true;
+  const bool shouldReportSpeedup = allRunsSucceeded && parityChecked &&
       (automix::ai::gpu::canonicalProviderName(actualProvider) != automix::ai::gpu::kProviderCpu) && providerMatches;
   const double p90Ms = automix::ai::gpu::nearestRankPercentile(provLatencies, 0.9);
   const double cpuP90Ms = automix::ai::gpu::nearestRankPercentile(cpuLatencies, 0.9);
@@ -852,16 +883,19 @@ int commandModelBench(const CommandArgs& args) {
       {"medianLatencyMs", medianMs},
       {"minLatencyMs", minMs},
       {"maxLatencyMs", maxMs},
-      {"cpuMedianLatencyMs", cpuMedianMs},
-      {"maxDeltaVsCpu", maxDelta},
+      {"parityChecked", parityChecked},
       {"latenciesMs", provLatencies},
-      {"passedParity", allRunsSucceeded && maxDelta < 1e-3},
+      {"passedParity", allRunsSucceeded && parityChecked && maxDelta < 1e-3},
       {"failedRuns", failedRuns},
       {"providerMatches", providerMatches},
       {"packAllowList", pack.gpuProviders},
       {"p90LatencyMs", p90Ms},
-      {"cpuP90LatencyMs", cpuP90Ms},
   };
+  if (parityChecked) {
+    payload["maxDeltaVsCpu"] = maxDelta;
+    payload["cpuMedianLatencyMs"] = cpuMedianMs;
+    payload["cpuP90LatencyMs"] = cpuP90Ms;
+  }
 
   if (speedup.has_value()) {
     payload["speedupVsCpu"] = *speedup;
@@ -884,7 +918,11 @@ int commandModelBench(const CommandArgs& args) {
     std::cout << "  Timed runs: " << timedRuns << "\n";
     std::cout << "  Median latency: " << medianMs << " ms (min: " << minMs << " ms, max: " << maxMs << " ms)\n";
     std::cout << "  p90: " << p90Ms << " ms\n";
-    std::cout << "  CPU median latency: " << cpuMedianMs << " ms\n";
+    if (parityChecked) {
+      std::cout << "  CPU median latency: " << cpuMedianMs << " ms\n";
+    } else {
+      std::cout << "  CPU baseline: skipped (no parity check, no speedup)\n";
+    }
     std::cout << "  Provider match: " << (providerMatches ? "yes" : "no") << "\n";
     if (outsideAllowList) {
       std::cout << "  Note: '" << providerArg << "' is outside this pack's allow-list; measured anyway\n";
@@ -892,7 +930,9 @@ int commandModelBench(const CommandArgs& args) {
     if (speedup.has_value()) {
       std::cout << "  Speedup vs CPU: " << *speedup << "x\n";
     }
-    std::cout << "  Max |Δ| vs CPU: " << maxDelta << "\n";
+    if (parityChecked) {
+     std::cout << "  Max |Δ| vs CPU: " << maxDelta << "\n";
+    }
     std::cout << "  Failed runs: " << failedRuns << "\n";
   }
 

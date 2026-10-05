@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "ai/GpuMemory.h"
 #include "ai/ITensorInference.h"
 #include "ai/ModelPackLoader.h"
 
@@ -20,7 +21,8 @@ namespace automix::ai {
 // loadModel() treats every non-CPU entry as an attempt that may fail.
 std::vector<std::string> tensorProviderCandidates(const std::string& requested,
                                                   const std::vector<std::string>& runtimeProviders,
-                                                  const std::vector<std::string>& allowList = {});
+                                                  const std::vector<std::string>& allowList = {},
+                                                  bool autoAllowCoreMl = coreMlAutoAllowed());
 
 // True when a GPU execution provider (e.g. "cuda", "webgpu") is proven usable on this system
 // by opening a real session on a tiny in-memory graph. Successes are cached per provider.

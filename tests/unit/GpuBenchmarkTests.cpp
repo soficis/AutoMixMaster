@@ -146,6 +146,37 @@ TEST_CASE("GpuProvider platform preferred provider", "[gpu][provider]") {
 #endif
 }
 
+TEST_CASE("CoreML and ANE are opt-in for auto on low-memory Macs", "[gpu][tensor][coreml]") {
+  using automix::ai::coreMlAutoAllowed;
+  using automix::ai::kCoreMlAutoMinMemoryBytes;
+  constexpr std::uint64_t GiB = 1024ull * 1024 * 1024;
+  const std::vector<std::string> mac = {"ane", "coreml", "cpu"};
+
+  CHECK_FALSE(coreMlAutoAllowed(8 * GiB, false));
+  CHECK(coreMlAutoAllowed(8 * GiB, true));
+  CHECK(coreMlAutoAllowed(kCoreMlAutoMinMemoryBytes, false));
+  CHECK(coreMlAutoAllowed(16 * GiB, false));
+  CHECK(coreMlAutoAllowed(0, false));
+
+  // auto on a low-memory Mac goes straight to CPU; opted in or roomy keeps the Apple providers
+  CHECK(tensorProviderCandidates("auto", mac, {}, false) == std::vector<std::string>{"cpu"});
+  CHECK(tensorProviderCandidates("auto", mac, {}, true) == std::vector<std::string>{"ane", "coreml", "cpu"});
+  // naming the provider is always honoured
+  CHECK(tensorProviderCandidates("coreml", mac, {}, false).front() == "coreml");
+  CHECK(tensorProviderCandidates("ane", mac, {}, false).front() == "ane");
+}
+
+TEST_CASE("Vocal model warns about CPU only on low-memory Macs", "[gpu][coreml]") {
+  using automix::ai::vocalModelCpuWarning;
+  constexpr std::uint64_t GiB = 1024ull * 1024 * 1024;
+  CHECK_FALSE(vocalModelCpuWarning(8 * GiB, false, true).empty());
+  CHECK(vocalModelCpuWarning(8 * GiB, false, true).find("8 GB") != std::string::npos);
+  CHECK(vocalModelCpuWarning(8 * GiB, true, true).empty());    // a GPU session is usable
+  CHECK(vocalModelCpuWarning(16 * GiB, false, true).empty());  // roomy
+  CHECK(vocalModelCpuWarning(8 * GiB, false, false).empty());  // not a Mac: no measurement behind it
+  CHECK(vocalModelCpuWarning(0, false, true).empty());         // unknown memory
+}
+
 TEST_CASE("tensorProviderCandidates allow-list filtering", "[gpu][tensor]") {
   // 1. Empty allow-list preserves all reported GPU candidates and keeps CPU last
   const auto c1 = tensorProviderCandidates("auto", {"cuda", "webgpu", "cpu"}, {});

@@ -94,7 +94,8 @@ bool isConcrete(const std::vector<int64_t>& dims) {
 
 std::vector<std::string> tensorProviderCandidates(const std::string& requested,
                                                   const std::vector<std::string>& runtimeProviders,
-                                                  const std::vector<std::string>& allowList) {
+                                                  const std::vector<std::string>& allowList,
+                                                  const bool autoAllowCoreMl) {
   std::vector<std::string> reported;
   for (const auto& provider : runtimeProviders) {
     reported.push_back(gpu::canonicalProviderName(provider));
@@ -124,7 +125,11 @@ std::vector<std::string> tensorProviderCandidates(const std::string& requested,
     candidates.push_back(wanted);
   }
   for (const auto& provider : gpu::providerPriorityChain()) {
-    if (provider != gpu::kProviderCpu && provider != wanted && isReported(provider) && isAllowed(provider)) {
+    // On low-memory Macs "auto" skips CoreML/ANE (see coreMlAutoAllowed); naming one still works.
+    const bool appleSkippedForAuto =
+        wanted == "auto" && !autoAllowCoreMl && (provider == gpu::kProviderCoreMl || provider == gpu::kProviderAne);
+    if (provider != gpu::kProviderCpu && provider != wanted && isReported(provider) && isAllowed(provider) &&
+        !appleSkippedForAuto) {
       candidates.push_back(provider);
     }
   }
@@ -268,6 +273,9 @@ bool gpuTensorSessionAvailable(std::string* providerOut) {
   for (const auto& candidate : gpu::providerPriorityChain()) {
     if (candidate == gpu::kProviderCpu) {
       break;
+    }
+    if (!coreMlAutoAllowed() && (candidate == gpu::kProviderCoreMl || candidate == gpu::kProviderAne)) {
+      continue;
     }
     if (tensorProviderUsable(candidate)) {
       if (providerOut != nullptr) {

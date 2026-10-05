@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 
 namespace automix::ai {
 
@@ -27,5 +28,28 @@ bool gpuFitsModel(const std::optional<GpuMemoryInfo>& memory, std::uint64_t requ
 // yes, because there is nothing better to go on and a failed GPU run is
 // retried on CPU anyway.
 bool gpuHasRoomNow(const std::optional<GpuMemoryInfo>& memory, std::uint64_t requiredBytes);
+
+// Apple's CoreML and Neural Engine providers are opt-in on Macs with little RAM.
+// Measured on an 8 GiB MacBook Neo (BS-RoFormer, 1 run, nothing else running):
+// both providers were killed by the OS (SIGKILL) during the first inference, and
+// the CPU path did not finish a run in 5 minutes. "auto" therefore skips them
+// below kCoreMlAutoMinMemoryBytes unless the user opts in with
+// AUTOMIX_ENABLE_COREML=1. Naming the provider explicitly always works.
+inline constexpr std::uint64_t kCoreMlAutoMinMemoryBytes = 12ull * 1024 * 1024 * 1024;
+
+// Pure policy: may "auto" try CoreML/ANE on a machine with this much RAM?
+// Unknown memory (0) is allowed, because nothing better is known.
+bool coreMlAutoAllowed(std::uint64_t physicalMemoryBytes, bool explicitOptIn);
+
+// Warning for the Vocal Model toggle: empty unless the model would run on the CPU of a
+// low-memory Mac (below kCoreMlAutoMinMemoryBytes, no GPU session usable). The 8 GiB
+// MacBook Neo needed over 5 minutes per chunk on the CPU against about 25 s on a desktop.
+std::string vocalModelCpuWarning(std::uint64_t physicalMemoryBytes, bool gpuSessionUsable, bool isMac);
+
+// Live version for this machine; probes for a usable GPU session.
+std::string vocalModelCpuWarning();
+
+// Live policy for this machine. Always true off macOS, where CoreML does not exist.
+bool coreMlAutoAllowed();
 
 } // namespace automix::ai

@@ -1081,6 +1081,11 @@ void MainLayout::wireControlDeckCallbacks() {
     const bool enabled = controlDeck_->getTensorSeparationToggle().getToggleState();
     sessionManager_.session().renderSettings.tensorSeparationEnabled = enabled;
     if (enabled) {
+      if (const auto warning = ai::vocalModelCpuWarning(); !warning.empty()) {
+        taskOrchestrator_->appendHistory("Vocal Model warning: " + juce::String(warning));
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Vocal Model will be slow",
+                                               juce::String(warning));
+      }
       offerGpuRuntimeIfUseful();
     }
   };

@@ -297,7 +297,8 @@ void HeroWaveform::drawZoomControls(juce::Graphics& g) {
   };
 
   drawBtn(0, "+", zoomInHover_);
-  drawBtn(1, "\u2212", zoomOutHover_);
+  // UTF-8 bytes, not "\u2212": MSVC turns that escape into "?" in a narrow string.
+  drawBtn(1, juce::String(juce::CharPointer_UTF8("\xe2\x88\x92")), zoomOutHover_);
   drawBtn(2, "R", zoomResetHover_);
 
   // Zoom level text

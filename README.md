@@ -4,8 +4,7 @@
 
 **Version 0.4.2**
 
-
-<img src="assets/AutoMixMaster.jpg" alt="AutoMixMaster application interface" width="860">
+<img src="assets/screenshots/main-session.png" alt="AutoMixMaster with a session loaded" width="860">
 
 **FIXED-RULE AUDIO WORKFLOW FOR MIXING AND MASTERING MUSIC STEMS**
 
@@ -15,11 +14,10 @@
 
 <p align="center">
 <a href="#overview">Overview</a> •
-<a href="#feature-set">Feature Set</a> •
+<a href="#what-it-does">What It Does</a> •
 <a href="#first-session">First Session</a> •
-<a href="#quick-start">Quick Start</a> •
-<a href="#estimated-system-requirements">System Requirements</a> •
-<a href="#build--install">Build + Install</a> •
+<a href="#install">Install</a> •
+<a href="#what-you-need">What You Need</a> •
 <a href="#licensing">Licensing</a>
 </p>
 
@@ -27,287 +25,145 @@
 
 ## Overview
 
-AutoMixMaster helps you turn raw stems into a cleaner, release-ready track with fewer manual steps.
+Mixing and mastering take years to learn. AutoMixMaster does both with one button.
 
-It focuses on predictable, fixed-rule processing so results are repeatable and beginner-friendly, with optional extras like AI stem separation, batch mode, and bundled renderer integrations.
+Drop in your stems. Press **Mix + Master**. Get a finished track.
+
+The app works by fixed rules, so the same stems give the same result every time. The AI features are extras. Each one falls back to the fixed rules when you have no model installed.
+
+<div align="center">
+<img src="assets/screenshots/main-empty.png" alt="AutoMixMaster on first launch" width="720">
+</div>
 
 ---
 
-## Feature Set
+## What It Does
 
-> **Core capabilities at a glance**
-
-| Module | Description |
+| Feature | What you get |
 | :--- | :--- |
-| **Auto Mix + Auto Master** | Deterministic stem balancing, gain staging, and limiting workflow. |
-| **One-Click Pipeline** | `Mix + Master` (`Ctrl+Shift+M`) runs Auto Mix → Auto Master → Export. |
-| **ITO-Master AI Mastering** | Experimental AI mastering strategy driving a 46-parameter native white-box FX chain with licensing consent gating. |
-| **AI Stem Separation (Optional)** | Splits a single full-mix import into stems before processing when enabled (`Ctrl+Shift+A`). |
-| **Task-Scoped Model Browser** | Install/uninstall models and set active packs per task (`mix`, `master`, `analysis`, `separation`) from Hugging Face or GitHub Releases. |
-| **Batch Processing** | Queue folders, auto-group stems by filename role patterns, and render one mastered song per group (`<song>_AutoMixMaster_YYYYMMDD_XX.<ext>`). Supports recursive discovery via UI toggle or `AUTOMIX_BATCH_RECURSIVE=1`. |
-| **Renderer Integrations** | Built-in discovery for PhaseLimiter, FFmpeg, SoX, and rsgain; only available tools are shown (`*_BIN` env overrides supported). |
-| **Verification Reporting** | Export verification report plus batch completion summary; optional per-export `.report.json` sidecar. |
-| **Task Center + ETA** | Real-time progress tracking with batch ETA countdown, summary status row, timestamped activity log, and copy-log utility. |
-| **Transport & Audio Preview** | Realtime-safe lock-free audio preview buffer, live peak/RMS meters, 0–1.5x gain control (+3.5 dB), and modal confirmation for session clearing. |
-| **Shortcuts & Commands** | `ApplicationCommandManager` integration with built-in Keyboard Shortcuts Cheatsheet modal (`?`). |
-| **Analysis Meters** | Live LUFS and peak metering via GlowMeters. |
+| **Auto Mix + Auto Master** | The app balances your stems, sets their levels and limits the result. |
+| **Mix + Master** | One button (`Ctrl+Shift+M`) mixes, masters and exports. |
+| **Master presets** | Default Streaming, Broadcast, Udio Optimized or Custom. |
+| **Platform targets** | Spotify, Apple Music, YouTube, Amazon Music, Tidal or Broadcast EBU R128. |
+| **AI Stem Separation** | Optional. Splits one full mix into stems, so you can start from a single file. |
+| **Vocal Model** | Optional. BS-RoFormer pulls the vocals out of a mix. It is slow without a strong NVIDIA card. |
+| **Light vocal model** | Optional. Open-Unmix is a 36 MB download for weaker machines. It is fast, and rougher. |
+| **AI mastering** | Experimental. The ITO-Master model picks the mastering settings. |
+| **Models window** | `Ctrl+K`. Download, remove and choose models. |
+| **Batch** | Point the app at folders. It groups the stems by file name and renders one mastered song per group. |
+| **Export** | WAV, AIFF, FLAC, OGG or MP3. Each export comes with a report that checks the result. |
+| **Preview** | Play the mix, watch the level and loudness meters, solo or mute any stem. |
+| **Sessions** | Save, load, undo and redo. The app asks before it throws away unsaved work. |
+| **Progress** | A progress bar, a time estimate for batches and a log you can copy. |
+
+### Shortcuts
+
+| Action | Keys |
+| :--- | :--- |
+| Import | `Ctrl+I` |
+| Auto Mix | `Ctrl+M` |
+| Auto Master | `Ctrl+Shift+A` |
+| Mix + Master | `Ctrl+Shift+M` |
+| Export | `Ctrl+E` |
+| Models | `Ctrl+K` |
+| Save / Load session | `Ctrl+S` / `Ctrl+O` |
+| Undo / Redo | `Ctrl+Z` / `Ctrl+Y` |
+| Play / Pause | `Space` |
+| Show all shortcuts | `Ctrl+/` |
 
 ---
 
 ## First Session
 
-Welcome to your first mixing and mastering session. AutoMixMaster simplifies the process into a few core steps:
+1. **Import your audio.** Drop files on the waveform area, click it, or press `Ctrl+I`. The app reads WAV, AIFF, FLAC, MP3 and OGG.
+2. **Only one file? Turn on AI Stem Separation.** The app splits a single full mix into stems first. With several files it treats them as stems and skips this step.
+3. **Press Mix + Master.** The app mixes, masters and exports.
 
-1. **Import audio**: Drag and drop files onto the waveform area, or click `Import`. Supported formats: WAV, AIFF, FLAC, MP3, OGG.
-2. **(Optional) enable AI Stem Separation**: Toggle **AI Stem Separation** and check the badge beside it (`Separation model: <name/none>`).  
-   - If exactly one full-mix track is loaded, separation runs before Auto Mix.  
-   - If multiple files are loaded, they are treated as regular stems and separation is skipped.
-3. **Manage models in Model Browser**: Open **Models** to fetch catalog entries, install/uninstall models, and set active packs per task (`mix`, `master`, `analysis`, `separation`) using **Set Active** or **Use Selected for Task**.
-4. **Auto Mix**: Click **Auto Mix** to analyze stems and apply deterministic balancing rules.
-5. **Auto Master**: Click **Auto Master** to apply mastering strategy and limiting.
-6. **One-click pipeline**: Click **Mix + Master** (`Ctrl+Shift+M`) to run Auto Mix → Auto Master → Export. If AI Stem Separation is enabled and one full mix is loaded, separation is performed first, then the pipeline continues automatically.
-7. **Export**: Use **Export** (`Ctrl+E`) for manual output control, or rely on pipeline export.
+Want more control? Run **Auto Mix**, **Auto Master** and **Export** one at a time. Pick a master preset and a platform target before you master.
 
 ---
 
-## Quick Start
+## Install
 
-Getting started with AutoMixMaster is simple.
+> ⚠️ Only the **Windows** version has been tested by hand from start to finish. The Linux, macOS and ARM64 builds may have rough edges.
 
-> ⚠️ **Testing disclaimer:** only the **Windows** version has been manually tested end-to-end so far.  
-> Linux, macOS, and ARM64 artifacts are currently provided as best-effort builds.
+| System | Download | Then |
+| :--- | :--- | :--- |
+| **Windows** | `AutoMixMaster-windows-<arch>.zip` | Extract it and run `AutoMixMaster.exe`. |
+| **macOS** | `AutoMixMaster-macos-<arch>.zip` | Extract it and open `AutoMixMaster.app`. |
+| **Linux** | `.AppImage`, `.deb` or `.flatpak` | Run the AppImage, or install the package. |
 
-### Windows (Pre-compiled Executable)
+**macOS:** the app is unsigned. If macOS refuses to open it, go to **System Settings → Privacy & Security** and click **Open Anyway**.
 
-Windows users can download the portable release zip (`AutoMixMaster-windows-<arch>.zip`), extract it, and run `AutoMixMaster.exe`.
-
-### macOS (Pre-compiled App Bundle)
-
-macOS users can download the release zip (`AutoMixMaster-macos-<arch>.zip`), extract it, and open `AutoMixMaster.app`.
-
-### Linux (Prebuilt Packages)
-
-Linux users can download either:
-
-- **AppImage** (`AutoMixMaster-<version>-<arch>.AppImage`) for a portable one-file launch.
-- **Debian package** (`automixmaster_<version>_<arch>.deb`) for Ubuntu/Debian install.
-- **Flatpak bundle** (`AutoMixMaster-linux-<arch>.flatpak`) for Flatpak-based installs.
-
-### Build From Source
-
-If you are on Linux, or prefer to build the application from source on Windows, refer to the [Build + Install](#build--install) section below for verified instructions.
-
-## Estimated System Requirements
-
-These are **practical estimates** for AI-heavy workflows (especially ONNX-based separation/mix/master inference), not strict hard limits.
-
-AutoMixMaster is designed to benefit from **GPU acceleration** via ONNX Runtime providers.
-
-### Minimum OS requirements (release artifacts)
-
-- **Windows:** **Windows 10 or Windows 11** (x64 or ARM64¹)
-- **macOS (Apple Silicon / ARM64):** **macOS 14+**
-- **macOS (Intel / x64):** **macOS 15+**
-- **Linux:** **Ubuntu 24.04 LTS+** for current prebuilt `.deb`/AppImage artifacts
-
-> ¹ *Note: On Windows 11 ARM64, PhaseLimiter runs seamlessly via Windows on ARM built-in x64 emulation (WOW64/Prism); AI tensor inference runs natively on ARM64.*
-> Note: Ubuntu 22.04 may still work if you build from source on 22.04 with compatible dependencies, but official CI/release packaging currently targets Ubuntu 24.04.
-
-### Minimum workable
-
-- **CPU:** modern **6-core / 12-thread** desktop CPU (Ryzen 5 5600 / Core i5-12400 class)
-- **RAM:** **16 GB minimum**
-- **GPU:** compatible acceleration path with ~**6 GB VRAM**
-  - Windows: **WebGPU (DirectX 12 / Vulkan)** or **NVIDIA CUDA**
-  - Linux: **WebGPU (Vulkan, requires `libvulkan1`)** or **NVIDIA CUDA**
-  - macOS (Apple Silicon): **CoreML / ANE**
-  - *(Note: Intel Macs do not support AI tensor/model inference; heuristics and audio processing remain functional)*
-- **Storage:** ~10 GB free (models, temp files, exports)
-- **PhaseLimiter rendering:** requires ffmpeg (install ffmpeg on Windows; `brew install ffmpeg` / `apt install ffmpeg` elsewhere, or set `FFMPEG_BIN`).
-
-### Recommended (smoother)
-
-- **CPU:** **8 cores / 16 threads or better** (Ryzen 7 / Core i7 class)
-- **RAM:** **32 GB**
-- **GPU:** **8–12 GB VRAM**
-
-### Heavy batch / long sessions
-
-- **CPU:** **12 cores+** strongly recommended
-- **RAM:** **32–64 GB**
-- **GPU:** **12 GB+ VRAM**
-
-### Why these estimates
-
-- GPU acceleration matters most: WebGPU needs a **DirectX 12 or Vulkan-capable** GPU, CoreML uses Apple Silicon GPU/ANE, and CUDA needs an **NVIDIA CUDA-capable** GPU ([CUDA](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html)).
-- Demucs notes roughly **3 GB minimum** and around **7 GB typical** GPU memory, so **8 GB+ VRAM** is a safer real-world target; CPU-only runs work but are slower ([Demucs README](https://github.com/facebookresearch/demucs/blob/main/README.md)).
-
-### ONNX Runtime
-
-ONNX Runtime is an **optional** dependency. When it is not found at configure time the build
-falls back to a deterministic adapter and every model-dependent feature degrades to a
-heuristic — it does not fail the build.
-
-| | |
-|---|---|
-| Validated against | **ORT 1.30.x** (1.30.0, 2026-09-10) |
-| Minimum for the optional GPU paths | **1.22** |
-| Release cadence | roughly monthly — pin a minor series, not a patch |
-
-The build locates ONNX Runtime with `find_package(onnxruntime 1.30.0 EXACT CONFIG)` when fetched
-via `AUTOMIX_FETCH_ORT=ON`, or `find_path`/`find_library` for system-installed SDKs.
-
-#### Provider status (as of 1.30.x)
-
-| Provider | Status | Notes |
-|---|---|---|
-| **CPU** | always available | The baseline. Every GPU path falls back here on OOM or device loss, so the app never loses inference capability. |
-| **CUDA** | current | Default packages target **CUDA 13.0** since 1.27. cuDNN and CUDA runtime libraries are loaded dynamically at runtime when present. |
-| **WebGPU** | current | Native plugin EP on Windows/Linux (via `Microsoft.ML.OnnxRuntime.EP.WebGpu` 0.4.0) and in-tree provider on Apple Silicon macOS. Default non-NVIDIA path for Windows and Linux. Requires `libvulkan1` on Linux. |
-| **CoreML** | current | Built-in on macOS. Covers the **Apple Neural Engine** (`MLComputeUnits=CPUAndNeuralEngine` or `MLComputeUnits=ALL`). Note: Intel Macs do not support AI inference. |
-| **DirectML** | maintenance mode | The `Microsoft.ML.OnnxRuntime.DirectML` NuGet is **frozen at 1.24.4** and caps at **opset ≤ 20**. WebGPU is now the primary non-NVIDIA Windows path. |
-| **OpenVINO** | split | Legacy wheel pinned at 1.24.1; the plugin `onnxruntime-ep-openvino` 1.7.0 requires ORT ≥ 1.23. |
-| **Windows ML** | GA (2025-09-23) | The recommended path for new Windows work. C++ needs the **self-contained** NuGet; framework-dependent C/C++ packages are not published. |
-
-AutoMixMaster probes available providers and walks its own priority chain — **ANE → CoreML →
-CUDA → WebGPU → OpenVINO → DirectML → CPU** (`src/ai/GpuProvider.h`). If session creation or inference
-fails, the provider is recorded as failed and the chain continues, so a broken or missing GPU
-runtime degrades to CPU instead of failing the render.
-
-> **fp16 caveat:** the CPU execution provider does not run fp16 graphs. Quantize to int8 (QDQ
-> format) for CPU-only deployment; 16-bit and 4-bit quantization additionally require **opset ≥ 21**.
-
-#### Optional runtime capabilities
-
-Two further runtime paths are detected at configure time and are **off unless the installed
-ONNX Runtime exposes the matching API**. The provider priority chain above is unchanged either
-way, and both features default to off.
-
-| Capability | Compile guard | Minimum ORT | Status |
-|---|---|---|---|
-| WebGPU provider supplied as a plugin library | `AUTOMIX_HAS_EP_PLUGIN` | 1.23 | Wired for WebGPU via `OrtRuntime` and `RegisterExecutionProviderLibrary` |
-| Per-GPU compiled-model cache (EPContext) | `AUTOMIX_HAS_EP_CONTEXT` | 1.22 | Policy implemented; the `OrtCompileApi` call is not yet wired |
-
-`src/ai/GpuProvider.h` holds the deciding logic for both — `parseOrtVersion`,
-`supportsEpPlugin`, `supportsEpContext`, `decidePluginEpAttempt` and
-`compiledModelCacheKey` — as pure functions, so it is covered by the test suite even on a
-build with no ONNX Runtime SDK present. The cache key covers the model digest, the provider,
-the GPU architecture, the driver version and the ORT version, so recompiling for a different
-card or driver can never reuse another card's artifact. A model digest that is not a valid
-64-character SHA-256 yields no key at all, because a key that cannot distinguish two models
-would alias their caches.
-
-To finish the wiring, the guarded code should ask `decidePluginEpAttempt(...)` and, when it
-returns `attempt == false`, log its `reason` and continue down the existing priority chain;
-`Ort::GetAvailableProviders()` already covers every built-in provider.
-
-#### GPU acceleration for the vocal model (Windows + NVIDIA)
-
-The BS-RoFormer vocal model runs on CUDA when three things are true: the build links the
-**CUDA build of ONNX Runtime**, the user has installed the **GPU runtime pack**, and the GPU
-has room for the model. Otherwise it runs on the CPU, with the reason in the log.
-
-- **GPU runtime pack.** NVIDIA's CUDA runtime, cuBLAS, cuFFT and cuDNN (~1 GB download,
-  ~1.3 GB on disk) are not shipped. When *Vocal Model* is switched on, or from *Settings →
-  GPU acceleration*, the app offers a one-time download of NVIDIA's own redistributable
-  packages from pypi.org, pinned by SHA-256, into
-  `%LOCALAPPDATA%\AutoMixMaster\gpu-runtime\<version>`. No admin rights, no system CUDA, no
-  PATH changes; the libraries are preloaded by full path. *Settings* can remove it again.
-  It is offered only for an NVIDIA GPU with ≥ 11.5 GiB of memory and driver **580 or newer**
-  (CUDA 13). `automix_dev_tools gpu-runtime status|install|remove|upgrade-models` does the
-  same from the command line.
-- **Model build.** Where a CUDA session opens and the GPU totals ≥ 11.5 GiB, the catalog
-  installs BS-RoFormer's **fp32** build (its external weights are folded into one file at
-  install time, because ONNX Runtime 1.30 cannot load that export otherwise); elsewhere the
-  smaller **quantized** build, which is faster on CPU but 4-7x slower than fp32 on a GPU. Installing
-  the runtime pack upgrades an already-installed quantized model automatically.
-- **Memory.** fp32 needs 10 GiB of free GPU memory while it runs (measured peak 9.2 GiB).
-  With less free, it runs on the CPU rather than spill into shared memory, which is slower.
-
-Measured on an RTX 5060 Ti (16 GB) for a 196 s track: fp32 on CUDA **66–91 s**, quantized on
-CPU 687 s, quantized on CUDA 303–504 s.
-
-
----
-
-## Build + Install
+<details>
+<summary><b>Build it yourself</b></summary>
 
 ### Windows (Visual Studio 2026)
 
-1. Configure
-
 ```bash
 cmake -S . -B build -G "Visual Studio 18 2026" -A x64
-```
-
-1. Build
-
-```bash
 cmake --build build --config Release --parallel
+ctest --test-dir build -C Release --output-on-failure
 ```
 
-#### Windows release package
-
-`packaging/windows/build-release.ps1` configures a fresh build directory against an ONNX
-Runtime SDK, builds, runs the tests and writes a portable ZIP with CPack. Use the CUDA build
-of ONNX Runtime so the package can use the GPU:
+**Release package.** `packaging/windows/build-release.ps1` builds, runs the tests and writes a portable ZIP. Give it the CUDA build of ONNX Runtime so the package can use the GPU:
 
 ```powershell
 powershell -File packaging\windows\build-release.ps1 -OnnxRuntimeDir C:\lib\onnxruntime-win-x64-gpu_cuda13-1.30.0
 ```
 
-The ZIP holds the app, its assets and the ONNX Runtime DLLs (the CUDA provider adds ~190 MB).
-It never contains model weights or NVIDIA's CUDA libraries: the install step fails if any
-`.onnx` file or `cudart`/`cublas`/`cudnn`/`cufft` library is present. For a developer build
-that runs on CUDA without the runtime pack, point `-DAUTOMIX_CUDA_RUNTIME_DIR` at a folder of
-those DLLs; they are copied next to the executables, never into the package.
+The ZIP never holds model files or NVIDIA's CUDA libraries. The install step fails if it finds one. To run a developer build on CUDA without the GPU pack, point `-DAUTOMIX_CUDA_RUNTIME_DIR` at a folder of those DLLs.
 
 ### Ubuntu Linux (24.04+)
 
-1. Install dependencies
-
 ```bash
 sudo apt-get install -y \
-  libasound2-dev libfreetype6-dev libx11-dev libxcomposite-dev \
-  libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev \
-  libxrender-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev
-```
+  build-essential cmake pkg-config \
+  libasound2-dev libjack-jackd2-dev libfreetype6-dev libfontconfig1-dev \
+  libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev \
+  libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libgtk-3-dev \
+  libglu1-mesa-dev mesa-common-dev libcurl4-openssl-dev
 
-1. Configure + build
-
-```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
-```
-
-1. Run tests (optional but recommended)
-
-```bash
 ctest --test-dir build --output-on-failure
 ```
 
-### macOS (Apple Silicon + Intel)
+Do not skip `libcurl4-openssl-dev`. Without it the app cannot download models.
 
-1. Install build tools
+**Packages.** `./tools/package_linux.sh` writes a `.deb` and an AppImage to `dist/linux/`.
+
+**Flatpak.**
+
+```bash
+sudo apt-get install -y flatpak flatpak-builder
+flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+flatpak --user install -y flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
+./tools/build_flatpak.sh
+```
+
+The bundle lands in `dist/flatpak/AutoMixMaster.flatpak`. The manifest is `packaging/flatpak/io.automixmaster.AutoMixMaster.yml`. It fetches its sources ahead of time, so the build needs no network inside the sandbox.
+
+### macOS (Apple Silicon + Intel)
 
 ```bash
 xcode-select --install
 brew install cmake ninja
 ```
 
-1. Configure + build (pick one architecture)
+Pick one architecture:
 
 ```bash
-# Apple Silicon (arm64)
+# Apple Silicon
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 -DBUILD_TESTING=OFF -DBUILD_TOOLS=OFF
 
-# Intel (x64)
+# Intel
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64 -DBUILD_TESTING=OFF -DBUILD_TOOLS=OFF
 
 cmake --build build --target AutoMixMasterApp --parallel
 ```
 
-1. Configure + build (universal binary: arm64 + x86_64)
+Or build for both at once:
 
 ```bash
 cmake -S . -B build-universal \
@@ -319,7 +175,7 @@ cmake -S . -B build-universal \
 cmake --build build-universal --target AutoMixMasterApp --parallel
 ```
 
-1. Install app bundle
+Then install the app:
 
 ```bash
 APP_BUNDLE="$(find build build-universal -maxdepth 6 -type d -name 'AutoMixMaster.app' 2>/dev/null | head -n 1)"
@@ -328,100 +184,154 @@ sudo cp -R "$APP_BUNDLE" /Applications/
 open /Applications/AutoMixMaster.app
 ```
 
-> **macOS Note:** On first launch of the unsigned application, macOS Gatekeeper may prompt that the developer cannot be verified. To allow the application to open, go to **System Settings → Privacy & Security**, scroll down to the Security section, and click **Open Anyway**.
+### Extra render tools
 
+The app needs none of these. It finds them if you put them here or set the variable:
 
-### Linux Package Builds (.deb + AppImage)
+- `assets/ffmpeg/bin/ffmpeg(.exe)` or `FFMPEG_BIN`
+- `assets/sox/bin/sox(.exe)` or `SOX_BIN`
+- `assets/rsgain/bin/rsgain(.exe)` or `RSGAIN_BIN`
 
-After building, create distributable Linux packages with:
+PhaseLimiter runs only when you select it, and it needs ffmpeg.
 
-```bash
-./tools/package_linux.sh
-```
+</details>
 
-Output artifacts are written to `dist/linux/`.
+---
 
-### Flatpak
+## What You Need
 
-Manifest path:
+The fixed-rule mix and master run on almost any recent computer. The numbers below are for the AI features. They are estimates, not hard limits.
 
-`packaging/flatpak/io.automixmaster.AutoMixMaster.yml`
+| | Works | Comfortable | Big batches |
+| :--- | :--- | :--- | :--- |
+| **Processor** | 6 cores | 8 cores | 12 cores or more |
+| **Memory** | 16 GB | 32 GB | 32–64 GB |
+| **Graphics memory** | 6 GB | 8–12 GB | 12 GB or more |
+| **Free disk** | 10 GB | | |
 
-> Note: the Flatpak manifest prefetches JUCE/nlohmann/libebur128 sources and passes `FETCHCONTENT_SOURCE_DIR_*` flags so CMake does not need live GitHub access inside the Flatpak sandbox.
+**Systems the release builds support**
 
-Install Flatpak tooling:
+- **Windows** 10 or 11, x64 or ARM64
+- **macOS** 14 or later on Apple Silicon; 15 or later on Intel
+- **Linux:** Ubuntu 24.04 or later
 
-```bash
-sudo apt-get install -y flatpak flatpak-builder
-```
+**Graphics cards**
 
-Add Flathub and install required runtime/SDK:
+- **Windows and Linux:** an NVIDIA card is fastest. Other cards work if they support DirectX 12 or Vulkan. Linux needs `libvulkan1`.
+- **Apple Silicon Macs:** the app uses the built-in graphics chip.
+- **Intel Macs:** no AI features. Mixing and mastering still work.
+- **No usable card:** the AI features run on the processor. They work, and they are slow.
 
-```bash
-flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-flatpak --user install -y flathub org.freedesktop.Platform//24.08 org.freedesktop.Sdk//24.08
-```
+**Macs with less than 12 GB of memory.** The Vocal Model runs slowly on them. The app warns you and points you to the light Open-Unmix model.
 
-Build bundle:
+### The Vocal Model on an NVIDIA card (Windows)
 
-```bash
-./tools/build_flatpak.sh
-```
+The Vocal Model runs on your graphics card when all of this is true:
 
-Output:
+- The card has at least 12 GB of memory, with 10 GB free.
+- Your NVIDIA driver is version 580 or newer.
+- You have installed the **GPU pack**.
 
-- `dist/flatpak/AutoMixMaster.flatpak`
+The GPU pack is a one-time download of about 1 GB. The app offers it when you switch on the Vocal Model. You can also install or remove it under **Settings → GPU acceleration**. It needs no admin rights and changes nothing else on your system.
 
-### Bundled Renderer Tools (Optional)
-
-The renderer registry can auto-discover optional CLI tools if you place binaries under:
-
-- `assets/ffmpeg/bin/ffmpeg(.exe)` or set `FFMPEG_BIN`
-- `assets/sox/bin/sox(.exe)` or set `SOX_BIN`
-- `assets/rsgain/bin/rsgain(.exe)` or set `RSGAIN_BIN`
-
-If a tool is missing, it is hidden from selectable available renderers automatically.
+Without these, the Vocal Model runs on the processor and the log tells you why. The difference is large: one 196-second track took 66 to 91 seconds on an RTX 5060 Ti and 687 seconds on the processor.
 
 ---
 
 ## Licensing
 
-AutoMixMaster is distributed under the **GNU General Public License v3 (GPLv3)**.
+AutoMixMaster is free software under the **GNU General Public License v3**.
 
-### Core & Libraries
+**The app ships with no AI models.** You download the ones you want from the Models window. The app shows each model's license and asks you to accept it first.
+
+**Some models are for non-commercial use only.** If you sell your music, use the MIT-licensed models or the fixed rules.
+
+| Model | Used for | License | Commercial use |
+| :--- | :--- | :--- | :--- |
+| BS-RoFormer | Vocal Model | MIT | Yes |
+| Open-Unmix | Light vocal model | MIT | Yes |
+| Whisper, CLAP, PANNs | Analysis | MIT | Yes |
+| Demucs / HTDemucs | Stem separation | CC-BY-NC 4.0 weights | No |
+| Denoiser | Vocal clean-up | CC-BY-NC 4.0 | No |
+| ITO-Master | AI mastering | CC-BY-NC 4.0 | No |
+
+The full license record for every model is in [docs/model-licensing-audit.json](docs/model-licensing-audit.json).
+
+**Software the app is built on**
 
 | Component | License | Role |
 | :--- | :--- | :--- |
-| JUCE 8.0.8 | AGPLv3 / Commercial | Audio & GUI Framework |
-| libebur128 | MIT | EBU R128 Loudness Metering |
-| nlohmann/json | MIT | JSON Serialization & Model Metadata |
-| Catch2 3.7.1 | BSL-1.0 | Unit Testing Framework |
-| PhaseLimiter | GPL-2.0 / Custom | Optional External Limiter |
-| FFmpeg | GPL-compatible / LGPL | Optional External Audio Renderer |
-| SoX | GPL-2.0-or-later | Optional External Processor |
-| rsgain | BSD-2-Clause | Optional ReplayGain Tagging Stage |
+| JUCE 8.0.8 | AGPLv3 / Commercial | Audio and interface framework |
+| libebur128 | MIT | Loudness metering |
+| nlohmann/json | MIT | Reading and writing JSON |
+| Catch2 3.7.1 | BSL-1.0 | Tests |
+| PhaseLimiter | GPL-2.0 / Custom | Optional limiter |
+| FFmpeg | GPL-compatible / LGPL | Optional renderer |
+| SoX | GPL-2.0-or-later | Optional processor |
+| rsgain | BSD-2-Clause | Optional loudness tagging |
 
-### AI Model Hub & Third-Party Weights
+---
 
-Model weights are **not bundled** into the installer or executable binaries. Users can optionally download models on-demand through the built-in Model Hub (`ModelManager`), which preserves and displays upstream model licensing metadata (`license` / `cardData` tags):
+## Developer Notes
 
-| Model / Model Family | Upstream Author | License | Usage & Compatibility |
-| :--- | :--- | :--- | :--- |
-| **HTDemucs / Demucs 4-stem** | Meta Research | MIT (code), CC-BY-NC 4.0 (MUSDB18-HQ weights) | Stem Separation (Non-Commercial weights) |
-| **HTDemucs 6-stem (`htdemucs_6s`)** | Meta / Community ONNX | CC-BY-NC 4.0 | 6-Stem Separation (Guitar/Piano/Drums/Bass/Vocal/Other) |
-| **Denoiser (`dns64` / Speech Enhancer)** | Meta Research | CC-BY-NC 4.0 | Speech & Vocal Denoising (Non-Commercial evaluation) |
-| **ITO-Master (`ito-master-v1`)** | Community / Open | CC-BY-NC 4.0 | AI Mastering (46-param native white-box FX chain) |
-| **Whisper Tiny / Small** | OpenAI | MIT | Transcripts, Vocal Alignment & Pitch Analysis |
-| **CLAP (`clap-htsat`)** | LAION | MIT | Style Retrieval & Audio Embeddings |
-| **PANNs (`PANNs_CNN14`)** | Bio-DSP / Open | MIT | General Audio Tagging & Classification |
+Most people can stop reading here. These notes are for building against ONNX Runtime or writing a model pack.
 
-> **Non-Commercial Notice**: Models licensed under **CC-BY-NC 4.0** (such as Meta Demucs, Denoiser, and ITO-Master weights) are restricted to personal, educational, and non-commercial evaluation use. Commercial workflows can use open-source MIT-licensed models (e.g. Whisper, CLAP) or the built-in deterministic heuristic DSP engines. User consent gating is enforced prior to model download and execution.
+<details>
+<summary><b>ONNX Runtime and graphics providers</b></summary>
 
-> **Model Licensing Audit**: For complete machine-checkable model license metadata and audit specifications, see [docs/model-licensing-audit.json](docs/model-licensing-audit.json).
+### ONNX Runtime
 
-#### Mix-Scope Model Contract
+ONNX Runtime is optional. Without it, the build still succeeds and every model feature falls back to the fixed rules.
 
-No curated `mix` model ships today — the AI mix path is fully wired (`AutoMixStrategyAI`), so it activates as soon as a valid mix pack is installed, and otherwise falls back to the deterministic heuristic. A downloadable mix model must satisfy all of the following:
+| | |
+|---|---|
+| Validated against | **ORT 1.30.x** (1.30.0, 2026-09-10) |
+| Minimum for the optional GPU paths | **1.22** |
+| Release cadence | roughly monthly — pin a minor series, not a patch |
+
+The build finds ONNX Runtime with `find_package(onnxruntime 1.30.0 EXACT CONFIG)` when fetched via `AUTOMIX_FETCH_ORT=ON`, or with `find_path`/`find_library` for a system SDK.
+
+#### Provider status (as of 1.30.x)
+
+| Provider | Status | Notes |
+|---|---|---|
+| **CPU** | always available | The baseline. Every GPU path falls back here on out-of-memory or device loss. |
+| **CUDA** | current | Default packages target **CUDA 13.0** since 1.27. cuDNN and the CUDA runtime load at run time when present. |
+| **WebGPU** | current | A plugin provider on Windows and Linux (`Microsoft.ML.OnnxRuntime.EP.WebGpu` 0.4.0) and in-tree on Apple Silicon. The default non-NVIDIA path on Windows and Linux. Needs `libvulkan1` on Linux. |
+| **CoreML** | current | Built in on macOS. Covers the **Apple Neural Engine** (`MLComputeUnits=CPUAndNeuralEngine` or `ALL`). Intel Macs run no AI inference. |
+| **DirectML** | maintenance mode | The `Microsoft.ML.OnnxRuntime.DirectML` NuGet is frozen at 1.24.4 and caps at opset ≤ 20. WebGPU replaces it. |
+| **OpenVINO** | split | The legacy wheel is pinned at 1.24.1. The plugin `onnxruntime-ep-openvino` 1.7.0 needs ORT ≥ 1.23. |
+| **Windows ML** | GA (2025-09-23) | Recommended for new Windows work. C++ needs the self-contained NuGet. |
+
+The app probes the providers and walks its own priority chain: **ANE → CoreML → CUDA → WebGPU → OpenVINO → DirectML → CPU** (`src/ai/GpuProvider.h`). A provider that fails is recorded and skipped. A broken GPU runtime slows the render down. It does not stop it.
+
+> **fp16 caveat:** the CPU provider does not run fp16 graphs. Quantize to int8 (QDQ format) for CPU-only use. 16-bit and 4-bit quantization also need opset ≥ 21.
+
+#### Optional runtime capabilities
+
+Two more paths are detected at configure time. Both are off unless the installed ONNX Runtime exposes the matching API. Neither changes the priority chain.
+
+| Capability | Compile guard | Minimum ORT | Status |
+|---|---|---|---|
+| WebGPU provider supplied as a plugin library | `AUTOMIX_HAS_EP_PLUGIN` | 1.23 | Wired for WebGPU via `OrtRuntime` and `RegisterExecutionProviderLibrary` |
+| Per-GPU compiled-model cache (EPContext) | `AUTOMIX_HAS_EP_CONTEXT` | 1.22 | Policy implemented. The `OrtCompileApi` call is not wired yet. |
+
+`src/ai/GpuProvider.h` holds the deciding logic as pure functions: `parseOrtVersion`, `supportsEpPlugin`, `supportsEpContext`, `decidePluginEpAttempt` and `compiledModelCacheKey`. The tests cover them even on a build with no ONNX Runtime SDK.
+
+The cache key covers the model digest, the provider, the GPU architecture, the driver version and the ORT version. One card can never reuse another card's compiled model. A digest that is not a valid 64-character SHA-256 yields no key at all.
+
+To finish the wiring, the guarded code should call `decidePluginEpAttempt(...)`. When it returns `attempt == false`, log its `reason` and continue down the chain.
+
+</details>
+
+<details>
+<summary><b>Model pack contracts</b></summary>
+
+### Mix-Scope Model Contract
+
+No curated `mix` model ships today. The AI mix path is wired (`AutoMixStrategyAI`). It activates when you install a valid mix pack. Until then it uses the fixed rules.
+
+A mix model must meet all of these:
 
 | Requirement | Value | Enforced by |
 | :--- | :--- | :--- |
@@ -429,18 +339,20 @@ No curated `mix` model ships today — the AI mix path is fully wired (`AutoMixS
 | Manifest metadata | non-empty `license`, `source`, `feature_schema_version` | `ModelPackLoader` |
 | `feature_schema_version` | `1.0.0` | `FeatureSchemaV1::isCompatible` |
 | Required output keys | `confidence`, `global_gain_db` (±12 dB), `global_pan_bias` (±1.0) | `ModelPackLoader` + `OnnxModelInference` |
-| Optional per-stem keys | `stem<N>_gain_db` (±24 dB), `stem<N>_pan` (±1.0) — a superset of the required keys | `AutoMixStrategyAI` |
-| Input features | **66 floats per stem, concatenated** — `input_feature_count` must equal `66 × stem count` exactly | `OnnxModelInference::run` |
+| Optional per-stem keys | `stem<N>_gain_db` (±24 dB), `stem<N>_pan` (±1.0) | `AutoMixStrategyAI` |
+| Input features | **66 floats per stem, concatenated** — `input_feature_count` must equal `66 × stem count` | `OnnxModelInference::run` |
 | `allowed_tasks` | must include `mix_parameters` | `OnnxModelInference::run` |
 
-Two consequences worth knowing before authoring a pack:
+Two things to know before you author a pack:
 
-- **The stem count is baked into the model's input width.** Because features are concatenated per stem, a pack trained for 4 stems (`input_feature_count: 264`) is rejected outright on a 3-stem session. A model intended for varying stem counts must accept a padded or per-stem input, not a fixed concatenation.
-- **The leading public model is not plug-and-play.** `csteinmetz1/automix-toolkit` (Apache-2.0) is the best-licensed downloadable mixer — it predicts per-track gain and pan, which maps cleanly onto the `stem<N>_gain_db` / `stem<N>_pan` keys — but its published weights are PyTorch `.ckpt` checkpoints and its input is an audio encoder (log-mel/STFT), not the 66-float feature vector. Using it requires an ONNX export **and** a host-side audio-encoder frontend, so it is deliberately absent from the curated list rather than listed as broken.
+- **The stem count is baked into the input width.** A pack trained for 4 stems (`input_feature_count: 264`) is rejected on a 3-stem session. A model for varying stem counts must accept a padded or per-stem input.
+- **The leading public model is not plug-and-play.** `csteinmetz1/automix-toolkit` (Apache-2.0) predicts per-track gain and pan, which maps onto the `stem<N>_*` keys. But its weights are PyTorch `.ckpt` files and its input is an audio encoder, not the 66-float vector. It needs an ONNX export and a host-side encoder, so it is not on the curated list.
 
-#### Model Inference Contract (all scopes)
+### Model Inference Contracts
 
-`IModelInference` is a **features-in, scalars-out** interface. A request carries one flat `std::vector<double>` (`InferenceRequest::features`); a response carries flat named scalars (`InferenceResult::outputs`). There is no audio-tensor path through it. These six tasks are the complete set:
+The app has two inference interfaces.
+
+**1. `IModelInference`: features in, scalars out.** A request carries one flat `std::vector<double>`. A response carries named scalars. These tasks use it:
 
 | Task | Input | Output keys | Consumer |
 | :--- | :--- | :--- | :--- |
@@ -449,23 +361,27 @@ Two consequences worth knowing before authoring a pack:
 | `role_classifier` | 66 floats per stem | `prob_vocals`, `prob_bass`, `prob_drums`, `prob_fx` | `StemRoleClassifierAI` |
 | `stem_separation` | per-4096-sample-frame feature vector | `stem<N>_weight` \| `source<N>_weight` \| `mask_<N>` \| `<role>_weight` | `StemSeparator` |
 | `mix_master_override` | all stems' features, concatenated | `dryWet`, `targetLufs`, `preGainDb` (legacy) | `ModelStrategy` |
-| `ito_fxencoder`, `ito_predictor` | the first N stereo samples flattened channel-major into one `features` vector (encoder); the same vector with the encoder's 2048 outputs appended to it (predictor) — fed positionally, never bound by name | 2048-dim embedding, then 46 normalized chain parameters | `ItoMasterModelRunner` |
+| `ito_fxencoder`, `ito_predictor` | the first N stereo samples, flattened channel-major (encoder); the same vector plus the encoder's 2048 outputs (predictor) | 2048-dim embedding, then 46 normalized chain parameters | `ItoMasterModelRunner` |
 
-**Consequence: a model whose output is an audio-shaped tensor, or whose input needs audio semantics, cannot be used through this interface.** The wall is not the number of graph inputs — `xycld/BS-RoFormer-ONNX`, for example, has exactly one input and one output. It is two things the contract has no words for: (1) **output rank and volume** — BS-RoFormer returns a rank-5 `[1, 1, 2050, 801, 2]` float tensor (~3.3 M values), and `InferenceResult::outputs` is a `map<string, double>` that cannot carry a tensor at any rank; (2) **audio semantics on the way in** — `features` is a flat vector with no shape, no axis meaning, no channel identity, no phase and no STFT front-end, so there is no way to say "801 frames × 1025 bins × 2 channels × real/imag". That excludes essentially the whole published audio ecosystem — Demucs/HTDemucs, BS-Roformer and Mel-Band Roformer, Open-Unmix, Spleeter, Whisper, CLAP, PANNs, CED, Basic Pitch, CREPE, skey, beat-this, chordmini — regardless of license. Installing one yields a pack that validates and downloads, then either fails the `features.size() != input_feature_count` check or receives a feature vector where it expects audio.
+This interface cannot carry audio. Its output is a `map<string, double>`, and its input has no shape, channels or phase. A model that returns an audio-shaped tensor does not fit.
 
-This applies to the three **already-curated** separation models (`rysertio/Demucs-onnx`, `StemSplitio/htdemucs-ft-onnx`, `StemSplitio/htdemucs-6s-onnx`): the separator feeds them a per-frame feature vector and reads back per-stem weights, so with no weight key in the response it applies its own heuristic. `StemSeparator` now reports that case honestly — `SeparationResult::usedModel` is `false` and the log says the fallback weights were used — rather than claiming "Model-backed overlap-add separation completed".
+The three curated Demucs models (`rysertio/Demucs-onnx`, `StemSplitio/htdemucs-ft-onnx`, `StemSplitio/htdemucs-6s-onnx`) go through this interface. They return no weight keys, so the separator applies its own fixed rules. `StemSeparator` reports that honestly: `SeparationResult::usedModel` is `false`, and the log says it used fallback weights.
 
-The verified-later candidates below are held back by that single missing frontend, not by their licenses (licenses confirmed against the Hugging Face model API; all ungated):
+**2. `ITensorInference`: shaped tensors in and out.** `OnnxTensorInference` passes named float32 tensors to ONNX Runtime. `SeparationRunner` adds a host-side STFT around it. This is how the audio models run:
 
-| Model | License | Why it is not curated yet |
+| Model | Input the host builds | Output the host applies |
 | :--- | :--- | :--- |
-| `xycld/BS-RoFormer-ONNX` | MIT | emits a real-valued rank-5 mask tensor (real/imag on the trailing axis) that the caller multiplies against a host-side STFT; needs a tensor-level interface and an STFT front-end |
-| `musetric/skey-onnx` | MIT | expects 22.05 kHz audio, not the 66-float vector |
-| `musetric/chordmini-onnx` | MIT | expects a 144-bin log-CQT the host does not compute |
-| `musetric/beat-this-onnx` | MIT | expects a 128-bin log-mel the host does not compute |
-| `mispeech/ced-base` | Apache-2.0 | expects 16 kHz waveform input |
-| Basic Pitch `nmp.onnx` | Apache-2.0 | expects a 43844-sample CQT input |
+| `xycld/BS-RoFormer-ONNX` | STFT of the mix | a real/imaginary mask |
+| `MixDirective/open-unmix-umxhq-vocals-onnx` | STFT magnitudes | a ratio mask; the mix phase is kept |
 
-**The unblock is one interface, not a bigger catalog.** `ItoMasterModelRunner` already drives a real audio→audio→parameters graph in-process, so the pattern is proven; generalising it into a tensor-level audio interface (shaped, named float32 tensors in and out, plus a host-side STFT, alongside `IModelInference`) is what would make the entire download ecosystem reachable, and is the reason adding more curated ids before then only adds download size.
+These candidates are still held back. Each needs a front end the host does not compute yet. Their licenses are fine (confirmed against the Hugging Face model API; all ungated):
 
+| Model | License | What it needs |
+| :--- | :--- | :--- |
+| `musetric/skey-onnx` | MIT | 22.05 kHz audio input |
+| `musetric/chordmini-onnx` | MIT | a 144-bin log-CQT |
+| `musetric/beat-this-onnx` | MIT | a 128-bin log-mel |
+| `mispeech/ced-base` | Apache-2.0 | 16 kHz waveform input |
+| Basic Pitch `nmp.onnx` | Apache-2.0 | a 43844-sample CQT input |
 
+</details>

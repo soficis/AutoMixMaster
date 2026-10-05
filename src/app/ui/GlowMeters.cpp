@@ -211,8 +211,11 @@ void GlowMeters::paint(juce::Graphics& g) {
   auto area = getLocalBounds().toFloat().reduced(metrics::paddingSmall);
 
   // Labels at bottom
-  float labelHeight = 68.0f;
-  auto meterArea = area.withTrimmedBottom(labelHeight);
+  // 16 px for the LUFS bar strip, then the four readouts and the bar caption.
+  float labelHeight = 84.0f;
+  // The top strip holds the L/R captions drawn above the bars.
+  const float channelCaptionHeight = 14.0f;
+  auto meterArea = area.withTrimmedBottom(labelHeight).withTrimmedTop(channelCaptionHeight);
 
   // Two meter bars side by side
   float meterWidth = std::min(32.0f, meterArea.getWidth() * 0.35f);
@@ -231,8 +234,10 @@ void GlowMeters::paint(juce::Graphics& g) {
   // L/R labels
   g.setColour(colour(colours::textMuted));
   g.setFont(typography::caption());
-  g.drawText("L", leftBounds.withHeight(14.0f).translated(0.0f, -14.0f), juce::Justification::centred);
-  g.drawText("R", rightBounds.withHeight(14.0f).translated(0.0f, -14.0f), juce::Justification::centred);
+  g.drawText("L", leftBounds.withHeight(channelCaptionHeight).translated(0.0f, -channelCaptionHeight),
+             juce::Justification::centred);
+  g.drawText("R", rightBounds.withHeight(channelCaptionHeight).translated(0.0f, -channelCaptionHeight),
+             juce::Justification::centred);
 
   // LUFS bar below meters
   auto lufsBarArea = juce::Rectangle<float>(area.getX(), meterArea.getBottom() + 6.0f,
@@ -242,7 +247,8 @@ void GlowMeters::paint(juce::Graphics& g) {
 
 void GlowMeters::resized() {
   auto area = getLocalBounds().reduced(static_cast<int>(metrics::paddingSmall));
-  auto labelArea = area.removeFromBottom(68);
+  auto labelArea = area.removeFromBottom(84);
+  labelArea.removeFromTop(16); // the LUFS bar is painted here
 
   momentaryLabel_.setBounds(labelArea.removeFromTop(14));
   shortTermLabel_.setBounds(labelArea.removeFromTop(14));

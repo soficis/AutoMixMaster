@@ -6,6 +6,21 @@
 
 namespace automix::app {
 
+/// Button visual variants, selected via the "variant" component property.
+/// No property (or an unknown value) means primary.
+namespace buttonVariant {
+inline const juce::Identifier key{"variant"};
+inline constexpr const char* primary = "primary";
+inline constexpr const char* secondary = "secondary";
+inline constexpr const char* quiet = "quiet";
+inline constexpr const char* danger = "danger";
+} // namespace buttonVariant
+
+inline void setButtonVariant(juce::Button& button, const char* variant) {
+  button.getProperties().set(buttonVariant::key, juce::String(variant));
+  button.repaint();
+}
+
 /// Custom LookAndFeel for AutoMixMaster.
 /// Applies the dark audio-app theme defined in Theme.h to all standard JUCE widgets.
 class AutoMixLookAndFeel final : public juce::LookAndFeel_V4 {

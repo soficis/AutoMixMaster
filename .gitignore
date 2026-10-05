@@ -144,3 +144,8 @@ docs/*
 !docs/model-licensing-audit.json
 
 
+
+# README screenshots that are captured but not embedded
+assets/screenshots/model-hub.png
+assets/screenshots/settings.png
+assets/screenshots/shortcuts.png

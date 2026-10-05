@@ -13,10 +13,12 @@
 #include "app/ui/TaskOrchestrator.h"
 #include "app/ui/TransportBar.h"
 #include "app/ui/VerificationEngine.h"
+#include "ai/BsRoformerPack.h"
 #include "ai/GpuRuntimePack.h"
 #include "ai/HuggingFaceModelHub.h"
 #include "ai/ModelStorage.h"
 #include "ai/OnnxTensorInference.h"
+#include "ai/UmxPack.h"
 #include "renderers/RendererPipeline.h"
 #include "util/FileUtils.h"
 
@@ -111,12 +113,9 @@ MainLayout::MainLayout() {
   addAndMakeVisible(*taskCenter_);
 
   // Destructive Clear: MainLayout-owned (not part of TransportBar), confirmed on click.
-  clearTracksButton_.setTooltip("Clear Imported Tracks (asks for confirmation)");
+  clearTracksButton_.setTooltip("Remove all stems from the session");
   clearTracksButton_.setWantsKeyboardFocus(true);
-  clearTracksButton_.setColour(juce::TextButton::buttonColourId, colour(colours::surface));
-  clearTracksButton_.setColour(juce::TextButton::buttonOnColourId, colour(colours::surfaceLight));
-  clearTracksButton_.setColour(juce::TextButton::textColourOffId, colour(colours::warning));
-  clearTracksButton_.setColour(juce::TextButton::textColourOnId, colour(colours::warning));
+  setButtonVariant(clearTracksButton_, buttonVariant::danger);
   clearTracksButton_.onClick = [this] { onClearTracks(); };
   addAndMakeVisible(clearTracksButton_);
 
@@ -147,6 +146,7 @@ MainLayout::MainLayout() {
   wireControlDeckCallbacks();
   wireHeroWaveformCallbacks();
 
+  taskCenter_->onPreferredHeightChanged = [this] { resized(); };
   taskCenter_->onCancel = [this] { taskOrchestrator_->cancelActiveTask(); };
 
   // 5. Audio device & transport
@@ -159,6 +159,20 @@ MainLayout::MainLayout() {
   // 6. Application command manager: keyboard shortcuts are dispatched here
   commandManager_.setFirstCommandTarget(this);
   commandManager_.registerAllCommandsForTarget(this);
+
+  sessionManager_.markSaved();
+  refreshStemDependentUi();
+}
+
+void MainLayout::refreshStemDependentUi() {
+  const bool hasStems = !sessionManager_.session().stems.empty();
+  if (controlDeck_ != nullptr)
+    controlDeck_->setHasStems(hasStems);
+  if (heroWaveform_ != nullptr)
+    heroWaveform_->setHasStems(hasStems);
+  if (transportBar_ != nullptr)
+    transportBar_->setHasMedia(hasStems);
+  clearTracksButton_.setEnabled(hasStems);
 }
 
 // ── Controllers factory ────────────────────────────────────────
@@ -288,6 +302,7 @@ void MainLayout::initControllers() {
         safe->sessionManager_.session().stems = result.stems;
         safe->sessionManager_.session().originalMixPath = result.originalMixPath;
         updateStemPanelFromSession(safe->controlDeck_->getStemPanel(), safe->sessionManager_.session());
+        safe->refreshStemDependentUi();
         safe->taskOrchestrator_->finishTaskCompleted(ActiveTask::Import, "Import complete");
         safe->rebuildPreview();
 
@@ -497,16 +512,21 @@ void MainLayout::initControllers() {
 
         if (result.cancelled) {
           safe->taskOrchestrator_->finishTaskCancelled(ActiveTask::Session, "Session save cancelled");
+          safe->finishPendingSave(false);
           return;
         }
         if (!result.success) {
           safe->taskOrchestrator_->finishTaskFailed(ActiveTask::Session, result.errorText.toStdString());
+          safe->finishPendingSave(false);
           return;
         }
 
         safe->taskOrchestrator_->appendHistory("Session saved to " + juce::String(result.path));
-        safe->headerBar_->setSessionName(juce::File(result.path).getFileNameWithoutExtension());
+        safe->sessionManager_.markSaved();
+        safe->sessionShownModified_ = false;
+        safe->setSessionDisplayName(juce::File(result.path).getFileNameWithoutExtension());
         safe->taskOrchestrator_->finishTaskCompleted(ActiveTask::Session, "Session saved");
+        safe->finishPendingSave(true);
       });
     };
     cb.onLoadComplete = [safe](SessionLoadResult result) {
@@ -589,7 +609,7 @@ void MainLayout::resized() {
   fb.items.add(juce::FlexItem(*headerBar_).withHeight(static_cast<float>(kHeaderHeight)));
   fb.items.add(juce::FlexItem(*heroWaveform_).withFlex(1.5f).withMinHeight(120.0f));
   fb.items.add(juce::FlexItem(*controlDeck_).withFlex(2.5f).withMinHeight(180.0f));
-  fb.items.add(juce::FlexItem(*taskCenter_).withFlex(1.2f).withMinHeight(160.0f));
+  fb.items.add(juce::FlexItem(*taskCenter_).withHeight(static_cast<float>(taskCenter_->getPreferredHeight())));
 
   fb.performLayout(area);
 }
@@ -672,7 +692,7 @@ public:
     }
 
     closeButton_.setButtonText("Close");
-    closeButton_.onClick = [this] { exitModalState(0); };
+    closeButton_.onClick = [this] { closeHostWindow(); };
     addAndMakeVisible(closeButton_);
   }
 
@@ -698,13 +718,18 @@ public:
 
   bool keyPressed(const juce::KeyPress& key) override {
     if (key == juce::KeyPress::escapeKey) {
-      exitModalState(0);
+      closeHostWindow();
       return true;
     }
     return juce::Component::keyPressed(key);
   }
 
 private:
+  void closeHostWindow() {
+    if (auto* dw = findParentComponentOfClass<juce::DialogWindow>())
+      dw->exitModalState(0);
+  }
+
   static constexpr int kDialogWidth = 460;
   static constexpr int kDialogHeight = 560;
 
@@ -785,11 +810,14 @@ void MainLayout::onTogglePlayPause() {
 }
 
 void MainLayout::showShortcutsDialog() {
-  auto* dialog = new ShortcutsDialog(shortcutTable());
-  dialog->setAlwaysOnTop(true);
-  dialog->centreWithSize(dialog->getWidth(), dialog->getHeight());
-  dialog->setVisible(true);
-  dialog->enterModalState(true, nullptr, true); // modal manager owns + deletes it
+  juce::DialogWindow::LaunchOptions options;
+  options.content.setOwned(new ShortcutsDialog(shortcutTable()));
+  options.dialogTitle = "Keyboard Shortcuts";
+  options.dialogBackgroundColour = colour(colours::surface);
+  options.escapeKeyTriggersCloseButton = true;
+  options.useNativeTitleBar = true;
+  options.resizable = false;
+  options.launchAsync();
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -798,6 +826,15 @@ void MainLayout::showShortcutsDialog() {
 
 void MainLayout::timerCallback() {
   updateTransportDisplay();
+
+  if (++modifiedCheckTicks_ >= 30) {
+    modifiedCheckTicks_ = 0;
+    const bool modified = sessionManager_.isModified();
+    if (modified != sessionShownModified_) {
+      sessionShownModified_ = modified;
+      refreshSessionTitle();
+    }
+  }
 
   // Reconcile the transport bar with the atomic play state (covers end-of-track
   // auto-stop, which is realtime-only and posts no change message).
@@ -971,10 +1008,10 @@ void MainLayout::onClearTracks() {
     return; // Nothing imported; nothing to clear.
 
   juce::AlertWindow::showOkCancelBox(
-      juce::MessageBoxIconType::WarningIcon, "Clear imported tracks",
-      "Clear " + juce::String(numTracks) +
-          " imported tracks? This cannot be undone \xe2\x80\x94 use Undo after T4.1.",
-      "Clear", "Cancel", this,
+      juce::MessageBoxIconType::WarningIcon, "Remove all stems?",
+      "Remove all " + juce::String(numTracks) + (numTracks == 1 ? " stem" : " stems") +
+          " from this session? This can't be undone.",
+      "Remove stems", "Cancel", this,
       juce::ModalCallbackFunction::create([safe = safeAsync(this), numTracks](int result) {
         if (safe != nullptr && confirmClear(numTracks, result == 1))
           safe->performClearTracks();
@@ -987,6 +1024,7 @@ void MainLayout::performClearTracks() {
   transportBar_->setTimeDisplay(0.0, 0.0);
   sessionManager_.session().stems.clear();
   detail::updateStemPanelFromSession(controlDeck_->getStemPanel(), sessionManager_.session());
+  refreshStemDependentUi();
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1076,6 +1114,7 @@ void MainLayout::wireControlDeckCallbacks() {
     const bool enabled = controlDeck_->getSeparatedStemsToggle().getToggleState();
     sessionManager_.session().aiStemsEnabled = enabled;
     controlDeck_->getTensorSeparationToggle().setEnabled(enabled);
+    controlDeck_->setSeparationControlsVisible(enabled);
   };
   controlDeck_->getTensorSeparationToggle().onClick = [this] {
     const bool enabled = controlDeck_->getTensorSeparationToggle().getToggleState();
@@ -1108,6 +1147,7 @@ void MainLayout::wireHeroWaveformCallbacks() {
   heroWaveform_->onSeek = [this](double progress) {
     transportController_.seekToFraction(std::clamp(progress, 0.0, 1.0));
   };
+  heroWaveform_->onImportRequested = [this] { onImport(); };
   heroWaveform_->onFilesDropped = [this](std::vector<juce::File> files) {
     importFiles(std::move(files));
   };
@@ -1538,9 +1578,13 @@ void MainLayout::startBatchVerification(const std::string& outputFolder) {
 // Action: Save Session
 // ─────────────────────────────────────────────────────────────────
 
-void MainLayout::onSaveSession() {
+void MainLayout::onSaveSession(std::function<void(bool)> done) {
+  finishPendingSave(false);
+  pendingSaveCompletion_ = std::move(done);
+
   if (taskOrchestrator_->isTaskRunning()) {
     taskOrchestrator_->setStatus("Busy", "A task is already running");
+    finishPendingSave(false);
     return;
   }
 
@@ -1554,11 +1598,13 @@ void MainLayout::onSaveSession() {
     const auto selected = chooser.getResult();
     if (selected == juce::File()) {
       saveSessionChooser_.reset();
+      finishPendingSave(false);
       return;
     }
 
     if (!taskOrchestrator_->beginTask(ActiveTask::Session, "Saving session", "", "Session save started")) {
       saveSessionChooser_.reset();
+      finishPendingSave(false);
       return;
     }
 
@@ -1568,6 +1614,73 @@ void MainLayout::onSaveSession() {
                                     taskOrchestrator_->cancelFlag(ActiveTask::Session));
     saveSessionChooser_.reset();
   });
+}
+
+void MainLayout::finishPendingSave(bool success) {
+  if (auto done = std::move(pendingSaveCompletion_)) {
+    pendingSaveCompletion_ = nullptr;
+    done(success);
+  }
+}
+
+void MainLayout::setSessionDisplayName(const juce::String& name) {
+  sessionDisplayName_ = name;
+  refreshSessionTitle();
+}
+
+void MainLayout::refreshSessionTitle() {
+  headerBar_->setSessionName(sessionDisplayName_ + (sessionShownModified_ ? " *" : ""));
+}
+
+bool MainLayout::requestQuit(std::function<void()> quitNow) {
+  return requestQuitStep(std::move(quitNow), false);
+}
+
+bool MainLayout::requestQuitStep(std::function<void()> quitNow, bool taskQuitConfirmed) {
+  const auto step = nextQuitStep(taskOrchestrator_->isTaskRunning(), taskQuitConfirmed,
+                                 sessionManager_.isModified());
+  if (step == QuitStep::QuitNow) {
+    quitNow();
+    return true;
+  }
+  if (quitPromptOpen_)
+    return false;
+  quitPromptOpen_ = true;
+
+  if (step == QuitStep::ConfirmRunningTask) {
+    juce::AlertWindow::showOkCancelBox(
+        juce::MessageBoxIconType::WarningIcon, "Task still running",
+        "A task is still running. Quitting now will cancel it, and an unfinished export may be left "
+        "incomplete. Quit anyway?",
+        "Quit", "Cancel", this,
+        juce::ModalCallbackFunction::create([safe = safeAsync(this), quitNow](int result) {
+          if (safe == nullptr)
+            return;
+          safe->quitPromptOpen_ = false;
+          if (result == 1)
+            safe->requestQuitStep(quitNow, true);
+        }));
+    return false;
+  }
+
+  juce::AlertWindow::showYesNoCancelBox(
+      juce::MessageBoxIconType::QuestionIcon, "Save changes?",
+      "Save changes to " + sessionDisplayName_ + " before closing?",
+      "Save", "Don't Save", "Cancel", this,
+      juce::ModalCallbackFunction::create([safe = safeAsync(this), quitNow](int result) {
+        if (safe == nullptr)
+          return;
+        safe->quitPromptOpen_ = false;
+        if (result == 1) {
+          safe->onSaveSession([quitNow](bool saved) {
+            if (saved)
+              quitNow();
+          });
+        } else if (result == 2) {
+          quitNow();
+        }
+      }));
+  return false;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1726,8 +1839,9 @@ void MainLayout::onModelsDialog() {
   options.escapeKeyTriggersCloseButton = true;
   options.useNativeTitleBar = true;
   options.resizable = true;
-  options.launchAsync();
-  taskOrchestrator_->appendHistory("Model browser opened");
+  panel->setSize(760, 560);
+  if (auto* dialog = options.launchAsync())
+    dialog->setResizeLimits(640, 460, 4096, 4096);
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1746,7 +1860,7 @@ void MainLayout::onSettings() {
                                              : "Export sidecar JSON disabled");
       },
       gpuRuntimeStatusText(), gpuRuntimeButtonText(), [this] { onGpuRuntimeButton(); });
-  settingsPanel->setSize(540, 430);
+  settingsPanel->setSize(540, 520);
 
   juce::DialogWindow::LaunchOptions options;
   options.content.setOwned(settingsPanel);
@@ -1756,7 +1870,6 @@ void MainLayout::onSettings() {
   options.useNativeTitleBar = true;
   options.resizable = false;
   options.launchAsync();
-  taskOrchestrator_->appendHistory("Settings dialog opened");
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1822,8 +1935,10 @@ void MainLayout::updateMeterPanel(const automaster::MasteringReport& report) {
 void MainLayout::applyLoadedSession(domain::Session loadedSession, const juce::String& sourcePath) {
   sessionManager_.replaceSession(std::move(loadedSession));
   const auto& session = sessionManager_.session();
-  headerBar_->setSessionName(juce::File(sourcePath).getFileNameWithoutExtension());
+  sessionShownModified_ = false;
+  setSessionDisplayName(juce::File(sourcePath).getFileNameWithoutExtension());
   updateStemPanelFromSession(controlDeck_->getStemPanel(), session);
+  refreshStemDependentUi();
   transportBar_->setLoopEnabled(session.timeline.loopEnabled);
   heroWaveform_->setZoom(session.timeline.zoom, 0.5);
   refreshRenderers();
@@ -1833,6 +1948,7 @@ void MainLayout::applyLoadedSession(domain::Session loadedSession, const juce::S
   refreshProjectProfiles();
   applySessionUiSelections();
   syncSessionUiSelections();
+  sessionManager_.markSaved();
   taskOrchestrator_->appendHistory("Session loaded: " + sourcePath);
   rebuildPreview();
 }
@@ -2015,9 +2131,10 @@ void MainLayout::updateSeparationModelBadge() {
     return;
   }
 
+  const juce::String noneText(juce::CharPointer_UTF8("Model: none installed \xe2\x80\x94 open Models"));
   const auto activeId = modelManager_.activePackId("separation");
   if (activeId.empty()) {
-    controlDeck_->setSeparationModelStatus("Separation model: none", false);
+    controlDeck_->setSeparationModelStatus(noneText, false);
     return;
   }
 
@@ -2026,7 +2143,7 @@ void MainLayout::updateSeparationModelBadge() {
     return util::toLower(pack.taskScope) == "separation" && pack.id == activeId;
   });
   if (selected == packs.end()) {
-    controlDeck_->setSeparationModelStatus("Separation model: none", false);
+    controlDeck_->setSeparationModelStatus(noneText, false);
     return;
   }
 
@@ -2034,7 +2151,21 @@ void MainLayout::updateSeparationModelBadge() {
   const auto modelPath = selected->rootPath / selected->modelFile;
   const bool ready = std::filesystem::is_regular_file(modelPath, error) && !error;
   const auto displayName = selected->name.empty() ? selected->id : selected->name;
-  auto badgeText = juce::String("Separation model: ") + juce::String(displayName);
+  const auto mentions = [&](const char* repoId) {
+    const juce::String repo(repoId);
+    const auto sanitizedRepo = repo.replaceCharacter('/', '_');
+    for (const auto& field : {selected->id, selected->name, selected->source}) {
+      const juce::String value(field);
+      if (value.containsIgnoreCase(repo) || value.containsIgnoreCase(sanitizedRepo))
+        return true;
+    }
+    return false;
+  };
+  juce::String badgeText = "Model: " + juce::String(displayName);
+  if (mentions(ai::kBsRoformerRepoId))
+    badgeText = "Model: BS-RoFormer (best quality, GPU recommended)";
+  else if (mentions(ai::kUmxVocalsRepoId))
+    badgeText = "Model: Open-Unmix (fast, lower quality)";
   if (!ready) {
     badgeText << " (missing)";
   }
@@ -2140,6 +2271,7 @@ void MainLayout::applySessionUiSelections() {
   controlDeck_->getTensorSeparationToggle().setToggleState(session.renderSettings.tensorSeparationEnabled,
                                                            juce::dontSendNotification);
   controlDeck_->getTensorSeparationToggle().setEnabled(session.aiStemsEnabled);
+  controlDeck_->setSeparationControlsVisible(session.aiStemsEnabled);
   controlDeck_->getBatchRecursiveToggle().setToggleState(session.batchRecursiveEnabled, juce::dontSendNotification);
   controlDeck_->getRendererChainToggle().setToggleState(
       session.renderSettings.rendererChainEnabled,
@@ -2376,9 +2508,23 @@ juce::String MainLayout::gpuRuntimeButtonText() const {
 void MainLayout::onGpuRuntimeButton() {
   namespace pack = ai::GpuRuntimePack;
   if (pack::isInstalled(pack::defaultRoot())) {
-    const auto removed = pack::uninstall();
-    ai::invalidateTensorProviderProbeCache();
-    taskOrchestrator_->appendHistory(juce::String(removed.message));
+    juce::AlertWindow::showAsync(
+        juce::MessageBoxOptions::makeOptionsOkCancel(
+            juce::MessageBoxIconType::WarningIcon,
+            "Remove GPU runtime?",
+            "This deletes the downloaded NVIDIA libraries. The vocal model will run on the CPU until you install them "
+            "again.",
+            "Remove",
+            "Cancel"),
+        [safe = juce::Component::SafePointer<MainLayout>(this)](const int result) {
+          if (result == 0 || safe == nullptr) {
+            return;
+          }
+          namespace pack = ai::GpuRuntimePack;
+          const auto removed = pack::uninstall();
+          ai::invalidateTensorProviderProbeCache();
+          safe->taskOrchestrator_->appendHistory(juce::String(removed.message));
+        });
     return;
   }
   gpuRuntimeOffered_ = true;  // asked explicitly; no need to offer again this run

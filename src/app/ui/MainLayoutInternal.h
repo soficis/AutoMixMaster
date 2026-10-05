@@ -18,6 +18,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <nlohmann/json.hpp>
 
+#include "app/style/AutoMixLookAndFeel.h"
 #include "ai/ModelManager.h"
 #include "ai/OnnxModelInference.h"
 #include "automaster/IAutoMasterStrategy.h"
@@ -246,6 +247,7 @@ class SettingsPanel final : public juce::Component {
     gpuStatusLabel_.setText(gpuStatus, juce::dontSendNotification);
     gpuButton_.setButtonText(gpuButtonText);
     gpuButton_.setVisible(gpuButtonText.isNotEmpty());
+    setButtonVariant(gpuButton_, gpuButtonText == "Remove" ? buttonVariant::danger : buttonVariant::secondary);
     gpuButton_.onClick = [this] {
       gpuButton_.setEnabled(false);  // one action per dialog
       if (onGpuButton_) {
@@ -254,6 +256,15 @@ class SettingsPanel final : public juce::Component {
     };
     addAndMakeVisible(gpuStatusLabel_);
     addChildComponent(gpuButton_);
+
+    for (auto* heading : {&exportHeading_, &gpuHeading_, &audioHeading_}) {
+      heading->setFont(theme::typography::subhead());
+      heading->setColour(juce::Label::textColourId, theme::colour(theme::colours::textMuted));
+      addAndMakeVisible(*heading);
+    }
+    exportHeading_.setText("Export", juce::dontSendNotification);
+    gpuHeading_.setText("GPU acceleration", juce::dontSendNotification);
+    audioHeading_.setText("Audio output", juce::dontSendNotification);
 
     reportSidecarToggle_.setButtonText("Write .report.json sidecar next to each exported file");
     reportSidecarToggle_.setTooltip("Disable to export only audio files without per-file JSON report sidecars.");
@@ -269,9 +280,12 @@ class SettingsPanel final : public juce::Component {
   }
 
   void resized() override {
+    styleAudioSelectorButtons(audioSelector_);
     auto area = getLocalBounds().reduced(10);
+    exportHeading_.setBounds(area.removeFromTop(24));
     reportSidecarToggle_.setBounds(area.removeFromTop(28));
-    area.removeFromTop(6);
+    area.removeFromTop(10);
+    gpuHeading_.setBounds(area.removeFromTop(24));
     auto gpuRow = area.removeFromTop(28);
     if (gpuButton_.isVisible()) {
       gpuButton_.setBounds(gpuRow.removeFromRight(130));
@@ -279,13 +293,29 @@ class SettingsPanel final : public juce::Component {
     }
     gpuStatusLabel_.setBounds(gpuRow);
     area.removeFromTop(10);
+    audioHeading_.setBounds(area.removeFromTop(24));
     audioSelector_.setBounds(area);
   }
 
  private:
+  // The "Test" button lives inside JUCE's audio selector; find it by its text.
+  static void styleAudioSelectorButtons(juce::Component& parent) {
+    for (auto* child : parent.getChildren()) {
+      if (auto* button = dynamic_cast<juce::TextButton*>(child)) {
+        if (button->getButtonText() == "Test")
+          setButtonVariant(*button, buttonVariant::secondary);
+      } else if (child != nullptr) {
+        styleAudioSelectorButtons(*child);
+      }
+    }
+  }
+
   juce::AudioDeviceSelectorComponent audioSelector_;
   juce::ToggleButton reportSidecarToggle_;
   std::function<void(bool)> onWriteReportSidecarChanged_;
+  juce::Label exportHeading_;
+  juce::Label gpuHeading_;
+  juce::Label audioHeading_;
   juce::Label gpuStatusLabel_;
   juce::TextButton gpuButton_;
   std::function<void()> onGpuButton_;

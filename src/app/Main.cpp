@@ -28,6 +28,13 @@ public:
     setVisible(true);
   }
 
+  bool requestQuit(std::function<void()> quitNow) {
+    if (auto* layout = dynamic_cast<MainLayout*>(getContentComponent()))
+      return layout->requestQuit(std::move(quitNow));
+    quitNow();
+    return true;
+  }
+
   void closeButtonPressed() override {
     juce::JUCEApplication::getInstance()->systemRequestedQuit();
   }
@@ -48,6 +55,14 @@ public:
     mainWindow_ = std::make_unique<MainWindow>(getApplicationName());
     // Warm up ONNX Runtime asynchronously to avoid UI stalls on adapter discovery
     automix::ai::OrtRuntime::instance().warmUpAsync();
+  }
+
+  void systemRequestedQuit() override {
+    if (mainWindow_ == nullptr) {
+      quit();
+      return;
+    }
+    mainWindow_->requestQuit([] { juce::JUCEApplication::quit(); });
   }
 
   void shutdown() override {

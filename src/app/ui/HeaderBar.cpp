@@ -1,5 +1,7 @@
 #include "app/ui/HeaderBar.h"
 
+#include "app/style/AutoMixLookAndFeel.h"
+
 namespace automix::app {
 
 using namespace theme;
@@ -15,7 +17,13 @@ HeaderBar::HeaderBar() {
   addAndMakeVisible(loadButton_);
   addAndMakeVisible(modelsButton_);
   addAndMakeVisible(settingsButton_);
-  addAndMakeVisible(profileSelector_);
+  // Profile selection lives in the ControlDeck "Profile" combo; this selector is never populated.
+  addChildComponent(profileSelector_);
+  profileSelector_.setVisible(false);
+
+  for (juce::Button* btn : {static_cast<juce::Button*>(&saveButton_), static_cast<juce::Button*>(&loadButton_),
+                            static_cast<juce::Button*>(&modelsButton_), static_cast<juce::Button*>(&settingsButton_)})
+    setButtonVariant(*btn, buttonVariant::quiet);
 
   saveButton_.setTooltip("Save Session (Ctrl+S)");
   loadButton_.setTooltip("Load Session (Ctrl+O)");
@@ -77,9 +85,6 @@ void HeaderBar::resized() {
   modelsButton_.setBounds(rightArea.removeFromRight(80).reduced(2));
   loadButton_.setBounds(rightArea.removeFromRight(80).reduced(2));
   saveButton_.setBounds(rightArea.reduced(2));
-
-  auto profileArea = area.removeFromLeft(220);
-  profileSelector_.setBounds(profileArea.reduced(2));
 
   sessionNameLabel_.setBounds(area);
 }

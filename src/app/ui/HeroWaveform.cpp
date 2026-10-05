@@ -127,6 +127,26 @@ void HeroWaveform::mouseDrag(const juce::MouseEvent& event) {
     onSeek(progress);
 }
 
+void HeroWaveform::mouseUp(const juce::MouseEvent& event) {
+  if (shouldOpenImportOnClick(hasStems_, event.mods.isLeftButtonDown(), event.mouseWasClicked(),
+                              getLocalBounds().contains(event.getPosition())) &&
+      onImportRequested)
+    onImportRequested();
+}
+
+void HeroWaveform::setHasStems(bool hasStems) {
+  if (hasStems_ == hasStems)
+    return;
+  hasStems_ = hasStems;
+  repaint();
+}
+
+juce::MouseCursor HeroWaveform::getMouseCursor() {
+  if (!hasStems_)
+    return juce::MouseCursor::PointingHandCursor;
+  return juce::Component::getMouseCursor();
+}
+
 void HeroWaveform::mouseWheelMove(const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel) {
   const double zoomSensitivity = 0.3;
   double zoomDelta = -wheel.deltaY * zoomSensitivity;
@@ -277,7 +297,8 @@ void HeroWaveform::drawZoomControls(juce::Graphics& g) {
   };
 
   drawBtn(0, "+", zoomInHover_);
-  drawBtn(1, "\u2212", zoomOutHover_);
+  // UTF-8 bytes, not "\u2212": MSVC turns that escape into "?" in a narrow string.
+  drawBtn(1, juce::String(juce::CharPointer_UTF8("\xe2\x88\x92")), zoomOutHover_);
   drawBtn(2, "R", zoomResetHover_);
 
   // Zoom level text
@@ -355,17 +376,39 @@ void HeroWaveform::paint(juce::Graphics& g) {
   float midY = h * 0.5f;
 
   if (waveformPeaks_.empty()) {
+    const auto zone = bounds.reduced(12.0f);
+    if (isDragOver_) {
+      g.setColour(colour(colours::primary).withAlpha(0.08f));
+      g.fillRoundedRectangle(zone, metrics::cornerRadiusLarge);
+      g.setColour(colour(colours::primary));
+      g.drawRoundedRectangle(zone, metrics::cornerRadiusLarge, 2.0f);
+    } else {
+      juce::Path zonePath;
+      zonePath.addRoundedRectangle(zone, metrics::cornerRadiusLarge);
+      juce::Path dashedPath;
+      const float dashes[] = {6.0f, 4.0f};
+      juce::PathStrokeType(1.5f).createDashedStroke(dashedPath, zonePath, dashes, 2);
+      g.setColour(colour(colours::surfaceBorder));
+      g.fillPath(dashedPath);
+    }
+
     auto upperHalf = bounds.withHeight(h * 0.5f);
     g.setFont(typography::subhead());
-    g.setColour(colour(colours::primary).withAlpha(0.85f));
-    g.drawText("Drop stems here  or  click Import (Ctrl+I)", upperHalf, juce::Justification::centredBottom);
+    g.setColour(colour(colours::text));
+    g.drawText(hasStems_ ? "Preview unavailable" : "Drop stems here or click to import", upperHalf,
+               juce::Justification::centredBottom);
 
-    auto lowerHalf = bounds.withY(h * 0.5f).withHeight(h * 0.5f);
-    g.setFont(typography::caption());
-    g.setColour(colour(colours::textMuted));
-    g.drawText("1  Import Stems    ->    2  Mix + Master    ->    3  Export\n"
-               "Tip: enable 'AI Stem Separation' in the control deck to split one full mix into stems.",
-               lowerHalf.reduced(0.0f, 8.0f), juce::Justification::centredTop);
+    if (!hasStems_) {
+      auto lowerHalf = bounds.withY(h * 0.5f).withHeight(h * 0.5f);
+      g.setFont(typography::caption());
+      g.setColour(colour(colours::textMuted));
+      const auto arrow = juce::String(juce::CharPointer_UTF8("\xe2\x86\x92"));
+      auto steps = lowerHalf.reduced(0.0f, 8.0f);
+      g.drawText("1 Import stems  " + arrow + "  2 Mix + Master  " + arrow + "  3 Export",
+                 steps.removeFromTop(18.0f), juce::Justification::centredTop);
+      g.drawText("One file? Turn on AI Stem Separation first.", steps.removeFromTop(18.0f),
+                 juce::Justification::centredTop);
+    }
   } else {
     // Draw stem overlay if we have per-stem data
     if (numStemGroups_ > 0) {
@@ -440,7 +483,7 @@ void HeroWaveform::paint(juce::Graphics& g) {
     drawZoomControls(g);
   }
 
-  if (isDragOver_) {
+  if (isDragOver_ && !waveformPeaks_.empty()) {
     g.setColour(colour(colours::primary).withAlpha(0.12f));
     g.fillAll();
     g.setColour(colour(colours::primary));

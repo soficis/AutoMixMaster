@@ -17,6 +17,8 @@ public:
   bool keyPressed(const juce::KeyPress& key) override;
 
   void setPlaying(bool playing);
+  /// Enables the skip/play/stop buttons only when there is media to transport.
+  void setHasMedia(bool hasMedia);
   void setTimeDisplay(double currentSeconds, double totalSeconds);
   void setVolume(double volume);
   void setLoopEnabled(bool enabled);

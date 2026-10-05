@@ -68,28 +68,58 @@ AutoMixLookAndFeel::AutoMixLookAndFeel() {
 // Button
 // ─────────────────────────────────────────────────────────────────
 
+namespace {
+juce::String variantOf(const juce::Button& button) {
+  return button.getProperties()[buttonVariant::key].toString();
+}
+} // namespace
+
 void AutoMixLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& button,
                                               const juce::Colour& /*backgroundColour*/,
                                               bool shouldDrawButtonAsHighlighted,
                                               bool shouldDrawButtonAsDown) {
   auto bounds = button.getLocalBounds().toFloat().reduced(0.5f);
   auto cornerSize = metrics::cornerRadius;
+  const auto variant = variantOf(button);
+  const bool enabled = button.isEnabled();
 
-  juce::Colour bg;
-  if (!button.isEnabled()) {
-    bg = colour(colours::surfaceBorder);
-  } else if (shouldDrawButtonAsDown) {
-    bg = colour(colours::primaryPressed);
-  } else if (shouldDrawButtonAsHighlighted) {
-    bg = colour(colours::primary).interpolatedWith(colour(colours::primaryHover), 0.6f);
-  } else if (button.getToggleState()) {
-    bg = colour(colours::primary);
+  if (!enabled) {
+    // Disabled: no fill, outline only for primary/secondary so it never out-shouts an enabled button.
+    if (variant != buttonVariant::quiet && variant != buttonVariant::danger) {
+      g.setColour(colour(colours::surfaceBorder));
+      g.drawRoundedRectangle(bounds, cornerSize, 1.0f);
+    }
+  } else if (variant == buttonVariant::secondary) {
+    juce::Colour bg = colour(colours::surfaceLight);
+    if (enabled && shouldDrawButtonAsDown)
+      bg = bg.darker(0.1f);
+    else if (enabled && shouldDrawButtonAsHighlighted)
+      bg = bg.brighter(0.1f);
+    g.setColour(bg);
+    g.fillRoundedRectangle(bounds, cornerSize);
+    g.setColour(colour(colours::surfaceBorder));
+    g.drawRoundedRectangle(bounds, cornerSize, 1.0f);
+  } else if (variant == buttonVariant::quiet || variant == buttonVariant::danger) {
+    if (enabled && (shouldDrawButtonAsHighlighted || shouldDrawButtonAsDown)) {
+      g.setColour(variant == buttonVariant::quiet ? colour(colours::surfaceLight)
+                                                  : colour(colours::error).withAlpha(0.15f));
+      g.fillRoundedRectangle(bounds, cornerSize);
+    }
   } else {
-    bg = colour(colours::primary);
-  }
+    juce::Colour bg;
+    if (shouldDrawButtonAsDown) {
+      bg = colour(colours::primaryPressed);
+    } else if (shouldDrawButtonAsHighlighted) {
+      bg = colour(colours::primary).interpolatedWith(colour(colours::primaryHover), 0.6f);
+    } else if (button.getToggleState()) {
+      bg = colour(colours::primary);
+    } else {
+      bg = colour(colours::primary);
+    }
 
-  g.setColour(bg);
-  g.fillRoundedRectangle(bounds, cornerSize);
+    g.setColour(bg);
+    g.fillRoundedRectangle(bounds, cornerSize);
+  }
 
   // Focus ring
   drawFocusRing(g, button);
@@ -101,7 +131,14 @@ void AutoMixLookAndFeel::drawButtonText(juce::Graphics& g, juce::TextButton& but
   auto font = getTextButtonFont(button, button.getHeight());
   g.setFont(font);
 
-  auto textColour = button.isEnabled() ? colour(colours::text) : colour(colours::textDisabled);
+  const auto variant = variantOf(button);
+  juce::Colour textColour = colour(colours::text);
+  if (variant == buttonVariant::quiet)
+    textColour = colour(colours::primaryHover);
+  else if (variant == buttonVariant::danger)
+    textColour = colour(colours::error);
+  if (!button.isEnabled())
+    textColour = colour(colours::textDisabled);
 
   g.setColour(textColour);
 
@@ -366,7 +403,9 @@ void AutoMixLookAndFeel::drawToggleButton(juce::Graphics& g, juce::ToggleButton&
 // Fonts
 // ─────────────────────────────────────────────────────────────────
 
-juce::Font AutoMixLookAndFeel::getTextButtonFont(juce::TextButton& /*button*/, int /*buttonHeight*/) {
+juce::Font AutoMixLookAndFeel::getTextButtonFont(juce::TextButton& button, int /*buttonHeight*/) {
+  if (static_cast<bool>(button.getProperties().getWithDefault("compact", false)))
+    return typography::caption();
   return typography::body();
 }
 

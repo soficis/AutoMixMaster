@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <utility>
 
 #include "domain/Session.h"
@@ -15,8 +16,15 @@ class SessionManager {
 
   void replaceSession(domain::Session session);
 
+  /// Records the current session as the saved baseline for isModified().
+  void markSaved();
+  bool isModified() const;
+
  private:
+  std::string snapshot() const;
+
   domain::Session session_;
+  std::string savedSnapshot_;
 };
 
 } // namespace automix::app

@@ -3,6 +3,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include "app/ui/SessionManager.h"
 #include "domain/JsonSerialization.h"
 #include "engine/SessionRepository.h"
 
@@ -179,4 +180,35 @@ TEST_CASE("Sessions from before PhaseLimiter became opt-in load with BuiltIn", "
 
   REQUIRE(automix::domain::Session{}.schemaVersion == 3);
   REQUIRE(automix::domain::RenderSettings{}.rendererName == "BuiltIn");
+}
+TEST_CASE("Default session uses the Default Streaming master preset", "[session]") {
+  const automix::domain::Session session;
+  REQUIRE(session.selectedMasterPreset == automix::domain::MasterPreset::DefaultStreaming);
+}
+
+TEST_CASE("Old session without selectedMasterPreset keeps the Udio Optimized fallback", "[session]") {
+  const nlohmann::json legacy = {{"schemaVersion", 1}, {"sessionName", "legacy"}};
+  REQUIRE(legacy.get<automix::domain::Session>().selectedMasterPreset ==
+          automix::domain::MasterPreset::UdioOptimized);
+}
+
+TEST_CASE("Explicit default_streaming master preset round-trips", "[session]") {
+  automix::domain::Session session;
+  REQUIRE(session.selectedMasterPreset == automix::domain::MasterPreset::DefaultStreaming);
+  const nlohmann::json encoded = session;
+  REQUIRE(encoded.at("selectedMasterPreset").get<std::string>() == "default_streaming");
+  REQUIRE(encoded.get<automix::domain::Session>().selectedMasterPreset ==
+          automix::domain::MasterPreset::DefaultStreaming);
+}
+
+TEST_CASE("SessionManager tracks unsaved changes", "[session]") {
+  automix::app::SessionManager manager;
+  manager.markSaved();
+  REQUIRE_FALSE(manager.isModified());
+
+  manager.session().selectedMasterPreset = automix::domain::MasterPreset::Broadcast;
+  REQUIRE(manager.isModified());
+
+  manager.markSaved();
+  REQUIRE_FALSE(manager.isModified());
 }

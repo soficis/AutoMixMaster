@@ -550,8 +550,11 @@ if(BUILD_TESTING)
     tests/unit/TestMain.cpp
     tests/unit/ControllerTests.cpp
     tests/unit/TaskCenterPanelTests.cpp
+    tests/unit/ControlDeckTests.cpp
+    tests/unit/UiDecisionTests.cpp
     tests/unit/SessionSerializationTests.cpp
     tests/unit/LameDownloaderTests.cpp
+    src/app/ui/SessionManager.cpp
     tests/unit/AudioIoTests.cpp
     tests/unit/AnalysisTests.cpp
     tests/unit/StemOriginSafetyTests.cpp
@@ -591,6 +594,9 @@ if(BUILD_TESTING)
     tests/integration/PipelineIntegrationTests.cpp
     src/app/ui/TaskCenterPanel.cpp
     src/app/style/AutoMixLookAndFeel.cpp
+    src/app/ui/ControlDeck.cpp
+    src/app/ui/StemPanel.cpp
+    src/app/ui/GlowMeters.cpp
     src/app/controllers/ModelController.cpp
     src/app/controllers/ImportController.cpp
     src/app/controllers/ExportController.cpp

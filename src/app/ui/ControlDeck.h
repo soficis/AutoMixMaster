@@ -46,6 +46,11 @@ public:
   juce::ToggleButton& getBatchRecursiveToggle() { return batchRecursiveToggle_; }
   void setRendererChainPreviewText(const juce::String& text);
   void setSeparationModelStatus(const juce::String& text, bool ready);
+  /// Enables Auto Mix, Auto Master, Mix + Master and Export only when stems exist; Import becomes the
+  /// primary action while the session is empty.
+  void setHasStems(bool hasStems);
+  /// Progressive disclosure: the Vocal Model toggle and model label are shown only while AI Stem Separation is on.
+  void setSeparationControlsVisible(bool visible);
 
 private:
   std::unique_ptr<StemPanel> stemPanel_;
@@ -80,12 +85,13 @@ private:
   juce::Slider residualBlendSlider_;
   juce::ToggleButton separatedStemsToggle_{"AI Stem Separation"};
   juce::ToggleButton tensorSeparationToggle_{"Vocal Model"};
-  juce::Label separationModelStatusLabel_{"", "Separation model: none"};
+  juce::Label separationModelStatusLabel_{"", "Model: none installed"};
   juce::ToggleButton batchRecursiveToggle_{"Recursive Batch"};
 
   // Advanced section toggle
   juce::TextButton advancedToggle_{"> Advanced"};
   bool advancedExpanded_ = false;
+  bool separationControlsVisible_ = false;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ControlDeck)
 };

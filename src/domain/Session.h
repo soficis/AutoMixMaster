@@ -27,7 +27,7 @@ struct Session {
   double residualBlend = 0.0;
   bool aiStemsEnabled = false;
   bool batchRecursiveEnabled = false;
-  MasterPreset selectedMasterPreset = MasterPreset::UdioOptimized;
+  MasterPreset selectedMasterPreset = MasterPreset::DefaultStreaming;
   MasterPreset selectedPlatformPreset = MasterPreset::YouTube;
   std::vector<Stem> stems;
   std::vector<Bus> buses;

@@ -1,5 +1,7 @@
 #include "app/ui/TaskCenterPanel.h"
 
+#include "app/style/AutoMixLookAndFeel.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -11,16 +13,16 @@ namespace automix::app {
 using namespace theme;
 
 TaskCenterPanel::TaskCenterPanel() : progressBar_(progressValue_), batchProgressBar_(batchProgressValue_) {
-  taskLabel_.setText("Ready", juce::dontSendNotification);
+  taskLabel_.setText("", juce::dontSendNotification);
   taskLabel_.setFont(typography::body());
   taskLabel_.setColour(juce::Label::textColourId, colour(colours::text));
   taskLabel_.setJustificationType(juce::Justification::centredLeft);
 
-  stateBadge_.setText("IDLE", juce::dontSendNotification);
+  stateBadge_.setText("READY", juce::dontSendNotification);
   stateBadge_.setFont(typography::caption());
   stateBadge_.setJustificationType(juce::Justification::centred);
   stateBadge_.setColour(juce::Label::backgroundColourId, stateColour(TaskState::Idle));
-  stateBadge_.setColour(juce::Label::textColourId, juce::Colours::white);
+  stateBadge_.setColour(juce::Label::textColourId, stateTextColour(TaskState::Idle));
 
   progressLabel_.setText("0%", juce::dontSendNotification);
   progressLabel_.setFont(typography::caption());
@@ -39,10 +41,15 @@ TaskCenterPanel::TaskCenterPanel() : progressBar_(progressValue_), batchProgress
       .withPointHeight(12.0f)));
   historyEditor_.setText("Task history will appear here.");
 
+  toggleLogButton_.onClick = [this] { setLogVisible(!logVisible_); };
+  setButtonVariant(toggleLogButton_, buttonVariant::quiet);
+
   copyLogButton_.onClick = [this] {
     juce::SystemClipboard::copyTextToClipboard(historyEditor_.getText());
   };
 
+  setButtonVariant(copyLogButton_, buttonVariant::quiet);
+  setButtonVariant(cancelButton_, buttonVariant::secondary);
   cancelButton_.setEnabled(false);
   cancelButton_.onClick = [this] {
     if (onCancel)
@@ -76,6 +83,7 @@ TaskCenterPanel::TaskCenterPanel() : progressBar_(progressValue_), batchProgress
   addAndMakeVisible(stateBadge_);
   addAndMakeVisible(progressBar_);
   addAndMakeVisible(progressLabel_);
+  addAndMakeVisible(toggleLogButton_);
   addAndMakeVisible(copyLogButton_);
   addAndMakeVisible(cancelButton_);
   addAndMakeVisible(queueHeaderLabel_);
@@ -86,6 +94,9 @@ TaskCenterPanel::TaskCenterPanel() : progressBar_(progressValue_), batchProgress
   addAndMakeVisible(batchProgressBar_);
   addAndMakeVisible(historyEditor_);
 
+  progressLabel_.setVisible(false);  // Idle (READY) at start
+  progressBar_.setVisible(false);
+  historyEditor_.setVisible(false);  // Log is collapsed by default
   updateBatchSummary();
 }
 
@@ -96,7 +107,7 @@ void TaskCenterPanel::paint(juce::Graphics& g) {
   g.setColour(colour(colours::surfaceBorder));
   g.fillRect(0, 0, getWidth(), 1);
 
-  if (!queueItems_.empty()) {
+  if (batchActive_ && !queueItems_.empty()) {
     auto area = getLocalBounds().reduced(static_cast<int>(metrics::paddingMedium));
     // Mirror resized() layout: skip top row (24) + queue header row (18)
     area.removeFromTop(24);
@@ -145,43 +156,92 @@ void TaskCenterPanel::drawQueueItem(juce::Graphics& g, juce::Rectangle<float> bo
 void TaskCenterPanel::resized() {
   auto area = getLocalBounds().reduced(static_cast<int>(metrics::paddingMedium));
 
-  // Top row: state badge + task label + progress + cancel
-  auto topRow = area.removeFromTop(24);
+  // Top row: state badge + task label + progress + log toggle + copy log + cancel
+  auto topRow = area.removeFromTop(kTopRowHeight);
   cancelButton_.setBounds(topRow.removeFromRight(64).reduced(1));
   copyLogButton_.setBounds(topRow.removeFromRight(84).reduced(1));
+  toggleLogButton_.setBounds(topRow.removeFromRight(84).reduced(1));
   progressLabel_.setBounds(topRow.removeFromRight(48).reduced(1));
   auto progressArea = topRow.removeFromRight(std::min(220, topRow.getWidth() / 2));
   progressBar_.setBounds(progressArea.reduced(2));
   stateBadge_.setBounds(topRow.removeFromLeft(80).reduced(1));
   taskLabel_.setBounds(topRow);
 
-  // Batch queue header row
-  auto queueHeaderRow = area.removeFromTop(18);
-  queueEtaLabel_.setBounds(queueHeaderRow.removeFromRight(100).reduced(1));
-  queueThroughputLabel_.setBounds(queueHeaderRow.removeFromRight(80).reduced(1));
-  queueHeaderLabel_.setBounds(queueHeaderRow.reduced(1));
+  if (batchActive_) {
+    // Batch queue header row
+    auto queueHeaderRow = area.removeFromTop(18);
+    queueEtaLabel_.setBounds(queueHeaderRow.removeFromRight(100).reduced(1));
+    queueThroughputLabel_.setBounds(queueHeaderRow.removeFromRight(80).reduced(1));
+    queueHeaderLabel_.setBounds(queueHeaderRow.reduced(1));
 
-  // Queue items
-  if (!queueItems_.empty()) {
-    int queueHeight = std::min(static_cast<int>(queueItems_.size()), kMaxVisibleQueueItems) * kQueueItemHeight;
-    area.removeFromTop(queueHeight + 4);
+    // Queue items
+    if (!queueItems_.empty()) {
+      int queueHeight = std::min(static_cast<int>(queueItems_.size()), kMaxVisibleQueueItems) * kQueueItemHeight;
+      area.removeFromTop(queueHeight + 4);
+    }
+
+    // Batch ETA / summary row: ETA (left) + overall progress bar (middle) + counts (right)
+    auto summaryRow = area.removeFromTop(22);
+    etaLabel_.setBounds(summaryRow.removeFromLeft(92).reduced(1));
+    batchCountsLabel_.setBounds(summaryRow.removeFromRight(190).reduced(1));
+    batchProgressBar_.setBounds(summaryRow.reduced(2, 4));
   }
 
-  // Batch ETA / summary row: ETA (left) + overall progress bar (middle) + counts (right)
-  auto summaryRow = area.removeFromTop(22);
-  etaLabel_.setBounds(summaryRow.removeFromLeft(92).reduced(1));
-  batchCountsLabel_.setBounds(summaryRow.removeFromRight(190).reduced(1));
-  batchProgressBar_.setBounds(summaryRow.reduced(2, 4));
-
-  // Remaining: history editor
+  // Remaining: history editor (only when the log is shown)
   area.removeFromTop(4);
-  historyEditor_.setBounds(area);
+  if (logVisible_)
+    historyEditor_.setBounds(area);
+}
+
+int TaskCenterPanel::getPreferredHeight() const {
+  int height = 2 * static_cast<int>(metrics::paddingMedium) + kTopRowHeight;
+  if (batchActive_) {
+    height += 18 + 22;
+    if (!queueItems_.empty())
+      height += std::min(static_cast<int>(queueItems_.size()), kMaxVisibleQueueItems) * kQueueItemHeight + 4;
+  }
+  if (logVisible_)
+    height += 4 + kLogAreaHeight;
+  return height;
+}
+
+void TaskCenterPanel::setLogVisible(bool visible) {
+  if (logVisible_ == visible)
+    return;
+  logVisible_ = visible;
+  toggleLogButton_.setButtonText(logVisible_ ? "Hide log" : "Show log");
+  historyEditor_.setVisible(logVisible_);
+  resized();
+  repaint();
+  if (onPreferredHeightChanged)
+    onPreferredHeightChanged();
+}
+
+bool TaskCenterPanel::isBatchStripVisible() const {
+  return batchActive_;
+}
+
+bool TaskCenterPanel::isLogVisible() const {
+  return logVisible_;
+}
+
+void TaskCenterPanel::refreshBatchVisibility() {
+  batchActive_ = batchDetail_.totalCount > 0 || !queueItems_.empty();
+  queueHeaderLabel_.setVisible(batchActive_);
+  queueEtaLabel_.setVisible(batchActive_);
+  queueThroughputLabel_.setVisible(batchActive_);
+  etaLabel_.setVisible(batchActive_);
+  batchCountsLabel_.setVisible(batchActive_);
+  batchProgressBar_.setVisible(batchActive_);
+  resized();
+  repaint();
+  if (onPreferredHeightChanged)
+    onPreferredHeightChanged();
 }
 
 void TaskCenterPanel::setQueueItems(const std::vector<BatchQueueItem>& items) {
   queueItems_ = items;
-  resized();
-  repaint();
+  refreshBatchVisibility();
 }
 
 void TaskCenterPanel::setQueueEta(const juce::String& eta) {
@@ -210,8 +270,7 @@ void TaskCenterPanel::removeQueueItem(int index) {
   if (index < 0 || index >= static_cast<int>(queueItems_.size()))
     return;
   queueItems_.erase(queueItems_.begin() + index);
-  resized();
-  repaint();
+  refreshBatchVisibility();
   if (onQueueItemRemoved) onQueueItemRemoved(index);
 }
 
@@ -273,13 +332,14 @@ juce::String TaskCenterPanel::formatEta(const juce::RelativeTime& eta) {
 }
 
 void TaskCenterPanel::updateBatchSummary() {
+  refreshBatchVisibility();
   const size_t total = batchDetail_.totalCount;
   const size_t completed = batchDetail_.completedCount;
   const size_t failed = batchDetail_.failedCount;
 
   if (total == 0) {
     // No batch items: em dash "—".
-    etaLabel_.setText(juce::String(static_cast<juce::juce_wchar>(0x2014)), juce::dontSendNotification);
+    etaLabel_.setText(juce::String::charToString(static_cast<juce::juce_wchar>(0x2014)), juce::dontSendNotification);
   } else {
     const int currentIndex = static_cast<int>(batchDetail_.itemIndex) + 1;
     if (currentIndex >= static_cast<int>(total)) {
@@ -301,8 +361,13 @@ void TaskCenterPanel::setCanCancel(bool canCancel) {
 
 void TaskCenterPanel::setTaskState(TaskState state) {
   currentState_ = state;
+  progressLabel_.setVisible(state != TaskState::Idle);
+  progressBar_.setVisible(state != TaskState::Idle);  // the bar paints its own "0%" text
+  if (state == TaskState::Failed)
+    setLogVisible(true);
   stateBadge_.setText(juce::String(stateLabel(state)), juce::dontSendNotification);
   stateBadge_.setColour(juce::Label::backgroundColourId, stateColour(state));
+  stateBadge_.setColour(juce::Label::textColourId, stateTextColour(state));
   stateBadge_.repaint();
 }
 
@@ -369,9 +434,20 @@ juce::Colour TaskCenterPanel::stateColour(TaskState state) {
   return colour(colours::textMuted);
 }
 
+juce::Colour TaskCenterPanel::stateTextColour(TaskState state) {
+  switch (state) {
+    case TaskState::Idle:
+    case TaskState::Cancelled:
+    case TaskState::Completed: return colour(colours::background);
+    case TaskState::Running:
+    case TaskState::Failed:    return juce::Colours::white;
+  }
+  return colour(colours::background);
+}
+
 const char* TaskCenterPanel::stateLabel(TaskState state) {
   switch (state) {
-    case TaskState::Idle:      return "IDLE";
+    case TaskState::Idle:      return "READY";
     case TaskState::Running:   return "RUNNING";
     case TaskState::Cancelled: return "CANCELLED";
     case TaskState::Completed: return "COMPLETED";

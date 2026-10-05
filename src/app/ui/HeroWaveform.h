@@ -21,6 +21,8 @@ public:
   void paint(juce::Graphics& g) override;
   void mouseDown(const juce::MouseEvent& event) override;
   void mouseDrag(const juce::MouseEvent& event) override;
+  void mouseUp(const juce::MouseEvent& event) override;
+  juce::MouseCursor getMouseCursor() override;
   void mouseWheelMove(const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel) override;
   void resized() override;
 
@@ -36,8 +38,11 @@ public:
   void setLoopRange(bool enabled, double startProgress, double endProgress);
   struct StemGroup { std::vector<float> peaks; juce::Colour colour; juce::String name; };
   void setStemGroups(const std::vector<StemGroup>& groups);
+  /// Whether the session has any stems; drives the empty-state prompt, click-to-import and cursor.
+  void setHasStems(bool hasStems);
 
   // Callbacks
+  std::function<void()> onImportRequested;                   // empty-state zone clicked
   std::function<void(double)> onSeek;                        // progress fraction 0..1
   std::function<void(double)> onZoomChanged;                 // new zoom factor
   std::function<void(std::vector<juce::File>)> onFilesDropped; // audio/preset files dropped
@@ -57,6 +62,13 @@ public:
     const int xStart = bounds.getRight() - kZoomControlsWidth;
     const int x = xStart + index * (kZoomButtonSize + kZoomGap) + kZoomGap;
     return {x, kZoomControlTop, kZoomButtonSize, kZoomButtonSize};
+  }
+
+  /// Pure decision backing click-to-import: only a plain left-button click (not a drag) that is
+  /// released inside the component, on a session with no stems, opens Import.
+  static constexpr bool shouldOpenImportOnClick(bool hasStems, bool leftButton, bool wasClicked,
+                                                bool insideBounds) {
+    return !hasStems && leftButton && wasClicked && insideBounds;
   }
 
   /// Pure dirty-check seam backing setPlayheadProgress: returns true when the playhead's
@@ -114,6 +126,7 @@ private:
   int numStemGroups_ = 0;
 
   bool isDragOver_ = false;
+  bool hasStems_ = false;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(HeroWaveform)
 };

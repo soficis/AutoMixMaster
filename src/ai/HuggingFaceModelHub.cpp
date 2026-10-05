@@ -551,6 +551,14 @@ std::vector<std::string> curatedModelIds() {
   };
 }
 
+std::filesystem::path localAssetPath(const std::filesystem::path& installPath, const std::string& repoPath) {
+  const auto name = std::filesystem::path(repoPath).filename();
+  if (name.empty() || name == "." || name == "..") {
+    return installPath;
+  }
+  return installPath / name;
+}
+
 // Artifacts that must accompany the primary model file to form a complete pack
 // (the ITO-Master mastering route consumes all three as one model pack).
 std::vector<std::string> auxiliaryAssetsFor(const std::string& repoId,
@@ -852,7 +860,7 @@ HubInstallResult HuggingFaceModelHub::installModel(const std::string& modelIdOrR
   const auto destinationRoot = options.destinationRoot.empty() ? defaultModelHubRoot() : options.destinationRoot;
   const auto installKey = sanitizeRepoId(info->modelId.empty() ? info->repoId : info->modelId);
   const auto installPath = destinationRoot / installKey;
-  const auto primaryPath = installPath / std::filesystem::path(info->primaryFile).filename();
+  const auto primaryPath = localAssetPath(installPath, info->primaryFile);
   result.installPath = installPath;
   result.primaryFilePath = primaryPath;
   result.revision = info->revision.empty() ? "main" : info->revision;
@@ -903,7 +911,8 @@ HubInstallResult HuggingFaceModelHub::installModel(const std::string& modelIdOrR
   // ITO-Master pack needs mastering_tcn.onnx + config.json alongside the
   // primary fxencoder.onnx). Each is SHA-256 verified when the repo exposes it.
   for (const auto& auxiliaryAsset : auxiliaryAssetsFor(info->repoId, info->primaryFile, info->files)) {
-    const auto auxiliaryPath = installPath / auxiliaryAsset;
+    const auto auxiliaryPath = localAssetPath(installPath, auxiliaryAsset);
+    const auto auxiliaryName = auxiliaryPath.filename().string();
     const auto auxiliaryUrl = "https://huggingface.co/" + info->repoId + "/resolve/" + revision + "/" +
                               escapePathPreservingSlash(auxiliaryAsset);
     if (!downloadToFile(auxiliaryUrl, auxiliaryPath, effectiveToken, &detail)) {
@@ -925,8 +934,8 @@ HubInstallResult HuggingFaceModelHub::installModel(const std::string& modelIdOrR
         return result;
       }
     }
-    result.downloadedFiles.push_back(auxiliaryAsset);
-    result.auxiliaryFiles.push_back(auxiliaryAsset);
+    result.downloadedFiles.push_back(auxiliaryName);
+    result.auxiliaryFiles.push_back(auxiliaryName);
   }
 
   // ONNX Runtime cannot load some external-weight exports at all (shape

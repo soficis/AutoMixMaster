@@ -1423,6 +1423,14 @@ TEST_CASE("OrtRuntime reports available providers and diagnostics", "[ai][tensor
   CHECK(!runtime.diagnostics().empty());
 }
 
+TEST_CASE("OrtRuntime warm-up can be requested twice and joined twice", "[ai][tensor][native]") {
+  auto& runtime = ai::OrtRuntime::instance();
+  REQUIRE_NOTHROW(runtime.warmUpAsync());
+  REQUIRE_NOTHROW(runtime.warmUpAsync());
+  REQUIRE_NOTHROW(runtime.joinWarmUp());
+  REQUIRE_NOTHROW(runtime.joinWarmUp());
+}
+
 TEST_CASE("Separation runs on CPU when the GPU lacks free memory for the model", "[ai][tensor][gpu][native]") {
   const auto memory = ai::queryCudaDeviceMemory();
   const char* expectCuda = std::getenv("AUTOMIX_EXPECT_CUDA");

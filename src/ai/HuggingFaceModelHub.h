@@ -122,4 +122,9 @@ std::vector<std::string> auxiliaryAssetsFor(const std::string& repoId,
                                             const std::string& primaryFile,
                                             const std::vector<std::string>& files);
 
+// Where a repo file lands on disk: always directly inside `installPath`, using
+// only the file's own name. Repo subfolders ("onnx/model.onnx") are dropped and
+// ".." segments can never escape the install directory.
+std::filesystem::path localAssetPath(const std::filesystem::path& installPath, const std::string& repoPath);
+
 } // namespace automix::ai

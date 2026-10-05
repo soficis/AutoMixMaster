@@ -3,6 +3,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifndef AUTOMIX_HAS_NATIVE_ORT
@@ -29,6 +30,8 @@ class OrtRuntime {
   static OrtRuntime& instance();
 
   void warmUpAsync();
+  /// Blocks until the warm-up thread (if any) has finished. Safe to call repeatedly.
+  void joinWarmUp();
 
   Ort::Env& env();
   std::vector<std::string> availableProviders();
@@ -54,6 +57,9 @@ class OrtRuntime {
   std::string diagnostics_;
   std::string initError_;
   std::once_flag initOnce_;
+  std::mutex warmUpMutex_;
+  std::thread warmUpThread_;
+  bool warmUpStarted_ = false;
 };
 
 #else
@@ -66,6 +72,7 @@ class OrtRuntime {
   }
 
   void warmUpAsync() {}
+  void joinWarmUp() {}
 
   std::vector<std::string> availableProviders() { return {"cpu"}; }
   std::string diagnostics() { return "ONNX Runtime native SDK not enabled."; }

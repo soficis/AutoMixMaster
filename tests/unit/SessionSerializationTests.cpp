@@ -3,6 +3,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include "app/ui/SessionManager.h"
 #include "domain/JsonSerialization.h"
 #include "engine/SessionRepository.h"
 
@@ -105,7 +106,7 @@ TEST_CASE("Session deserialization handles missing optional fields", "[session]"
   REQUIRE(decoded.residualBlend == Catch::Approx(0.0));
   REQUIRE(decoded.aiStemsEnabled == false);
   REQUIRE(decoded.batchRecursiveEnabled == false);
-  REQUIRE(decoded.selectedMasterPreset == automix::domain::MasterPreset::UdioOptimized);
+  REQUIRE(decoded.selectedMasterPreset == automix::domain::MasterPreset::DefaultStreaming);
   REQUIRE(decoded.selectedPlatformPreset == automix::domain::MasterPreset::YouTube);
   REQUIRE(decoded.renderSettings.blockSize == 1024);
   REQUIRE(decoded.renderSettings.outputFormat == "auto");
@@ -179,4 +180,20 @@ TEST_CASE("Sessions from before PhaseLimiter became opt-in load with BuiltIn", "
 
   REQUIRE(automix::domain::Session{}.schemaVersion == 3);
   REQUIRE(automix::domain::RenderSettings{}.rendererName == "BuiltIn");
+}
+TEST_CASE("Default session uses the Default Streaming master preset", "[session]") {
+  const automix::domain::Session session;
+  REQUIRE(session.selectedMasterPreset == automix::domain::MasterPreset::DefaultStreaming);
+}
+
+TEST_CASE("SessionManager tracks unsaved changes", "[session]") {
+  automix::app::SessionManager manager;
+  manager.markSaved();
+  REQUIRE_FALSE(manager.isModified());
+
+  manager.session().selectedMasterPreset = automix::domain::MasterPreset::Broadcast;
+  REQUIRE(manager.isModified());
+
+  manager.markSaved();
+  REQUIRE_FALSE(manager.isModified());
 }

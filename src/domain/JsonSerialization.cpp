@@ -311,7 +311,7 @@ void from_json(const Json& j, Session& value) {
   value.residualBlend = std::clamp(j.value("residualBlend", 0.0), 0.0, 10.0);
   value.aiStemsEnabled = j.value("aiStemsEnabled", false);
   value.batchRecursiveEnabled = j.value("batchRecursiveEnabled", false);
-  value.selectedMasterPreset = masterPresetFromString(j.value("selectedMasterPreset", "udio_optimized"));
+  value.selectedMasterPreset = masterPresetFromString(j.value("selectedMasterPreset", "default_streaming"));
   value.selectedPlatformPreset = masterPresetFromString(j.value("selectedPlatformPreset", "youtube"));
   value.stems = j.value("stems", std::vector<Stem>{});
   value.buses = j.value("buses", std::vector<Bus>{});

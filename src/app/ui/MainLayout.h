@@ -145,6 +145,10 @@ public:
   void resized() override;
   bool keyPressed(const juce::KeyPress& key) override;
 
+  /// Runs quitNow immediately when the session is unchanged (returns true);
+  /// otherwise asks Save / Don't Save / Cancel and returns false.
+  bool requestQuit(std::function<void()> quitNow);
+
 private:
   // Timer / Listener overrides
   void timerCallback() override;
@@ -172,7 +176,10 @@ private:
   void onAutoMixMaster(); // Pipeline: Mix -> Master -> Export
   void onBatch();
   void onExport();
-  void onSaveSession();
+  void onSaveSession(std::function<void(bool)> done = {});
+  void finishPendingSave(bool success);
+  void refreshSessionTitle();
+  void setSessionDisplayName(const juce::String& name);
   void onLoadSession();
   void onModelsDialog();
   void onSettings();
@@ -256,6 +263,13 @@ private:
   std::unique_ptr<TaskOrchestrator> taskOrchestrator_;
   std::unique_ptr<AudioPreviewManager> previewManager_;
   SessionManager sessionManager_;
+
+  // Unsaved-changes tracking (message thread only).
+  juce::String sessionDisplayName_{"Untitled Session"};
+  bool sessionShownModified_ = false;
+  int modifiedCheckTicks_ = 0;
+  bool quitPromptOpen_ = false;
+  std::function<void(bool)> pendingSaveCompletion_;
 
   // State
   std::vector<analysis::StemAnalysisEntry> analysisEntries_;

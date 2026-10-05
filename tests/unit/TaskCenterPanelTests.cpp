@@ -80,7 +80,7 @@ TEST_CASE("TaskCenterPanel batch ETA row state transitions", "[ui][taskcenter][e
   juce::ScopedJuceInitialiser_GUI juceInit;
 
   automix::app::TaskCenterPanel panel;
-  const juce::String emDash(static_cast<juce::juce_wchar>(0x2014));
+  const auto emDash = juce::String::charToString(static_cast<juce::juce_wchar>(0x2014));
 
   SECTION("no batch items shows dash") {
     REQUIRE(panel.batchEtaText() == emDash);

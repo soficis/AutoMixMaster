@@ -11,16 +11,16 @@ namespace automix::app {
 using namespace theme;
 
 TaskCenterPanel::TaskCenterPanel() : progressBar_(progressValue_), batchProgressBar_(batchProgressValue_) {
-  taskLabel_.setText("Ready", juce::dontSendNotification);
+  taskLabel_.setText("", juce::dontSendNotification);
   taskLabel_.setFont(typography::body());
   taskLabel_.setColour(juce::Label::textColourId, colour(colours::text));
   taskLabel_.setJustificationType(juce::Justification::centredLeft);
 
-  stateBadge_.setText("IDLE", juce::dontSendNotification);
+  stateBadge_.setText("READY", juce::dontSendNotification);
   stateBadge_.setFont(typography::caption());
   stateBadge_.setJustificationType(juce::Justification::centred);
   stateBadge_.setColour(juce::Label::backgroundColourId, stateColour(TaskState::Idle));
-  stateBadge_.setColour(juce::Label::textColourId, juce::Colours::white);
+  stateBadge_.setColour(juce::Label::textColourId, stateTextColour(TaskState::Idle));
 
   progressLabel_.setText("0%", juce::dontSendNotification);
   progressLabel_.setFont(typography::caption());
@@ -279,7 +279,7 @@ void TaskCenterPanel::updateBatchSummary() {
 
   if (total == 0) {
     // No batch items: em dash "—".
-    etaLabel_.setText(juce::String(static_cast<juce::juce_wchar>(0x2014)), juce::dontSendNotification);
+    etaLabel_.setText(juce::String::charToString(static_cast<juce::juce_wchar>(0x2014)), juce::dontSendNotification);
   } else {
     const int currentIndex = static_cast<int>(batchDetail_.itemIndex) + 1;
     if (currentIndex >= static_cast<int>(total)) {
@@ -303,6 +303,7 @@ void TaskCenterPanel::setTaskState(TaskState state) {
   currentState_ = state;
   stateBadge_.setText(juce::String(stateLabel(state)), juce::dontSendNotification);
   stateBadge_.setColour(juce::Label::backgroundColourId, stateColour(state));
+  stateBadge_.setColour(juce::Label::textColourId, stateTextColour(state));
   stateBadge_.repaint();
 }
 
@@ -369,9 +370,20 @@ juce::Colour TaskCenterPanel::stateColour(TaskState state) {
   return colour(colours::textMuted);
 }
 
+juce::Colour TaskCenterPanel::stateTextColour(TaskState state) {
+  switch (state) {
+    case TaskState::Idle:
+    case TaskState::Cancelled:
+    case TaskState::Completed: return colour(colours::background);
+    case TaskState::Running:
+    case TaskState::Failed:    return juce::Colours::white;
+  }
+  return colour(colours::background);
+}
+
 const char* TaskCenterPanel::stateLabel(TaskState state) {
   switch (state) {
-    case TaskState::Idle:      return "IDLE";
+    case TaskState::Idle:      return "READY";
     case TaskState::Running:   return "RUNNING";
     case TaskState::Cancelled: return "CANCELLED";
     case TaskState::Completed: return "COMPLETED";

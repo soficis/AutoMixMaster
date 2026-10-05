@@ -67,6 +67,7 @@ private:
   static constexpr int kMaxVisibleQueueItems = 8;
 
   static juce::Colour stateColour(TaskState state);
+  static juce::Colour stateTextColour(TaskState state);
   static const char* stateLabel(TaskState state);
   void drawQueueItem(juce::Graphics& g, juce::Rectangle<float> bounds, const BatchQueueItem& item, int index);
   static juce::String formatEta(const juce::RelativeTime& eta);

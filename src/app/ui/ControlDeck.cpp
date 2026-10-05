@@ -25,7 +25,7 @@ ControlDeck::ControlDeck() {
   // Tooltips
   importButton_.setTooltip("Import Stems (Ctrl+I)");
   autoMixButton_.setTooltip("Auto Mix (Ctrl+M)");
-  autoMasterButton_.setTooltip("Auto Master");
+  autoMasterButton_.setTooltip("Auto Master (Ctrl+Shift+A)");
   autoMixMasterButton_.setTooltip("One-click: Auto Mix -> Auto Master -> Export (Ctrl+Shift+M)");
   batchButton_.setTooltip("Batch Process");
   exportButton_.setTooltip("Export (Ctrl+E)");

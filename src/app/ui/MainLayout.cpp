@@ -159,6 +159,8 @@ MainLayout::MainLayout() {
   // 6. Application command manager: keyboard shortcuts are dispatched here
   commandManager_.setFirstCommandTarget(this);
   commandManager_.registerAllCommandsForTarget(this);
+
+  sessionManager_.markSaved();
 }
 
 // ── Controllers factory ────────────────────────────────────────
@@ -497,16 +499,21 @@ void MainLayout::initControllers() {
 
         if (result.cancelled) {
           safe->taskOrchestrator_->finishTaskCancelled(ActiveTask::Session, "Session save cancelled");
+          safe->finishPendingSave(false);
           return;
         }
         if (!result.success) {
           safe->taskOrchestrator_->finishTaskFailed(ActiveTask::Session, result.errorText.toStdString());
+          safe->finishPendingSave(false);
           return;
         }
 
         safe->taskOrchestrator_->appendHistory("Session saved to " + juce::String(result.path));
-        safe->headerBar_->setSessionName(juce::File(result.path).getFileNameWithoutExtension());
+        safe->sessionManager_.markSaved();
+        safe->sessionShownModified_ = false;
+        safe->setSessionDisplayName(juce::File(result.path).getFileNameWithoutExtension());
         safe->taskOrchestrator_->finishTaskCompleted(ActiveTask::Session, "Session saved");
+        safe->finishPendingSave(true);
       });
     };
     cb.onLoadComplete = [safe](SessionLoadResult result) {
@@ -672,7 +679,7 @@ public:
     }
 
     closeButton_.setButtonText("Close");
-    closeButton_.onClick = [this] { exitModalState(0); };
+    closeButton_.onClick = [this] { closeHostWindow(); };
     addAndMakeVisible(closeButton_);
   }
 
@@ -698,13 +705,18 @@ public:
 
   bool keyPressed(const juce::KeyPress& key) override {
     if (key == juce::KeyPress::escapeKey) {
-      exitModalState(0);
+      closeHostWindow();
       return true;
     }
     return juce::Component::keyPressed(key);
   }
 
 private:
+  void closeHostWindow() {
+    if (auto* dw = findParentComponentOfClass<juce::DialogWindow>())
+      dw->exitModalState(0);
+  }
+
   static constexpr int kDialogWidth = 460;
   static constexpr int kDialogHeight = 560;
 
@@ -785,11 +797,14 @@ void MainLayout::onTogglePlayPause() {
 }
 
 void MainLayout::showShortcutsDialog() {
-  auto* dialog = new ShortcutsDialog(shortcutTable());
-  dialog->setAlwaysOnTop(true);
-  dialog->centreWithSize(dialog->getWidth(), dialog->getHeight());
-  dialog->setVisible(true);
-  dialog->enterModalState(true, nullptr, true); // modal manager owns + deletes it
+  juce::DialogWindow::LaunchOptions options;
+  options.content.setOwned(new ShortcutsDialog(shortcutTable()));
+  options.dialogTitle = "Keyboard Shortcuts";
+  options.dialogBackgroundColour = colour(colours::surface);
+  options.escapeKeyTriggersCloseButton = true;
+  options.useNativeTitleBar = true;
+  options.resizable = false;
+  options.launchAsync();
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -798,6 +813,15 @@ void MainLayout::showShortcutsDialog() {
 
 void MainLayout::timerCallback() {
   updateTransportDisplay();
+
+  if (++modifiedCheckTicks_ >= 30) {
+    modifiedCheckTicks_ = 0;
+    const bool modified = sessionManager_.isModified();
+    if (modified != sessionShownModified_) {
+      sessionShownModified_ = modified;
+      refreshSessionTitle();
+    }
+  }
 
   // Reconcile the transport bar with the atomic play state (covers end-of-track
   // auto-stop, which is realtime-only and posts no change message).
@@ -971,10 +995,10 @@ void MainLayout::onClearTracks() {
     return; // Nothing imported; nothing to clear.
 
   juce::AlertWindow::showOkCancelBox(
-      juce::MessageBoxIconType::WarningIcon, "Clear imported tracks",
-      "Clear " + juce::String(numTracks) +
-          " imported tracks? This cannot be undone \xe2\x80\x94 use Undo after T4.1.",
-      "Clear", "Cancel", this,
+      juce::MessageBoxIconType::WarningIcon, "Remove all stems?",
+      "Remove all " + juce::String(numTracks) + (numTracks == 1 ? " stem" : " stems") +
+          " from this session? This can't be undone.",
+      "Remove stems", "Cancel", this,
       juce::ModalCallbackFunction::create([safe = safeAsync(this), numTracks](int result) {
         if (safe != nullptr && confirmClear(numTracks, result == 1))
           safe->performClearTracks();
@@ -1538,9 +1562,13 @@ void MainLayout::startBatchVerification(const std::string& outputFolder) {
 // Action: Save Session
 // ─────────────────────────────────────────────────────────────────
 
-void MainLayout::onSaveSession() {
+void MainLayout::onSaveSession(std::function<void(bool)> done) {
+  finishPendingSave(false);
+  pendingSaveCompletion_ = std::move(done);
+
   if (taskOrchestrator_->isTaskRunning()) {
     taskOrchestrator_->setStatus("Busy", "A task is already running");
+    finishPendingSave(false);
     return;
   }
 
@@ -1554,11 +1582,13 @@ void MainLayout::onSaveSession() {
     const auto selected = chooser.getResult();
     if (selected == juce::File()) {
       saveSessionChooser_.reset();
+      finishPendingSave(false);
       return;
     }
 
     if (!taskOrchestrator_->beginTask(ActiveTask::Session, "Saving session", "", "Session save started")) {
       saveSessionChooser_.reset();
+      finishPendingSave(false);
       return;
     }
 
@@ -1568,6 +1598,51 @@ void MainLayout::onSaveSession() {
                                     taskOrchestrator_->cancelFlag(ActiveTask::Session));
     saveSessionChooser_.reset();
   });
+}
+
+void MainLayout::finishPendingSave(bool success) {
+  if (auto done = std::move(pendingSaveCompletion_)) {
+    pendingSaveCompletion_ = nullptr;
+    done(success);
+  }
+}
+
+void MainLayout::setSessionDisplayName(const juce::String& name) {
+  sessionDisplayName_ = name;
+  refreshSessionTitle();
+}
+
+void MainLayout::refreshSessionTitle() {
+  headerBar_->setSessionName(sessionDisplayName_ + (sessionShownModified_ ? " *" : ""));
+}
+
+bool MainLayout::requestQuit(std::function<void()> quitNow) {
+  if (!sessionManager_.isModified()) {
+    quitNow();
+    return true;
+  }
+  if (quitPromptOpen_)
+    return false;
+  quitPromptOpen_ = true;
+
+  juce::AlertWindow::showYesNoCancelBox(
+      juce::MessageBoxIconType::QuestionIcon, "Save changes?",
+      "Save changes to " + sessionDisplayName_ + " before closing?",
+      "Save", "Don't Save", "Cancel", this,
+      juce::ModalCallbackFunction::create([safe = safeAsync(this), quitNow](int result) {
+        if (safe == nullptr)
+          return;
+        safe->quitPromptOpen_ = false;
+        if (result == 1) {
+          safe->onSaveSession([quitNow](bool saved) {
+            if (saved)
+              quitNow();
+          });
+        } else if (result == 2) {
+          quitNow();
+        }
+      }));
+  return false;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1822,7 +1897,8 @@ void MainLayout::updateMeterPanel(const automaster::MasteringReport& report) {
 void MainLayout::applyLoadedSession(domain::Session loadedSession, const juce::String& sourcePath) {
   sessionManager_.replaceSession(std::move(loadedSession));
   const auto& session = sessionManager_.session();
-  headerBar_->setSessionName(juce::File(sourcePath).getFileNameWithoutExtension());
+  sessionShownModified_ = false;
+  setSessionDisplayName(juce::File(sourcePath).getFileNameWithoutExtension());
   updateStemPanelFromSession(controlDeck_->getStemPanel(), session);
   transportBar_->setLoopEnabled(session.timeline.loopEnabled);
   heroWaveform_->setZoom(session.timeline.zoom, 0.5);
@@ -1833,6 +1909,7 @@ void MainLayout::applyLoadedSession(domain::Session loadedSession, const juce::S
   refreshProjectProfiles();
   applySessionUiSelections();
   syncSessionUiSelections();
+  sessionManager_.markSaved();
   taskOrchestrator_->appendHistory("Session loaded: " + sourcePath);
   rebuildPreview();
 }

@@ -31,6 +31,17 @@
 
 namespace automix::app {
 
+/// Next step of the quit flow (pure decision, unit-tested; the prompts themselves are modal UI).
+enum class QuitStep { QuitNow, ConfirmRunningTask, PromptSave };
+
+/// A running task must be confirmed once before anything else; after that (or with no task) a
+/// modified session gets the Save prompt and an unmodified one quits immediately.
+inline QuitStep nextQuitStep(bool taskRunning, bool taskQuitConfirmed, bool modified) {
+  if (taskRunning && !taskQuitConfirmed)
+    return QuitStep::ConfirmRunningTask;
+  return modified ? QuitStep::PromptSave : QuitStep::QuitNow;
+}
+
 // ── Keyboard shortcut table (single source of truth) ────────────────────
 // Command ids start at 1000 (0 is reserved as "no command" by JUCE).
 
@@ -145,8 +156,9 @@ public:
   void resized() override;
   bool keyPressed(const juce::KeyPress& key) override;
 
-  /// Runs quitNow immediately when the session is unchanged (returns true);
-  /// otherwise asks Save / Don't Save / Cancel and returns false.
+  /// Runs quitNow immediately when no task is running and the session is unchanged (returns true);
+  /// otherwise confirms quitting over a running task and/or asks Save / Don't Save / Cancel and
+  /// returns false.
   bool requestQuit(std::function<void()> quitNow);
 
 private:
@@ -179,6 +191,7 @@ private:
   void onSaveSession(std::function<void(bool)> done = {});
   void finishPendingSave(bool success);
   void refreshSessionTitle();
+  bool requestQuitStep(std::function<void()> quitNow, bool taskQuitConfirmed);
   void refreshStemDependentUi();
   void setSessionDisplayName(const juce::String& name);
   void onLoadSession();

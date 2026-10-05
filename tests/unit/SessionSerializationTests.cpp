@@ -106,7 +106,7 @@ TEST_CASE("Session deserialization handles missing optional fields", "[session]"
   REQUIRE(decoded.residualBlend == Catch::Approx(0.0));
   REQUIRE(decoded.aiStemsEnabled == false);
   REQUIRE(decoded.batchRecursiveEnabled == false);
-  REQUIRE(decoded.selectedMasterPreset == automix::domain::MasterPreset::DefaultStreaming);
+  REQUIRE(decoded.selectedMasterPreset == automix::domain::MasterPreset::UdioOptimized);
   REQUIRE(decoded.selectedPlatformPreset == automix::domain::MasterPreset::YouTube);
   REQUIRE(decoded.renderSettings.blockSize == 1024);
   REQUIRE(decoded.renderSettings.outputFormat == "auto");
@@ -184,6 +184,21 @@ TEST_CASE("Sessions from before PhaseLimiter became opt-in load with BuiltIn", "
 TEST_CASE("Default session uses the Default Streaming master preset", "[session]") {
   const automix::domain::Session session;
   REQUIRE(session.selectedMasterPreset == automix::domain::MasterPreset::DefaultStreaming);
+}
+
+TEST_CASE("Old session without selectedMasterPreset keeps the Udio Optimized fallback", "[session]") {
+  const nlohmann::json legacy = {{"schemaVersion", 1}, {"sessionName", "legacy"}};
+  REQUIRE(legacy.get<automix::domain::Session>().selectedMasterPreset ==
+          automix::domain::MasterPreset::UdioOptimized);
+}
+
+TEST_CASE("Explicit default_streaming master preset round-trips", "[session]") {
+  automix::domain::Session session;
+  REQUIRE(session.selectedMasterPreset == automix::domain::MasterPreset::DefaultStreaming);
+  const nlohmann::json encoded = session;
+  REQUIRE(encoded.at("selectedMasterPreset").get<std::string>() == "default_streaming");
+  REQUIRE(encoded.get<automix::domain::Session>().selectedMasterPreset ==
+          automix::domain::MasterPreset::DefaultStreaming);
 }
 
 TEST_CASE("SessionManager tracks unsaved changes", "[session]") {

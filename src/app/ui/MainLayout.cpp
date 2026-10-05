@@ -168,6 +168,8 @@ void MainLayout::refreshStemDependentUi() {
   const bool hasStems = !sessionManager_.session().stems.empty();
   if (controlDeck_ != nullptr)
     controlDeck_->setHasStems(hasStems);
+  if (heroWaveform_ != nullptr)
+    heroWaveform_->setHasStems(hasStems);
   if (transportBar_ != nullptr)
     transportBar_->setHasMedia(hasStems);
   clearTracksButton_.setEnabled(hasStems);
@@ -1631,13 +1633,35 @@ void MainLayout::refreshSessionTitle() {
 }
 
 bool MainLayout::requestQuit(std::function<void()> quitNow) {
-  if (!sessionManager_.isModified()) {
+  return requestQuitStep(std::move(quitNow), false);
+}
+
+bool MainLayout::requestQuitStep(std::function<void()> quitNow, bool taskQuitConfirmed) {
+  const auto step = nextQuitStep(taskOrchestrator_->isTaskRunning(), taskQuitConfirmed,
+                                 sessionManager_.isModified());
+  if (step == QuitStep::QuitNow) {
     quitNow();
     return true;
   }
   if (quitPromptOpen_)
     return false;
   quitPromptOpen_ = true;
+
+  if (step == QuitStep::ConfirmRunningTask) {
+    juce::AlertWindow::showOkCancelBox(
+        juce::MessageBoxIconType::WarningIcon, "Task still running",
+        "A task is still running. Quitting now will cancel it, and an unfinished export may be left "
+        "incomplete. Quit anyway?",
+        "Quit", "Cancel", this,
+        juce::ModalCallbackFunction::create([safe = safeAsync(this), quitNow](int result) {
+          if (safe == nullptr)
+            return;
+          safe->quitPromptOpen_ = false;
+          if (result == 1)
+            safe->requestQuitStep(quitNow, true);
+        }));
+    return false;
+  }
 
   juce::AlertWindow::showYesNoCancelBox(
       juce::MessageBoxIconType::QuestionIcon, "Save changes?",

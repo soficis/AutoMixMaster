@@ -551,6 +551,7 @@ if(BUILD_TESTING)
     tests/unit/ControllerTests.cpp
     tests/unit/TaskCenterPanelTests.cpp
     tests/unit/ControlDeckTests.cpp
+    tests/unit/UiDecisionTests.cpp
     tests/unit/SessionSerializationTests.cpp
     src/app/ui/SessionManager.cpp
     tests/unit/AudioIoTests.cpp

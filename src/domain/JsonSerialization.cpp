@@ -311,7 +311,9 @@ void from_json(const Json& j, Session& value) {
   value.residualBlend = std::clamp(j.value("residualBlend", 0.0), 0.0, 10.0);
   value.aiStemsEnabled = j.value("aiStemsEnabled", false);
   value.batchRecursiveEnabled = j.value("batchRecursiveEnabled", false);
-  value.selectedMasterPreset = masterPresetFromString(j.value("selectedMasterPreset", "default_streaming"));
+  // Session files saved before this field existed were mastered with Udio Optimized, so keep that
+  // fallback for them; new sessions get Default Streaming from the Session struct default instead.
+  value.selectedMasterPreset = masterPresetFromString(j.value("selectedMasterPreset", "udio_optimized"));
   value.selectedPlatformPreset = masterPresetFromString(j.value("selectedPlatformPreset", "youtube"));
   value.stems = j.value("stems", std::vector<Stem>{});
   value.buses = j.value("buses", std::vector<Bus>{});

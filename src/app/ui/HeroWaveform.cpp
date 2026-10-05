@@ -127,13 +127,22 @@ void HeroWaveform::mouseDrag(const juce::MouseEvent& event) {
     onSeek(progress);
 }
 
-void HeroWaveform::mouseUp(const juce::MouseEvent& /*event*/) {
-  if (waveformPeaks_.empty() && onImportRequested)
+void HeroWaveform::mouseUp(const juce::MouseEvent& event) {
+  if (shouldOpenImportOnClick(hasStems_, event.mods.isLeftButtonDown(), event.mouseWasClicked(),
+                              getLocalBounds().contains(event.getPosition())) &&
+      onImportRequested)
     onImportRequested();
 }
 
+void HeroWaveform::setHasStems(bool hasStems) {
+  if (hasStems_ == hasStems)
+    return;
+  hasStems_ = hasStems;
+  repaint();
+}
+
 juce::MouseCursor HeroWaveform::getMouseCursor() {
-  if (waveformPeaks_.empty())
+  if (!hasStems_)
     return juce::MouseCursor::PointingHandCursor;
   return juce::Component::getMouseCursor();
 }
@@ -385,14 +394,20 @@ void HeroWaveform::paint(juce::Graphics& g) {
     auto upperHalf = bounds.withHeight(h * 0.5f);
     g.setFont(typography::subhead());
     g.setColour(colour(colours::text));
-    g.drawText("Drop stems here or click to import", upperHalf, juce::Justification::centredBottom);
+    g.drawText(hasStems_ ? "Preview unavailable" : "Drop stems here or click to import", upperHalf,
+               juce::Justification::centredBottom);
 
-    auto lowerHalf = bounds.withY(h * 0.5f).withHeight(h * 0.5f);
-    g.setFont(typography::caption());
-    g.setColour(colour(colours::textMuted));
-    const auto arrow = juce::String(juce::CharPointer_UTF8("\xe2\x86\x92"));
-    g.drawText("1 Import stems  " + arrow + "  2 Mix + Master  " + arrow + "  3 Export",
-               lowerHalf.reduced(0.0f, 8.0f), juce::Justification::centredTop);
+    if (!hasStems_) {
+      auto lowerHalf = bounds.withY(h * 0.5f).withHeight(h * 0.5f);
+      g.setFont(typography::caption());
+      g.setColour(colour(colours::textMuted));
+      const auto arrow = juce::String(juce::CharPointer_UTF8("\xe2\x86\x92"));
+      auto steps = lowerHalf.reduced(0.0f, 8.0f);
+      g.drawText("1 Import stems  " + arrow + "  2 Mix + Master  " + arrow + "  3 Export",
+                 steps.removeFromTop(18.0f), juce::Justification::centredTop);
+      g.drawText("One file? Turn on AI Stem Separation first.", steps.removeFromTop(18.0f),
+                 juce::Justification::centredTop);
+    }
   } else {
     // Draw stem overlay if we have per-stem data
     if (numStemGroups_ > 0) {

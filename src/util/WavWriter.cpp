@@ -252,8 +252,8 @@ std::optional<std::filesystem::path> resolveBundledLameExecutable() {
 }
 
 std::optional<std::filesystem::path> findLameExecutable() {
-  if (const auto downloaded = LameDownloader::cacheBinaryPath(); isRegularFile(downloaded)) {
-    return downloaded;
+  if (LameDownloader::cachedBinaryIsVerified()) {
+    return LameDownloader::cacheBinaryPath();
   }
 
   if (const auto bundled = resolveBundledLameExecutable(); bundled.has_value()) {

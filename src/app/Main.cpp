@@ -66,6 +66,8 @@ public:
   }
 
   void shutdown() override {
+    // Let the ONNX Runtime warm-up thread finish before the window and libraries tear down.
+    automix::ai::OrtRuntime::instance().joinWarmUp();
     mainWindow_.reset();
     juce::LookAndFeel::setDefaultLookAndFeel(nullptr);
     lookAndFeel_.reset();

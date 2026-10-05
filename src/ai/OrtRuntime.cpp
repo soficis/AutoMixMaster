@@ -79,9 +79,21 @@ OrtRuntime& OrtRuntime::instance() {
 OrtRuntime::OrtRuntime() = default;
 
 void OrtRuntime::warmUpAsync() {
-  std::thread([this]() {
+  std::lock_guard<std::mutex> lock(warmUpMutex_);
+  if (warmUpThread_.joinable() || warmUpStarted_) {
+    return;
+  }
+  warmUpStarted_ = true;
+  warmUpThread_ = std::thread([this]() {
     ensureInitialized();
-  }).detach();
+  });
+}
+
+void OrtRuntime::joinWarmUp() {
+  std::lock_guard<std::mutex> lock(warmUpMutex_);
+  if (warmUpThread_.joinable()) {
+    warmUpThread_.join();
+  }
 }
 
 void OrtRuntime::ensureInitialized() {

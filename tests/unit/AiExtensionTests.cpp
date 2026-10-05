@@ -1342,3 +1342,10 @@ TEST_CASE("Linux builds enable libcurl so HTTPS downloads work", "[build-config]
   SUCCEED("JUCE_USE_CURL is only required on Linux; Windows and macOS use native HTTP stacks.");
 #endif
 }
+
+TEST_CASE("Hub assets are stored flat inside the install directory", "[ai][hub]") {
+  const std::filesystem::path installPath = std::filesystem::path("models") / "pack";
+  CHECK(automix::ai::localAssetPath(installPath, "onnx/model.onnx.data") == installPath / "model.onnx.data");
+  CHECK(automix::ai::localAssetPath(installPath, "model.onnx") == installPath / "model.onnx");
+  CHECK(automix::ai::localAssetPath(installPath, "a/b/../../x.onnx") == installPath / "x.onnx");
+}

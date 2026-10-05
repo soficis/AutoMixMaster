@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 
 #include "ai/BsRoformerPack.h"
+#include "ai/UmxPack.h"
 #include "ai/ItoMasterAdapter.h"
 #include "ai/OnnxTensorInference.h"
 #include "util/StringUtils.h"
@@ -128,6 +129,10 @@ std::string sanitizePackId(std::string value) {
 std::string inferTaskScope(const HubModelInfo& model) {
   if (isKnownTaskScope(model.taskScope)) {
     return model.taskScope;
+  }
+  if (model.repoId == kUmxVocalsRepoId) {
+    // Pinned: the publisher's name ("MixDirective") would otherwise match the "mix" token.
+    return "separation";
   }
 
   std::string joined = toLower(model.useCase);
@@ -275,6 +280,10 @@ bool writeTurnkeyModelPackManifest(const std::filesystem::path& installPath,
     if (fp32) {
       manifest["gpu_memory_mb"] = kBsRoformerFp32GpuMemoryMb;
     }
+  }
+
+  if (model.repoId == kUmxVocalsRepoId) {
+    manifest["intended_use"] = kUmxVocalsIntendedUse;
   }
 
   const auto manifestPath = installPath / "model.json";

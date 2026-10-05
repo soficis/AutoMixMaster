@@ -339,12 +339,12 @@ std::optional<RunnerConfig> runnerConfigFromContract(const TensorContract& contr
   const auto layout = inputLayoutFromString(contract.inputLayout);
   if (!layout.has_value()) {
     errorOut = "tensor_contract input_layout '" + contract.inputLayout +
-               "' is not one of folded_stereo, split_channels";
+               "' is not one of folded_stereo, split_channels, magnitude_channels";
     return std::nullopt;
   }
   const auto mode = outputModeFromString(contract.outputMode);
   if (!mode.has_value()) {
-    errorOut = "tensor_contract output_mode '" + contract.outputMode + "' is not one of direct, mask";
+    errorOut = "tensor_contract output_mode '" + contract.outputMode + "' is not one of direct, mask, ratio_mask";
     return std::nullopt;
   }
   if (contract.stft.padMode != "reflect") {
@@ -411,7 +411,7 @@ bool checkTensorContract(const TensorContract& contract,
   const int frames = analysis::stftFrameCount(config->chunkSamples, config->stft);
   const int graphStems = static_cast<int>(std::count_if(contract.stems.begin(), contract.stems.end(),
                                                         [](const auto& stem) { return stem.residualOf.empty(); }));
-  const int stemAxis = config->outputMode == OutputMode::Mask ? 1 : graphStems;
+  const int stemAxis = config->outputMode == OutputMode::Direct ? graphStems : 1;
   const auto impliedInput = tensorInputDims(config->inputLayout, config->channels, freqBins, frames);
   const auto impliedOutput = tensorOutputDims(config->inputLayout, stemAxis, config->channels, freqBins, frames);
   const auto stftSummary = "n_fft " + std::to_string(config->stft.nFft) + " (" + std::to_string(freqBins) +

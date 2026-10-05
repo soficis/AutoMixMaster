@@ -68,7 +68,8 @@ std::string vocalModelCpuWarning(const std::uint64_t physicalMemoryBytes, const 
   return "This Mac has " + std::to_string(gib) +
          " GB of memory and no usable GPU acceleration for the vocal model. It will run on the CPU: expect "
          "several minutes per 20-second chunk (hours for a full song), heavy memory swapping, and possible "
-         "failure. Leave Vocal Model off, or use a Mac with 16 GB or more.";
+         "failure. Install the light vocal model instead (Open-Unmix, 36 MB, about 20x faster than real time on "
+         "a CPU) from the Model Hub, or leave Vocal Model off.";
 }
 
 std::string vocalModelCpuWarning() {

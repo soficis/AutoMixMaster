@@ -20,15 +20,21 @@ namespace automix::ai {
 //   SplitChannels (channels on their own axis):
 //     input  [1, C, F, T, 2]
 //     output [1, N, C, F, T, 2]
+//   MagnitudeChannels (Open-Unmix style, magnitude only, no phase):
+//     input  [1, C, F, T]       |STFT|
+//     output [1, C, F, T]       estimated target |STFT| (RatioMask mode only)
 //
 // N is the stem axis: 1 in Mask mode, one entry per graph-produced stem in
-// Direct mode. The trailing axis of length 2 is always (real, imag).
-enum class InputLayout { FoldedStereo, SplitChannels };
+// Direct mode. For the complex layouts the trailing axis of length 2 is always
+// (real, imag).
+enum class InputLayout { FoldedStereo, SplitChannels, MagnitudeChannels };
 
 // Mask: the graph returns one complex mask for the target stem; the caller
 // multiplies it against the input spectrum. Direct: the graph returns one
-// spectrogram per stem.
-enum class OutputMode { Direct, Mask };
+// spectrogram per stem. RatioMask: the graph returns the target's magnitude;
+// the caller divides it by the input magnitude, clips to [0, 1] and multiplies
+// the complex input spectrum by that real mask (the mix phase is kept).
+enum class OutputMode { Direct, Mask, RatioMask };
 
 std::optional<InputLayout> inputLayoutFromString(const std::string& value);
 std::optional<OutputMode> outputModeFromString(const std::string& value);

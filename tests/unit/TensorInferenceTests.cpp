@@ -29,6 +29,7 @@
 #include "ai/SeparationRunner.h"
 #include "ai/StemSeparator.h"
 #include "ai/TensorTypes.h"
+#include "ai/UmxPack.h"
 #include "analysis/SpectrogramFrontEnd.h"
 #include "domain/JsonSerialization.h"
 #include "domain/RenderSettings.h"
@@ -1705,4 +1706,115 @@ TEST_CASE("Hub containment check refuses look-alike and escaping paths", "[ai][m
   REQUIRE_FALSE(ai::isInsideDirectory(hub.parent_path() / "modelhub2" / "x", hub));
   REQUIRE_FALSE(ai::isInsideDirectory(hub / ".." / "elsewhere", hub));
   REQUIRE_FALSE(ai::isInsideDirectory(std::filesystem::temp_directory_path(), hub));
+}
+namespace {
+
+// Open-Unmix geometry shrunk to a test: 16384-sample chunks (17 frames at hop 1024).
+ai::RunnerConfig umxTestConfig() {
+  ai::RunnerConfig config;
+  config.chunkSamples = 16384;
+  config.overlapSamples = 4096;
+  config.stft.nFft = 4096;
+  config.stft.hopLength = 1024;
+  config.stft.winLength = 4096;
+  config.stft.center = true;
+  config.stft.normalized = false;
+  config.stft.zeroDc = false;
+  config.inputLayout = ai::InputLayout::MagnitudeChannels;
+  config.outputMode = ai::OutputMode::RatioMask;
+  config.targetStem = "vocals";
+  config.stems = {{"vocals", ""}, {"instrumental", "vocals"}};
+  return config;
+}
+
+// A graph that answers with `gain` times the input magnitude.
+FakeTensorInference scaledMagnitudeGraph(const float gain) {
+  const ai::TensorSpec input{"magnitude", ai::TensorElementType::Float32, {1, 2, 2049, 17}};
+  const ai::TensorSpec output{"vocals_magnitude", ai::TensorElementType::Float32, {1, 2, 2049, 17}};
+  return FakeTensorInference({input}, {output}, [output, gain](const std::vector<ai::TensorBinding>& bindings) {
+    ai::TensorInferenceResult result;
+    result.usedModel = true;
+    ai::Tensor tensor;
+    tensor.spec = output;
+    tensor.data = bindings.front().data;
+    for (auto& value : tensor.data) {
+      value *= gain;
+    }
+    result.outputs.push_back(std::move(tensor));
+    return result;
+  });
+}
+
+} // namespace
+
+TEST_CASE("Ratio-mask runner keeps the mix phase and applies the magnitude ratio", "[ai][tensor][umx]") {
+  const auto mix = makeTestSignal(2, 40000, 44100.0);
+  const auto config = umxTestConfig();
+  REQUIRE(ai::validateRunnerConfig(config).empty());
+
+  // Half the magnitude: vocals = mix / 2, and the residual instrumental is the other half.
+  auto half = scaledMagnitudeGraph(0.5f);
+  const auto halved = ai::SeparationRunner::separate(mix, half, config);
+  INFO(halved.logMessage);
+  REQUIRE(halved.usedModel);
+  REQUIRE(halved.stemNames == std::vector<std::string>{"vocals", "instrumental"});
+  const auto& vocals = halved.stemAudio[0];
+  const auto& instrumental = halved.stemAudio[1];
+  float worstVocal = 0.0f;
+  float worstSum = 0.0f;
+  for (int ch = 0; ch < 2; ++ch) {
+    for (int i = 0; i < mix.getNumSamples(); ++i) {
+      worstVocal = std::max(worstVocal, std::abs(vocals.getSample(ch, i) - 0.5f * mix.getSample(ch, i)));
+      worstSum = std::max(worstSum, std::abs(vocals.getSample(ch, i) + instrumental.getSample(ch, i) - mix.getSample(ch, i)));
+    }
+  }
+  REQUIRE(worstVocal < 2.0e-3f);
+  REQUIRE(worstSum < 2.0e-3f);
+
+  // An estimate above the input is clipped to a mask of 1: vocals = mix.
+  auto loud = scaledMagnitudeGraph(3.0f);
+  const auto clipped = ai::SeparationRunner::separate(mix, loud, config);
+  REQUIRE(clipped.usedModel);
+  REQUIRE(maxAbsDifference(clipped.stemAudio[0], mix) < 2.0e-3f);
+
+  // The graph is fed magnitudes, so no value is negative.
+  REQUIRE_FALSE(half.lastBindings.empty());
+  REQUIRE(*std::min_element(half.lastBindings.front().data.begin(), half.lastBindings.front().data.end()) >= 0.0f);
+  REQUIRE(half.lastBindings.front().data.size() == 2u * 2049u * 17u);
+}
+
+TEST_CASE("Magnitude layout and ratio mask only work together", "[ai][tensor][umx]") {
+  auto config = umxTestConfig();
+  config.outputMode = ai::OutputMode::Mask;
+  REQUIRE_FALSE(ai::validateRunnerConfig(config).empty());
+  config = umxTestConfig();
+  config.inputLayout = ai::InputLayout::SplitChannels;
+  REQUIRE_FALSE(ai::validateRunnerConfig(config).empty());
+  REQUIRE(ai::inputLayoutFromString("magnitude_channels") == std::optional<ai::InputLayout>(ai::InputLayout::MagnitudeChannels));
+  REQUIRE(ai::outputModeFromString("ratio_mask") == std::optional<ai::OutputMode>(ai::OutputMode::RatioMask));
+}
+
+TEST_CASE("Open-Unmix catalog entry is a curated separation pack with a valid contract", "[ai][tensor][catalog][umx]") {
+  const auto curated = ai::curatedModelIds();
+  REQUIRE(std::find(curated.begin(), curated.end(), std::string(ai::kUmxVocalsRepoId)) != curated.end());
+
+  ai::HubModelInfo info;
+  info.repoId = ai::kUmxVocalsRepoId;
+  info.tags = {"onnx", "open-unmix", "music-source-separation", "vocals", "license:mit"};
+  info.files = {"model.onnx", "LICENSE", "README.md"};
+  info.primaryFile = ai::primaryFileForRepo(info.repoId, info.files, &info.hasOnnx);
+  REQUIRE(info.primaryFile == ai::kUmxVocalsFile);
+  info.useCase = ai::HuggingFaceModelHub::inferUseCase(info.repoId, info.tags, "");
+  const auto compatibility = ai::validateCatalogModel(info);
+  REQUIRE(compatibility.compatible);
+  // "MixDirective" must not make this a mix model.
+  REQUIRE(compatibility.taskScope == "separation");
+
+  const auto contract = ai::umxVocalsCatalogContract();
+  const std::vector<ai::TensorSpec> inputs{{"magnitude", ai::TensorElementType::Float32, {1, 2, 2049, 431}}};
+  const std::vector<ai::TensorSpec> outputs{{"vocals_magnitude", ai::TensorElementType::Float32, {1, 2, 2049, 431}}};
+  std::string error;
+  REQUIRE(ai::checkTensorContract(contract, inputs, outputs, error));
+  REQUIRE(error.empty());
+  REQUIRE(ai::runnerConfigFromContract(contract, error).has_value());
 }

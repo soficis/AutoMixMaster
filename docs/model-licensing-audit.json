@@ -124,6 +124,18 @@
       ],
       "attribution": "BS-RoFormer, Lu et al., arXiv 2309.02612; ONNX export by xycld (huggingface.co/xycld/BS-RoFormer-ONNX)",
       "notes": "BS-RoFormer vocal separation ONNX; MIT confirmed on HF card (cardData.license and license:mit tag, checked 2026-09-30). Catalog installs fp32 (~645 MB, external-data sidecar inlined locally at install) where a CUDA session opens, else the single-file uint8-quantized build (~166 MB). Measured on RTX 5060 Ti: fp32/CUDA 85-91 s vs quantized/CPU 687 s for a 196 s track. Graph outputs vocals only; instrumental is the residual mix - vocals. Download-only, never bundled."
+    },
+    {
+      "id": "MixDirective/open-unmix-umxhq-vocals-onnx",
+      "license": "MIT",
+      "commercialUsable": true,
+      "attributionRequired": false,
+      "flagged": false,
+      "assets": [
+        "model.onnx"
+      ],
+      "attribution": "Open-Unmix UMX-HQ, Stoter, Uhlich, Liutkus, Mitsufuji (c) 2019 Inria; ONNX export by MixDirective (huggingface.co/MixDirective/open-unmix-umxhq-vocals-onnx)",
+      "notes": "Open-Unmix UMX-HQ vocals ONNX (36 MB, bidirectional LSTM, magnitude STFT in/out); MIT confirmed on HF card and LICENSE file (checked 2026-10-04). Low-memory alternative to BS-RoFormer. Graph outputs vocals only; instrumental is the residual mix - vocals. Download-only, never bundled."
     }
   ]
 }

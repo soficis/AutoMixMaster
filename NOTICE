@@ -63,6 +63,7 @@ of the audit date in docs/model-licensing-audit.json.
   SonyCSLParis/music2latent                              CC BY-NC 4.0   YES
   kramp/ito-master-onnx                                   CC BY-NC 4.0   YES
   xycld/BS-RoFormer-ONNX                                  MIT            no
+  MixDirective/open-unmix-umxhq-vocals-onnx               MIT            no
 
   GitHub release sources, terms not yet verified:
     smartdaze/otowake-oto                 (htdemucs_6s.onnx)
@@ -117,6 +118,15 @@ resolves it.
       No model file is re-hosted. The model separates vocals
       only: the instrumental stem is the residual (mix - vocals), not a
       second separation.
+
+  MixDirective/open-unmix-umxhq-vocals-onnx (MIT)
+      Open-Unmix UMX-HQ vocals (Stoter, Uhlich, Liutkus, Mitsufuji; (c) 2019
+      Inria), ONNX export by MixDirective.
+      https://opensource.org/license/mit
+      A 36 MB CPU-friendly alternative to BS-RoFormer for machines with little
+      memory; lower separation quality. No model file is re-hosted. The model
+      separates vocals only: the instrumental stem is the residual
+      (mix - vocals), not a second separation.
 
 
 6. Optional GPU runtime (NVIDIA CUDA libraries)

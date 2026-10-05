@@ -14,6 +14,7 @@
 #include <nlohmann/json.hpp>
 
 #include "ai/BsRoformerPack.h"
+#include "ai/UmxPack.h"
 #include "ai/GpuMemory.h"
 #include "ai/ItoMasterAdapter.h"
 #include "ai/ModelCatalogValidator.h"
@@ -546,6 +547,7 @@ std::vector<std::string> curatedModelIds() {
       "StemSplitio/htdemucs-6s-onnx",
       "kramp/ito-master-onnx",
       "xycld/BS-RoFormer-ONNX",  // == kBsRoformerRepoId; a literal because licensing tests parse this list
+      "MixDirective/open-unmix-umxhq-vocals-onnx",  // == kUmxVocalsRepoId; literal for the same reason
   };
 }
 
@@ -985,9 +987,11 @@ HubInstallResult HuggingFaceModelHub::installModel(const std::string& modelIdOrR
   writeJson(result.metadataPath, metadata);
 
   std::optional<TensorContract> tensorContract;
-  if (info->repoId == kBsRoformerRepoId) {
+  if (info->repoId == kBsRoformerRepoId || info->repoId == kUmxVocalsRepoId) {
     std::string probeError;
-    tensorContract = resolveInstalledTensorContract(bsRoformerCatalogContract(), primaryPath, probeError);
+    const auto catalogContract =
+        info->repoId == kBsRoformerRepoId ? bsRoformerCatalogContract() : umxVocalsCatalogContract();
+    tensorContract = resolveInstalledTensorContract(catalogContract, primaryPath, probeError);
     if (!tensorContract.has_value()) {
       std::filesystem::remove(primaryPath, error);
       result.message = "Downloaded model does not match its tensor contract: " + probeError;

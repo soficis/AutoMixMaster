@@ -26,6 +26,13 @@ std::vector<float> encodeInput(const analysis::Spectrogram& spec, const InputLay
   const int channels = spec.channels;
   const int bins = spec.freqBins;
   const int frames = spec.frames;
+  if (layout == InputLayout::MagnitudeChannels) {
+    std::vector<float> magnitude(spec.real.size());
+    for (std::size_t i = 0; i < magnitude.size(); ++i) {
+      magnitude[i] = std::hypot(spec.real[i], spec.imag[i]);
+    }
+    return magnitude;
+  }
   std::vector<float> data(static_cast<std::size_t>(channels) * static_cast<std::size_t>(bins) *
                           static_cast<std::size_t>(frames) * 2);
   for (int ch = 0; ch < channels; ++ch) {
@@ -83,6 +90,24 @@ analysis::Spectrogram decodeOutputStem(const std::vector<float>& data,
   return spec;
 }
 
+// Real mask = clip(estimated magnitude / input magnitude, 0, 1), bin by bin.
+analysis::Spectrogram ratioMask(const std::vector<float>& estimate,
+                                const std::vector<float>& inputMagnitude,
+                                const analysis::Spectrogram& geometry) {
+  analysis::Spectrogram mask;
+  mask.channels = geometry.channels;
+  mask.freqBins = geometry.freqBins;
+  mask.frames = geometry.frames;
+  mask.sampleRate = geometry.sampleRate;
+  mask.real.resize(estimate.size());
+  mask.imag.assign(estimate.size(), 0.0f);
+  for (std::size_t i = 0; i < estimate.size(); ++i) {
+    const float denominator = std::max(inputMagnitude[i], 1.0e-8f);
+    mask.real[i] = std::clamp(estimate[i] / denominator, 0.0f, 1.0f);
+  }
+  return mask;
+}
+
 // Crossfade weight of sample `i` within a chunk. Consecutive chunks overlap by
 // exactly `overlap` samples, and the fade-in of one chunk and the fade-out of
 // the previous are sin^2 / cos^2 of the same phase, so they sum to one there.
@@ -119,7 +144,10 @@ std::string validateRunnerConfig(const RunnerConfig& config) {
   if (graphStems == 0) {
     return "the stem list names no graph-produced stem";
   }
-  if (config.outputMode == OutputMode::Mask) {
+  if ((config.inputLayout == InputLayout::MagnitudeChannels) != (config.outputMode == OutputMode::RatioMask)) {
+    return "input_layout magnitude_channels and output_mode ratio_mask only work together";
+  }
+  if (config.outputMode == OutputMode::Mask || config.outputMode == OutputMode::RatioMask) {
     if (graphStems != 1) {
       return "mask mode produces exactly one graph stem, but " + std::to_string(graphStems) + " are declared";
     }
@@ -150,6 +178,9 @@ std::optional<InputLayout> inputLayoutFromString(const std::string& value) {
   if (value == "split_channels") {
     return InputLayout::SplitChannels;
   }
+  if (value == "magnitude_channels") {
+    return InputLayout::MagnitudeChannels;
+  }
   return std::nullopt;
 }
 
@@ -160,12 +191,18 @@ std::optional<OutputMode> outputModeFromString(const std::string& value) {
   if (value == "mask") {
     return OutputMode::Mask;
   }
+  if (value == "ratio_mask") {
+    return OutputMode::RatioMask;
+  }
   return std::nullopt;
 }
 
 std::vector<int64_t> tensorInputDims(const InputLayout layout, const int channels, const int freqBins, const int frames) {
   if (layout == InputLayout::FoldedStereo) {
     return {1, frames, static_cast<int64_t>(freqBins) * channels * 2};
+  }
+  if (layout == InputLayout::MagnitudeChannels) {
+    return {1, channels, freqBins, frames};
   }
   return {1, channels, freqBins, frames, 2};
 }
@@ -177,6 +214,9 @@ std::vector<int64_t> tensorOutputDims(const InputLayout layout,
                                       const int frames) {
   if (layout == InputLayout::FoldedStereo) {
     return {1, stemAxis, static_cast<int64_t>(freqBins) * channels, frames, 2};
+  }
+  if (layout == InputLayout::MagnitudeChannels) {
+    return {1, channels, freqBins, frames};
   }
   return {1, stemAxis, channels, freqBins, frames, 2};
 }
@@ -238,7 +278,7 @@ SeparationRunner::Result SeparationRunner::separate(const engine::AudioBuffer& m
       graphStemIndex.push_back(i);
     }
   }
-  const int stemAxis = config.outputMode == OutputMode::Mask ? 1 : static_cast<int>(graphStemIndex.size());
+  const int stemAxis = config.outputMode == OutputMode::Direct ? static_cast<int>(graphStemIndex.size()) : 1;
 
   const int chunk = config.chunkSamples;
   const int overlap = config.overlapSamples;
@@ -316,7 +356,11 @@ SeparationRunner::Result SeparationRunner::separate(const engine::AudioBuffer& m
       }
 
       std::vector<std::optional<engine::AudioBuffer>> chunkStems(config.stems.size());
-      if (config.outputMode == OutputMode::Mask) {
+      if (config.outputMode == OutputMode::RatioMask) {
+        const auto mask = ratioMask(produced->data, binding.data, spectrum);
+        const auto masked = analysis::complexMultiply(spectrum, mask, config.stft.zeroDc);
+        chunkStems[graphStemIndex.front()] = analysis::synthesize(masked, config.stft);
+      } else if (config.outputMode == OutputMode::Mask) {
         const auto mask = decodeOutputStem(produced->data, 0, config.inputLayout, spectrum);
         const auto masked = analysis::complexMultiply(spectrum, mask, config.stft.zeroDc);
         chunkStems[graphStemIndex.front()] = analysis::synthesize(masked, config.stft);

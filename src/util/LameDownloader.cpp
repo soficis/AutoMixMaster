@@ -175,6 +175,9 @@ std::string platformKey() {
 // Hash origins: Debian's package index for the .deb files, the Homebrew bottle
 // index for the Ghcr blobs. rarewares.org publishes no hashes, so the two ZIP
 // pins were taken from the files as served on 2026-10-05.
+// Only bottles whose encoder runs on its own are usable: the 3.100 macOS ones
+// do. Linux bottles never do (their loader path is a Homebrew placeholder), and
+// neither do the 4.0 macOS ones (they need Homebrew's libmpg123).
 std::vector<DownloadSource> sourcesForPlatform(const std::string& key, const std::string& version) {
   const std::string rarewares = "https://www.rarewares.org/files/mp3/lame" + version;
   const std::string debian = "https://deb.debian.org/debian/pool/main/l/lame/lame_" + version + "-6_";
@@ -192,13 +195,11 @@ std::vector<DownloadSource> sourcesForPlatform(const std::string& key, const std
   if (key == "linux-x64") {
     return {
         {SourceType::Debian, debian + "amd64.deb", "786ba06d2f222661e1f09b610de7b18c60f411a373d4fd3f595ec890f062089e"},
-        {SourceType::Ghcr, "", "ee8318f10b1b986d57826f0f59800c43f62d58e8d52cf9c94b8924e28739e656"},
     };
   }
   if (key == "linux-arm64") {
     return {
         {SourceType::Debian, debian + "arm64.deb", "aba5023ffde46709e4bccc9e1c10142a7d77f2884d2a9af84cab6a28f8792bd2"},
-        {SourceType::Ghcr, "", "3e9bc793b37a72ce61d28dbbdb8dd160a0785e91b7d9ab6e964ba9e6a8a549d4"},
     };
   }
   if (key == "linux-arm") {

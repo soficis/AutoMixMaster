@@ -29,7 +29,7 @@ TEST_CASE("Every LAME download source is pinned to a SHA-256 over HTTPS", "[util
   }
 }
 
-TEST_CASE("The published LAME pin list in the repo is valid and covers every platform", "[util][lame]") {
+TEST_CASE("The published LAME pin list in the repo is valid and names only known platforms", "[util][lame]") {
   std::ifstream file(std::filesystem::path(AUTOMIX_SOURCE_DIR) / "assets" / "lame-pins.json", std::ios::binary);
   REQUIRE(file.is_open());
   const std::string text((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
@@ -39,13 +39,14 @@ TEST_CASE("The published LAME pin list in the repo is valid and covers every pla
   INFO(detail);
   REQUIRE(!pins.empty());
 
-  std::set<std::string> platforms;
-  for (const auto& pin : pins) {
-    platforms.insert(pin.platformKey);
-  }
+  // A platform may be absent: the app then uses its built-in pins.
+  std::set<std::string> known;
   for (const auto& builtIn : LameDownloader::pinnedSources()) {
-    INFO(builtIn.platformKey);
-    CHECK(platforms.count(builtIn.platformKey) == 1);
+    known.insert(builtIn.platformKey);
+  }
+  for (const auto& pin : pins) {
+    INFO(pin.platformKey);
+    CHECK(known.count(pin.platformKey) == 1);
   }
 }
 

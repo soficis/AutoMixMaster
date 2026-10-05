@@ -8,7 +8,12 @@ when the output changes; a person reviews it before it is merged.
 
 Where each hash comes from:
   - Debian: the SHA256 field of the `lame` entry in Debian stable's package index.
-  - Homebrew: the bottle digests in the GHCR image index for the current version.
+  - Homebrew (macOS): the bottle digests in the GHCR image index for the current
+    version. Each candidate bottle is downloaded, checked against its digest and
+    inspected: the app copies only bin/lame out of it, so a bottle whose encoder
+    still points at a Homebrew path cannot run and is not published. With no
+    usable bottle the platform is left out and the app uses its built-in pins.
+    Linux bottles are never usable this way, so Linux relies on Debian.
   - rarewares.org (Windows): no index or published hash exists, so the known
     files are downloaded and hashed. A changed hash there has no independent
     confirmation and needs a careful look before merging.
@@ -17,10 +22,12 @@ A source that cannot be refreshed keeps its current entry and is reported.
 """
 
 import hashlib
+import io
 import json
 import lzma
 import pathlib
 import sys
+import tarfile
 import urllib.request
 
 MANIFEST = pathlib.Path(__file__).resolve().parent.parent / "assets" / "lame-pins.json"
@@ -30,8 +37,6 @@ DEBIAN = "https://deb.debian.org/debian/"
 # platform key -> Debian architecture / Homebrew (os, architecture) / rarewares file
 DEBIAN_ARCH = {"linux-x64": "amd64", "linux-arm64": "arm64", "linux-arm": "armhf"}
 BOTTLE = {
-    "linux-x64": ("linux", "amd64"),
-    "linux-arm64": ("linux", "arm64"),
     "darwin-x64": ("darwin", "amd64"),
     "darwin-arm64": ("darwin", "arm64"),
 }
@@ -63,6 +68,15 @@ def os_version(manifest):
     return tuple(int(part) for part in digits.split()[0].split(".") if part) if digits.split() else (0,)
 
 
+def runs_standalone(digest, auth):
+    blob = fetch(f"{GHCR}/blobs/sha256:{digest}", auth)
+    if hashlib.sha256(blob).hexdigest() != digest:
+        raise ValueError(f"bottle {digest[:12]} does not match its digest")
+    with tarfile.open(fileobj=io.BytesIO(blob)) as bottle:
+        encoder = next(m for m in bottle.getmembers() if m.name.endswith("/bin/lame"))
+        return b"@@HOMEBREW" not in bottle.extractfile(encoder).read()
+
+
 def homebrew_sources():
     version = json.loads(fetch("https://formulae.brew.sh/api/formula/lame.json"))["versions"]["stable"]
     token = json.loads(fetch("https://ghcr.io/token?service=ghcr.io&scope=repository:homebrew/core/lame:pull"))["token"]
@@ -74,8 +88,13 @@ def homebrew_sources():
         bottles = [m for m in index["manifests"]
                    if m["platform"]["os"] == os_name and m["platform"]["architecture"] == arch]
         # The bottle built for the oldest OS release runs on the widest range of machines.
-        bottle = min(bottles, key=os_version)
-        sources.append({"platform": platform, "type": "ghcr", "sha256": bottle["annotations"]["sh.brew.bottle.digest"]})
+        for bottle in sorted(bottles, key=os_version):
+            digest = bottle["annotations"]["sh.brew.bottle.digest"]
+            if runs_standalone(digest, auth):
+                sources.append({"platform": platform, "type": "ghcr", "sha256": digest})
+                break
+        else:
+            print(f"note: no LAME {version} bottle for {platform} runs on its own; the app keeps its built-in pin")
     return sources
 
 

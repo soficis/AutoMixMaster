@@ -2,7 +2,7 @@
 
 # AutoMixMaster
 
-**Version 0.4.2**
+**Version 0.5.0**
 
 <img src="assets/screenshots/main-session.png" alt="AutoMixMaster with a session loaded" width="860">
 

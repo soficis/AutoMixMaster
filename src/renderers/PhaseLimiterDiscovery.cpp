@@ -1,4 +1,6 @@
 #include "renderers/PhaseLimiterDiscovery.h"
+#include "renderers/PhaseLimiterPins.h"
+#include "renderers/FfmpegDiscovery.h"
 
 #include <algorithm>
 #include <cctype>
@@ -11,6 +13,7 @@
 #include <juce_core/juce_core.h>
 
 #include "util/FileUtils.h"
+#include "util/Sha256.h"
 #include "util/StringUtils.h"
 
 namespace automix::renderers {
@@ -74,7 +77,7 @@ std::vector<std::string> executableNames() {
 #if defined(_WIN32)
   return {"phase_limiter.exe", "phaselimiter.exe", "phase_limiter", "phaselimiter"};
 #else
-  return {"phase_limiter", "phaselimiter", "phase_limiter.bin", "phaselimiter.bin", "phase_limiter.exe"};
+  return {"phase_limiter", "phaselimiter", "phase_limiter.bin", "phaselimiter.bin"};
 #endif
 }
 
@@ -163,6 +166,7 @@ std::vector<std::filesystem::path> baseAssetDirectories(const std::filesystem::p
       root / "resources" / "assets",
       root / "Resources" / "assets",
       root / "Contents" / "Resources" / "assets",
+      root / "Contents" / "MacOS" / "assets",
   };
 }
 
@@ -250,18 +254,90 @@ bool downloadToFile(const std::string& url, const std::filesystem::path& outputP
   return true;
 }
 
-std::optional<std::string> defaultDownloadUrl() {
+} // namespace
+
+std::string currentPhaseLimiterPlatformKey() {
+#if defined(_WIN32)
+  #if defined(_M_X64) || defined(__x86_64__)
+    return "windows-x64";
+  #elif defined(_M_ARM64) || defined(__aarch64__)
+    return "windows-arm64";
+  #else
+    return "windows-x86";
+  #endif
+#elif defined(__APPLE__)
+  #if defined(__aarch64__) || defined(__arm64__)
+    return "macos-arm64";
+  #elif defined(__x86_64__)
+    return "macos-x86_64";
+  #else
+    return "macos-unknown";
+  #endif
+#elif defined(__linux__)
+  #if defined(__x86_64__)
+    return "linux-x64";
+  #elif defined(__aarch64__)
+    return "linux-arm64";
+  #else
+    return "linux-unknown";
+  #endif
+#else
+  return "unknown";
+#endif
+}
+
+std::string phaseLimiterPlatformKeyForResolution(const std::string& platformKey) {
+  if (platformKey == "windows-arm64") {
+    return "windows-x64";
+  }
+  return platformKey;
+}
+
+std::vector<PhaseLimiterDownloadPin> phaseLimiterDownloadPinTable() {
+  std::vector<PhaseLimiterDownloadPin> table;
+  table.reserve(std::size(kPhaseLimiterPins));
+  for (const auto& pin : kPhaseLimiterPins) {
+    table.push_back({pin.platformKey, pin.url, pin.sha256});
+  }
+  return table;
+}
+
+std::optional<PhaseLimiterDownloadPin> defaultPhaseLimiterDownloadPin() {
   if (const auto manual = readEnvironment("AUTOMIX_PHASELIMITER_DOWNLOAD_URL"); manual.has_value()) {
-    return manual;
+    PhaseLimiterDownloadPin pin;
+    pin.platformKey = currentPhaseLimiterPlatformKey();
+    pin.url = manual.value();
+    if (const auto manualSha = readEnvironment("AUTOMIX_PHASELIMITER_DOWNLOAD_SHA256"); manualSha.has_value()) {
+      pin.sha256 = manualSha.value();
+    }
+    return pin;
   }
 
-#if defined(_WIN32)
-  return std::string("https://github.com/ai-mastering/phaselimiter/releases/download/v0.2.0/phaselimiter-win.zip");
-#elif defined(__linux__)
-  return std::string("https://github.com/ai-mastering/phaselimiter/releases/download/v0.2.0/release.tar.xz");
-#else
+  const auto currentKey = currentPhaseLimiterPlatformKey();
+  const auto resolutionKey = phaseLimiterPlatformKeyForResolution(currentKey);
+  const auto table = phaseLimiterDownloadPinTable();
+  for (const auto& pin : table) {
+    if (pin.platformKey == resolutionKey) {
+      if (pin.url.empty() || pin.sha256.empty()) {
+        return std::nullopt;
+      }
+      return pin;
+    }
+  }
   return std::nullopt;
-#endif
+}
+
+namespace {
+
+static std::optional<PhaseLimiterDiscovery::DownloadFetcher> gDownloadFetcher;
+static bool gAttemptedDownload = false;
+static std::mutex gDownloadMutex;
+
+bool fetchArchive(const std::string& url, const std::filesystem::path& destination) {
+  if (gDownloadFetcher.has_value()) {
+    return (*gDownloadFetcher)(url, destination);
+  }
+  return downloadToFile(url, destination);
 }
 
 bool isSafeArchivePath(const std::filesystem::path& relativePath) {
@@ -353,31 +429,80 @@ std::optional<PhaseLimiterBinaryInfo> resolveFromCacheInstall() {
   return scanDirectoryRecursive(cacheInstallRoot(), 6);
 }
 
-std::optional<PhaseLimiterBinaryInfo> resolveFromAutoDownload() {
+// Ordered by priority: AUTOMIX_ASSET_ROOT is an override, so it is searched
+// first. (A std::set here once sorted roots lexicographically, which let the
+// executable's own tree win whenever its path sorted before the override.)
+std::vector<std::filesystem::path> defaultRoots() {
+  std::vector<std::filesystem::path> candidates;
+  if (const auto assetRoot = readEnvironment("AUTOMIX_ASSET_ROOT"); assetRoot.has_value()) {
+    candidates.emplace_back(assetRoot.value());
+  }
+  candidates.push_back(std::filesystem::current_path());
+
+  const juce::File executable = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+  const std::filesystem::path executableDir(executable.getParentDirectory().getFullPathName().toStdString());
+  candidates.push_back(executableDir);
+  candidates.push_back(executableDir / ".." / "Resources");
+
+  std::set<std::filesystem::path> seen;
+  std::vector<std::filesystem::path> output;
+  output.reserve(candidates.size());
+  for (const auto& root : candidates) {
+    if (seen.insert(root).second) {
+      output.push_back(root);
+    }
+  }
+  return output;
+}
+
+} // namespace
+
+void PhaseLimiterDiscovery::setDownloadFetcherForTesting(DownloadFetcher fetcher) {
+  gDownloadFetcher = std::move(fetcher);
+}
+
+void PhaseLimiterDiscovery::resetDownloadFetcherForTesting() {
+  gDownloadFetcher.reset();
+}
+
+void PhaseLimiterDiscovery::resetAttemptedDownloadForTesting() {
+  std::scoped_lock lock(gDownloadMutex);
+  gAttemptedDownload = false;
+}
+
+std::optional<PhaseLimiterBinaryInfo> PhaseLimiterDiscovery::downloadAndInstall(
+    const std::optional<PhaseLimiterDownloadPin>& customPin) {
   if (flagEnabled("AUTOMIX_PHASELIMITER_SKIP_DOWNLOAD")) {
     return std::nullopt;
   }
 
-  const auto url = defaultDownloadUrl();
-  if (!url.has_value()) {
+  const auto pin = customPin.has_value() ? customPin : defaultPhaseLimiterDownloadPin();
+  if (!pin.has_value() || pin->url.empty()) {
     return std::nullopt;
   }
 
-  if (const auto cachedInfo = resolveFromCacheInstall(); cachedInfo.has_value()) {
-    return cachedInfo;
-  }
-
-  static std::mutex downloadMutex;
-  static bool attemptedDownload = false;
-  std::scoped_lock lock(downloadMutex);
-
-  if (const auto cachedInfo = resolveFromCacheInstall(); cachedInfo.has_value()) {
-    return cachedInfo;
-  }
-  if (attemptedDownload) {
+  const bool isManualUrlOverride = readEnvironment("AUTOMIX_PHASELIMITER_DOWNLOAD_URL").has_value();
+  if (pin->sha256.empty() && !isManualUrlOverride) {
+    juce::Logger::writeToLog("ERROR: PhaseLimiter download pin has empty SHA-256 hash. Rejected unverified download.");
     return std::nullopt;
   }
-  attemptedDownload = true;
+
+  if (!customPin.has_value()) {
+    if (const auto cachedInfo = resolveFromCacheInstall(); cachedInfo.has_value()) {
+      return cachedInfo;
+    }
+  }
+
+  std::scoped_lock lock(gDownloadMutex);
+  if (!customPin.has_value()) {
+    if (const auto cachedInfo = resolveFromCacheInstall(); cachedInfo.has_value()) {
+      return cachedInfo;
+    }
+  }
+  if (gAttemptedDownload) {
+    return std::nullopt;
+  }
+  gAttemptedDownload = true;
 
   std::error_code error;
   std::filesystem::create_directories(cacheToolsRoot(), error);
@@ -385,93 +510,86 @@ std::optional<PhaseLimiterBinaryInfo> resolveFromAutoDownload() {
     return std::nullopt;
   }
 
-  const auto lowerUrl = toLower(url.value());
+  const auto lowerUrl = toLower(pin->url);
   const std::filesystem::path archivePath = cacheToolsRoot() / "phaselimiter_download";
+  std::filesystem::path destinationFile;
+  bool isArchive = false;
+  bool isZip = false;
 
   if (lowerUrl.ends_with(".zip")) {
-    const auto zipPath = archivePath.string() + ".zip";
-    if (!downloadToFile(url.value(), zipPath)) {
-      return std::nullopt;
-    }
-    std::filesystem::remove_all(cacheInstallRoot(), error);
-    if (!extractZipArchive(zipPath, cacheToolsRoot())) {
-      return std::nullopt;
-    }
+    destinationFile = archivePath.string() + ".zip";
+    isArchive = true;
+    isZip = true;
   } else if (lowerUrl.ends_with(".tar.xz") || lowerUrl.ends_with(".txz")) {
-    const auto tarPath = archivePath.string() + ".tar.xz";
-    if (!downloadToFile(url.value(), tarPath)) {
-      return std::nullopt;
-    }
-    std::filesystem::remove_all(cacheInstallRoot(), error);
-    if (!extractTarXzArchive(tarPath, cacheToolsRoot())) {
-      return std::nullopt;
-    }
-  } else if (lowerUrl.ends_with(".sh")) {
-    if (!flagEnabled("AUTOMIX_PHASELIMITER_ALLOW_LINUX_INSTALL_SCRIPT")) {
-      return std::nullopt;
-    }
-#if defined(__linux__)
-    const auto scriptPath = archivePath.string() + ".sh";
-    if (!downloadToFile(url.value(), scriptPath)) {
-      return std::nullopt;
-    }
-
-    juce::StringArray command;
-    command.add("bash");
-    command.add(scriptPath);
-    juce::ChildProcess process;
-    if (!process.start(command) || !process.waitForProcessToFinish(180000) || process.getExitCode() != 0) {
-      return std::nullopt;
-    }
-#else
-    return std::nullopt;
-#endif
+    destinationFile = archivePath.string() + ".tar.xz";
+    isArchive = true;
+    isZip = false;
   } else {
     std::filesystem::create_directories(cacheInstallRoot() / "bin", error);
-    if (error || !downloadToFile(url.value(), cacheBinaryPath())) {
+    if (error) {
+      return std::nullopt;
+    }
+    destinationFile = cacheBinaryPath();
+    isArchive = false;
+  }
+
+  if (!fetchArchive(pin->url, destinationFile)) {
+    std::filesystem::remove(destinationFile, error);
+    return std::nullopt;
+  }
+
+  // SHA-256 verification before extraction
+  if (!pin->sha256.empty()) {
+    const auto actualSha = toLower(automix::util::fileSha256(destinationFile));
+    const auto expectedSha = toLower(pin->sha256);
+    if (actualSha != expectedSha) {
+      std::filesystem::remove(destinationFile, error);
+      juce::Logger::writeToLog("PhaseLimiter download SHA-256 mismatch for " +
+                               destinationFile.string() + " (expected " + expectedSha +
+                               ", got " + (actualSha.empty() ? "unreadable" : actualSha) +
+                               "); download discarded.");
+      return std::nullopt;
+    }
+  } else {
+    juce::Logger::writeToLog("WARNING: PhaseLimiter downloaded without SHA-256 verification (unpinned URL).");
+  }
+
+  if (isArchive) {
+    std::filesystem::remove_all(cacheInstallRoot(), error);
+    const bool extracted = isZip ? extractZipArchive(destinationFile, cacheToolsRoot())
+                                 : extractTarXzArchive(destinationFile, cacheToolsRoot());
+    std::filesystem::remove(destinationFile, error);
+    if (!extracted) {
       return std::nullopt;
     }
   }
 
   if (const auto downloadedInfo = resolveFromCacheInstall(); downloadedInfo.has_value()) {
+#if !defined(_WIN32)
+    const auto currentPermissions = std::filesystem::status(downloadedInfo->executablePath, error).permissions();
+    if (!error) {
+      constexpr auto executeFlags = std::filesystem::perms::owner_exec |
+                                    std::filesystem::perms::group_exec |
+                                    std::filesystem::perms::others_exec;
+      std::filesystem::permissions(downloadedInfo->executablePath, currentPermissions | executeFlags, error);
+    }
+#endif
     return downloadedInfo;
   }
   return std::nullopt;
 }
 
-std::vector<std::filesystem::path> defaultRoots() {
-  std::set<std::filesystem::path> roots;
-  roots.insert(std::filesystem::current_path());
-
-  const juce::File executable = juce::File::getSpecialLocation(juce::File::currentExecutableFile);
-  const std::filesystem::path executableDir(executable.getParentDirectory().getFullPathName().toStdString());
-  roots.insert(executableDir);
-  roots.insert(executableDir / ".." / "Resources");
-  if (const auto assetRoot = readEnvironment("AUTOMIX_ASSET_ROOT"); assetRoot.has_value()) {
-    roots.insert(assetRoot.value());
-  }
-
-  std::vector<std::filesystem::path> output;
-  output.reserve(roots.size());
-  for (const auto& root : roots) {
-    output.push_back(root);
-  }
-  return output;
-}
-
-} // namespace
-
 std::optional<PhaseLimiterBinaryInfo> PhaseLimiterDiscovery::find() const {
   if (const auto fromEnv = resolveFromEnvironment(); fromEnv.has_value()) {
     return fromEnv;
   }
-  if (const auto cached = toBinaryInfo(cacheBinaryPath()); cached.has_value()) {
-    return cached;
-  }
   if (const auto fromLocal = findInRoots(defaultRoots()); fromLocal.has_value()) {
     return fromLocal;
   }
-  return resolveFromAutoDownload();
+  if (const auto cached = resolveFromCacheInstall(); cached.has_value()) {
+    return cached;
+  }
+  return downloadAndInstall();
 }
 
 std::optional<PhaseLimiterBinaryInfo> PhaseLimiterDiscovery::findInRoots(
@@ -487,6 +605,36 @@ std::optional<PhaseLimiterBinaryInfo> PhaseLimiterDiscovery::findInRoots(
       }
       current = current.parent_path();
     }
+  }
+  return std::nullopt;
+}
+
+namespace {
+std::mutex s_ffmpegResolverMutex;
+FfmpegResolver s_ffmpegResolverForTesting = nullptr;
+} // namespace
+
+void setFfmpegResolverForTesting(FfmpegResolver resolver) {
+  std::lock_guard<std::mutex> lock(s_ffmpegResolverMutex);
+  s_ffmpegResolverForTesting = std::move(resolver);
+}
+
+void resetFfmpegResolverForTesting() {
+  std::lock_guard<std::mutex> lock(s_ffmpegResolverMutex);
+  s_ffmpegResolverForTesting = nullptr;
+}
+
+std::optional<std::filesystem::path> ffmpegForPhaseLimiter() {
+  {
+    std::lock_guard<std::mutex> lock(s_ffmpegResolverMutex);
+    if (s_ffmpegResolverForTesting) {
+      return s_ffmpegResolverForTesting();
+    }
+  }
+
+  FfmpegDiscovery discovery;
+  if (const auto ffmpeg = discovery.find(); ffmpeg.has_value()) {
+    return ffmpeg->executablePath;
   }
   return std::nullopt;
 }

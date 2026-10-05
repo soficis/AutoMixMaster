@@ -13,6 +13,12 @@
 #include "app/ui/TaskOrchestrator.h"
 #include "app/ui/TransportBar.h"
 #include "app/ui/VerificationEngine.h"
+#include "ai/BsRoformerPack.h"
+#include "ai/GpuRuntimePack.h"
+#include "ai/HuggingFaceModelHub.h"
+#include "ai/ModelStorage.h"
+#include "ai/OnnxTensorInference.h"
+#include "ai/UmxPack.h"
 #include "renderers/RendererPipeline.h"
 #include "util/FileUtils.h"
 
@@ -64,6 +70,28 @@ void automix::app::detail::updateStemPanelFromSession(StemPanel& panel, const do
 MainLayout::MainLayout() {
   setWantsKeyboardFocus(true);
 
+  // A GPU runtime removed last run may still have files on disk (they were
+  // locked while loaded); finish that before anything can preload them.
+  ai::GpuRuntimePack::completePendingRemoval();
+
+  // Downloaded models used to live in a working-directory-relative
+  // assets/modelhub; move them (with their install registry and licence
+  // consents) to the per-user location once. The outcome is reported once the
+  // task history exists.
+  const auto modelHubMigration = ai::migrateModelHub(ai::legacyModelHubRoot(), ai::defaultModelHubRoot());
+  if (modelHubMigration.attempted) {
+    juce::MessageManager::callAsync([safe = juce::Component::SafePointer<MainLayout>(this), modelHubMigration] {
+      if (safe == nullptr || safe->taskOrchestrator_ == nullptr) {
+        return;
+      }
+      safe->taskOrchestrator_->appendHistory(
+          modelHubMigration.error.empty()
+              ? "Moved " + juce::String(modelHubMigration.movedPacks) + " downloaded model(s) to " +
+                    juce::String(ai::defaultModelHubRoot().wstring().c_str())
+              : "Model folder migration incomplete (will retry next start): " + juce::String(modelHubMigration.error));
+    });
+  }
+
   // 1. Create UI components
   headerBar_ = std::make_unique<HeaderBar>();
   heroWaveform_ = std::make_unique<HeroWaveform>();
@@ -85,12 +113,9 @@ MainLayout::MainLayout() {
   addAndMakeVisible(*taskCenter_);
 
   // Destructive Clear: MainLayout-owned (not part of TransportBar), confirmed on click.
-  clearTracksButton_.setTooltip("Clear Imported Tracks (asks for confirmation)");
+  clearTracksButton_.setTooltip("Remove all stems from the session");
   clearTracksButton_.setWantsKeyboardFocus(true);
-  clearTracksButton_.setColour(juce::TextButton::buttonColourId, colour(colours::surface));
-  clearTracksButton_.setColour(juce::TextButton::buttonOnColourId, colour(colours::surfaceLight));
-  clearTracksButton_.setColour(juce::TextButton::textColourOffId, colour(colours::warning));
-  clearTracksButton_.setColour(juce::TextButton::textColourOnId, colour(colours::warning));
+  setButtonVariant(clearTracksButton_, buttonVariant::danger);
   clearTracksButton_.onClick = [this] { onClearTracks(); };
   addAndMakeVisible(clearTracksButton_);
 
@@ -121,6 +146,7 @@ MainLayout::MainLayout() {
   wireControlDeckCallbacks();
   wireHeroWaveformCallbacks();
 
+  taskCenter_->onPreferredHeightChanged = [this] { resized(); };
   taskCenter_->onCancel = [this] { taskOrchestrator_->cancelActiveTask(); };
 
   // 5. Audio device & transport
@@ -133,6 +159,20 @@ MainLayout::MainLayout() {
   // 6. Application command manager: keyboard shortcuts are dispatched here
   commandManager_.setFirstCommandTarget(this);
   commandManager_.registerAllCommandsForTarget(this);
+
+  sessionManager_.markSaved();
+  refreshStemDependentUi();
+}
+
+void MainLayout::refreshStemDependentUi() {
+  const bool hasStems = !sessionManager_.session().stems.empty();
+  if (controlDeck_ != nullptr)
+    controlDeck_->setHasStems(hasStems);
+  if (heroWaveform_ != nullptr)
+    heroWaveform_->setHasStems(hasStems);
+  if (transportBar_ != nullptr)
+    transportBar_->setHasMedia(hasStems);
+  clearTracksButton_.setEnabled(hasStems);
 }
 
 // ── Controllers factory ────────────────────────────────────────
@@ -262,6 +302,7 @@ void MainLayout::initControllers() {
         safe->sessionManager_.session().stems = result.stems;
         safe->sessionManager_.session().originalMixPath = result.originalMixPath;
         updateStemPanelFromSession(safe->controlDeck_->getStemPanel(), safe->sessionManager_.session());
+        safe->refreshStemDependentUi();
         safe->taskOrchestrator_->finishTaskCompleted(ActiveTask::Import, "Import complete");
         safe->rebuildPreview();
 
@@ -471,16 +512,21 @@ void MainLayout::initControllers() {
 
         if (result.cancelled) {
           safe->taskOrchestrator_->finishTaskCancelled(ActiveTask::Session, "Session save cancelled");
+          safe->finishPendingSave(false);
           return;
         }
         if (!result.success) {
           safe->taskOrchestrator_->finishTaskFailed(ActiveTask::Session, result.errorText.toStdString());
+          safe->finishPendingSave(false);
           return;
         }
 
         safe->taskOrchestrator_->appendHistory("Session saved to " + juce::String(result.path));
-        safe->headerBar_->setSessionName(juce::File(result.path).getFileNameWithoutExtension());
+        safe->sessionManager_.markSaved();
+        safe->sessionShownModified_ = false;
+        safe->setSessionDisplayName(juce::File(result.path).getFileNameWithoutExtension());
         safe->taskOrchestrator_->finishTaskCompleted(ActiveTask::Session, "Session saved");
+        safe->finishPendingSave(true);
       });
     };
     cb.onLoadComplete = [safe](SessionLoadResult result) {
@@ -523,6 +569,7 @@ void MainLayout::initComboBoxes() {
 // ─────────────────────────────────────────────────────────────────
 
 MainLayout::~MainLayout() {
+  gpuRuntimeCancel_->store(true);
   taskOrchestrator_->cancelAll();
   stopTimer();
   audioDeviceManager_.removeAudioCallback(this);
@@ -562,7 +609,7 @@ void MainLayout::resized() {
   fb.items.add(juce::FlexItem(*headerBar_).withHeight(static_cast<float>(kHeaderHeight)));
   fb.items.add(juce::FlexItem(*heroWaveform_).withFlex(1.5f).withMinHeight(120.0f));
   fb.items.add(juce::FlexItem(*controlDeck_).withFlex(2.5f).withMinHeight(180.0f));
-  fb.items.add(juce::FlexItem(*taskCenter_).withFlex(1.2f).withMinHeight(160.0f));
+  fb.items.add(juce::FlexItem(*taskCenter_).withHeight(static_cast<float>(taskCenter_->getPreferredHeight())));
 
   fb.performLayout(area);
 }
@@ -645,7 +692,7 @@ public:
     }
 
     closeButton_.setButtonText("Close");
-    closeButton_.onClick = [this] { exitModalState(0); };
+    closeButton_.onClick = [this] { closeHostWindow(); };
     addAndMakeVisible(closeButton_);
   }
 
@@ -671,13 +718,18 @@ public:
 
   bool keyPressed(const juce::KeyPress& key) override {
     if (key == juce::KeyPress::escapeKey) {
-      exitModalState(0);
+      closeHostWindow();
       return true;
     }
     return juce::Component::keyPressed(key);
   }
 
 private:
+  void closeHostWindow() {
+    if (auto* dw = findParentComponentOfClass<juce::DialogWindow>())
+      dw->exitModalState(0);
+  }
+
   static constexpr int kDialogWidth = 460;
   static constexpr int kDialogHeight = 560;
 
@@ -758,11 +810,14 @@ void MainLayout::onTogglePlayPause() {
 }
 
 void MainLayout::showShortcutsDialog() {
-  auto* dialog = new ShortcutsDialog(shortcutTable());
-  dialog->setAlwaysOnTop(true);
-  dialog->centreWithSize(dialog->getWidth(), dialog->getHeight());
-  dialog->setVisible(true);
-  dialog->enterModalState(true, nullptr, true); // modal manager owns + deletes it
+  juce::DialogWindow::LaunchOptions options;
+  options.content.setOwned(new ShortcutsDialog(shortcutTable()));
+  options.dialogTitle = "Keyboard Shortcuts";
+  options.dialogBackgroundColour = colour(colours::surface);
+  options.escapeKeyTriggersCloseButton = true;
+  options.useNativeTitleBar = true;
+  options.resizable = false;
+  options.launchAsync();
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -771,6 +826,15 @@ void MainLayout::showShortcutsDialog() {
 
 void MainLayout::timerCallback() {
   updateTransportDisplay();
+
+  if (++modifiedCheckTicks_ >= 30) {
+    modifiedCheckTicks_ = 0;
+    const bool modified = sessionManager_.isModified();
+    if (modified != sessionShownModified_) {
+      sessionShownModified_ = modified;
+      refreshSessionTitle();
+    }
+  }
 
   // Reconcile the transport bar with the atomic play state (covers end-of-track
   // auto-stop, which is realtime-only and posts no change message).
@@ -944,10 +1008,10 @@ void MainLayout::onClearTracks() {
     return; // Nothing imported; nothing to clear.
 
   juce::AlertWindow::showOkCancelBox(
-      juce::MessageBoxIconType::WarningIcon, "Clear imported tracks",
-      "Clear " + juce::String(numTracks) +
-          " imported tracks? This cannot be undone \xe2\x80\x94 use Undo after T4.1.",
-      "Clear", "Cancel", this,
+      juce::MessageBoxIconType::WarningIcon, "Remove all stems?",
+      "Remove all " + juce::String(numTracks) + (numTracks == 1 ? " stem" : " stems") +
+          " from this session? This can't be undone.",
+      "Remove stems", "Cancel", this,
       juce::ModalCallbackFunction::create([safe = safeAsync(this), numTracks](int result) {
         if (safe != nullptr && confirmClear(numTracks, result == 1))
           safe->performClearTracks();
@@ -960,6 +1024,7 @@ void MainLayout::performClearTracks() {
   transportBar_->setTimeDisplay(0.0, 0.0);
   sessionManager_.session().stems.clear();
   detail::updateStemPanelFromSession(controlDeck_->getStemPanel(), sessionManager_.session());
+  refreshStemDependentUi();
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1046,7 +1111,25 @@ void MainLayout::wireControlDeckCallbacks() {
     sessionManager_.session().residualBlend = controlDeck_->getResidualBlendSlider().getValue();
   };
   controlDeck_->getSeparatedStemsToggle().onClick = [this] {
-    sessionManager_.session().aiStemsEnabled = controlDeck_->getSeparatedStemsToggle().getToggleState();
+    const bool enabled = controlDeck_->getSeparatedStemsToggle().getToggleState();
+    sessionManager_.session().aiStemsEnabled = enabled;
+    controlDeck_->getTensorSeparationToggle().setEnabled(enabled);
+    controlDeck_->setSeparationControlsVisible(enabled);
+  };
+  controlDeck_->getTensorSeparationToggle().onClick = [this] {
+    const bool enabled = controlDeck_->getTensorSeparationToggle().getToggleState();
+    sessionManager_.session().renderSettings.tensorSeparationEnabled = enabled;
+    if (enabled) {
+      const auto separationPack = resolveActiveModelPackForTask("separation");
+      const bool lightModelActive = separationPack.has_value() && separationPack->tensorContract.has_value() &&
+                                    separationPack->tensorContract->engine == "open_unmix";
+      if (const auto warning = ai::vocalModelCpuWarning(lightModelActive); !warning.empty()) {
+        taskOrchestrator_->appendHistory("Vocal Model warning: " + juce::String(warning));
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Vocal Model will be slow",
+                                               juce::String(warning));
+      }
+      offerGpuRuntimeIfUseful();
+    }
   };
   controlDeck_->getBatchRecursiveToggle().onClick = [this] {
     const bool enabled = controlDeck_->getBatchRecursiveToggle().getToggleState();
@@ -1064,6 +1147,7 @@ void MainLayout::wireHeroWaveformCallbacks() {
   heroWaveform_->onSeek = [this](double progress) {
     transportController_.seekToFraction(std::clamp(progress, 0.0, 1.0));
   };
+  heroWaveform_->onImportRequested = [this] { onImport(); };
   heroWaveform_->onFilesDropped = [this](std::vector<juce::File> files) {
     importFiles(std::move(files));
   };
@@ -1164,7 +1248,12 @@ void MainLayout::importFiles(std::vector<juce::File> files) {
       useSeparation,
       sessionManager_.session().preferredStemCount,
       taskOrchestrator_->cancelFlag(ActiveTask::Import),
-      std::move(separationModelRoot));
+      std::move(separationModelRoot),
+      TensorSeparationRequest{
+          .enabled = sessionManager_.session().renderSettings.tensorSeparationEnabled,
+          .executionProvider = sessionManager_.session().renderSettings.preferHardwareAcceleration
+                                   ? sessionManager_.session().renderSettings.gpuExecutionProvider
+                                   : std::string("cpu")});
 }
 
 bool MainLayout::startAiSeparationBeforeAutoMixIfNeeded() {
@@ -1489,9 +1578,13 @@ void MainLayout::startBatchVerification(const std::string& outputFolder) {
 // Action: Save Session
 // ─────────────────────────────────────────────────────────────────
 
-void MainLayout::onSaveSession() {
+void MainLayout::onSaveSession(std::function<void(bool)> done) {
+  finishPendingSave(false);
+  pendingSaveCompletion_ = std::move(done);
+
   if (taskOrchestrator_->isTaskRunning()) {
     taskOrchestrator_->setStatus("Busy", "A task is already running");
+    finishPendingSave(false);
     return;
   }
 
@@ -1505,11 +1598,13 @@ void MainLayout::onSaveSession() {
     const auto selected = chooser.getResult();
     if (selected == juce::File()) {
       saveSessionChooser_.reset();
+      finishPendingSave(false);
       return;
     }
 
     if (!taskOrchestrator_->beginTask(ActiveTask::Session, "Saving session", "", "Session save started")) {
       saveSessionChooser_.reset();
+      finishPendingSave(false);
       return;
     }
 
@@ -1519,6 +1614,73 @@ void MainLayout::onSaveSession() {
                                     taskOrchestrator_->cancelFlag(ActiveTask::Session));
     saveSessionChooser_.reset();
   });
+}
+
+void MainLayout::finishPendingSave(bool success) {
+  if (auto done = std::move(pendingSaveCompletion_)) {
+    pendingSaveCompletion_ = nullptr;
+    done(success);
+  }
+}
+
+void MainLayout::setSessionDisplayName(const juce::String& name) {
+  sessionDisplayName_ = name;
+  refreshSessionTitle();
+}
+
+void MainLayout::refreshSessionTitle() {
+  headerBar_->setSessionName(sessionDisplayName_ + (sessionShownModified_ ? " *" : ""));
+}
+
+bool MainLayout::requestQuit(std::function<void()> quitNow) {
+  return requestQuitStep(std::move(quitNow), false);
+}
+
+bool MainLayout::requestQuitStep(std::function<void()> quitNow, bool taskQuitConfirmed) {
+  const auto step = nextQuitStep(taskOrchestrator_->isTaskRunning(), taskQuitConfirmed,
+                                 sessionManager_.isModified());
+  if (step == QuitStep::QuitNow) {
+    quitNow();
+    return true;
+  }
+  if (quitPromptOpen_)
+    return false;
+  quitPromptOpen_ = true;
+
+  if (step == QuitStep::ConfirmRunningTask) {
+    juce::AlertWindow::showOkCancelBox(
+        juce::MessageBoxIconType::WarningIcon, "Task still running",
+        "A task is still running. Quitting now will cancel it, and an unfinished export may be left "
+        "incomplete. Quit anyway?",
+        "Quit", "Cancel", this,
+        juce::ModalCallbackFunction::create([safe = safeAsync(this), quitNow](int result) {
+          if (safe == nullptr)
+            return;
+          safe->quitPromptOpen_ = false;
+          if (result == 1)
+            safe->requestQuitStep(quitNow, true);
+        }));
+    return false;
+  }
+
+  juce::AlertWindow::showYesNoCancelBox(
+      juce::MessageBoxIconType::QuestionIcon, "Save changes?",
+      "Save changes to " + sessionDisplayName_ + " before closing?",
+      "Save", "Don't Save", "Cancel", this,
+      juce::ModalCallbackFunction::create([safe = safeAsync(this), quitNow](int result) {
+        if (safe == nullptr)
+          return;
+        safe->quitPromptOpen_ = false;
+        if (result == 1) {
+          safe->onSaveSession([quitNow](bool saved) {
+            if (saved)
+              quitNow();
+          });
+        } else if (result == 2) {
+          quitNow();
+        }
+      }));
+  return false;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1677,8 +1839,9 @@ void MainLayout::onModelsDialog() {
   options.escapeKeyTriggersCloseButton = true;
   options.useNativeTitleBar = true;
   options.resizable = true;
-  options.launchAsync();
-  taskOrchestrator_->appendHistory("Model browser opened");
+  panel->setSize(760, 560);
+  if (auto* dialog = options.launchAsync())
+    dialog->setResizeLimits(640, 460, 4096, 4096);
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1695,8 +1858,9 @@ void MainLayout::onSettings() {
         taskOrchestrator_->appendHistory(enabled
                                              ? "Export sidecar JSON enabled (.report.json)"
                                              : "Export sidecar JSON disabled");
-      });
-  settingsPanel->setSize(540, 430);
+      },
+      gpuRuntimeStatusText(), gpuRuntimeButtonText(), [this] { onGpuRuntimeButton(); });
+  settingsPanel->setSize(540, 520);
 
   juce::DialogWindow::LaunchOptions options;
   options.content.setOwned(settingsPanel);
@@ -1706,7 +1870,6 @@ void MainLayout::onSettings() {
   options.useNativeTitleBar = true;
   options.resizable = false;
   options.launchAsync();
-  taskOrchestrator_->appendHistory("Settings dialog opened");
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1772,8 +1935,10 @@ void MainLayout::updateMeterPanel(const automaster::MasteringReport& report) {
 void MainLayout::applyLoadedSession(domain::Session loadedSession, const juce::String& sourcePath) {
   sessionManager_.replaceSession(std::move(loadedSession));
   const auto& session = sessionManager_.session();
-  headerBar_->setSessionName(juce::File(sourcePath).getFileNameWithoutExtension());
+  sessionShownModified_ = false;
+  setSessionDisplayName(juce::File(sourcePath).getFileNameWithoutExtension());
   updateStemPanelFromSession(controlDeck_->getStemPanel(), session);
+  refreshStemDependentUi();
   transportBar_->setLoopEnabled(session.timeline.loopEnabled);
   heroWaveform_->setZoom(session.timeline.zoom, 0.5);
   refreshRenderers();
@@ -1783,6 +1948,7 @@ void MainLayout::applyLoadedSession(domain::Session loadedSession, const juce::S
   refreshProjectProfiles();
   applySessionUiSelections();
   syncSessionUiSelections();
+  sessionManager_.markSaved();
   taskOrchestrator_->appendHistory("Session loaded: " + sourcePath);
   rebuildPreview();
 }
@@ -1886,7 +2052,7 @@ void MainLayout::updateRendererChainPreview() {
 // ─────────────────────────────────────────────────────────────────
 
 void MainLayout::refreshModelPacks() {
-  modelManager_.setRootPaths({std::filesystem::path("ModelPacks"), std::filesystem::path("assets/modelhub")});
+  modelManager_.setRootPaths({ai::defaultModelHubRoot(), std::filesystem::path("ModelPacks")});
   const auto packs = modelManager_.scan();
 
   const auto pickDefaultForScope = [&](const std::string& scope) -> std::optional<std::string> {
@@ -1965,9 +2131,10 @@ void MainLayout::updateSeparationModelBadge() {
     return;
   }
 
+  const juce::String noneText(juce::CharPointer_UTF8("Model: none installed \xe2\x80\x94 open Models"));
   const auto activeId = modelManager_.activePackId("separation");
   if (activeId.empty()) {
-    controlDeck_->setSeparationModelStatus("Separation model: none", false);
+    controlDeck_->setSeparationModelStatus(noneText, false);
     return;
   }
 
@@ -1976,7 +2143,7 @@ void MainLayout::updateSeparationModelBadge() {
     return util::toLower(pack.taskScope) == "separation" && pack.id == activeId;
   });
   if (selected == packs.end()) {
-    controlDeck_->setSeparationModelStatus("Separation model: none", false);
+    controlDeck_->setSeparationModelStatus(noneText, false);
     return;
   }
 
@@ -1984,7 +2151,21 @@ void MainLayout::updateSeparationModelBadge() {
   const auto modelPath = selected->rootPath / selected->modelFile;
   const bool ready = std::filesystem::is_regular_file(modelPath, error) && !error;
   const auto displayName = selected->name.empty() ? selected->id : selected->name;
-  auto badgeText = juce::String("Separation model: ") + juce::String(displayName);
+  const auto mentions = [&](const char* repoId) {
+    const juce::String repo(repoId);
+    const auto sanitizedRepo = repo.replaceCharacter('/', '_');
+    for (const auto& field : {selected->id, selected->name, selected->source}) {
+      const juce::String value(field);
+      if (value.containsIgnoreCase(repo) || value.containsIgnoreCase(sanitizedRepo))
+        return true;
+    }
+    return false;
+  };
+  juce::String badgeText = "Model: " + juce::String(displayName);
+  if (mentions(ai::kBsRoformerRepoId))
+    badgeText = "Model: BS-RoFormer (best quality, GPU recommended)";
+  else if (mentions(ai::kUmxVocalsRepoId))
+    badgeText = "Model: Open-Unmix (fast, lower quality)";
   if (!ready) {
     badgeText << " (missing)";
   }
@@ -2087,6 +2268,10 @@ void MainLayout::applySessionUiSelections() {
 
   controlDeck_->getResidualBlendSlider().setValue(std::clamp(session.residualBlend, 0.0, 10.0), juce::dontSendNotification);
   controlDeck_->getSeparatedStemsToggle().setToggleState(session.aiStemsEnabled, juce::dontSendNotification);
+  controlDeck_->getTensorSeparationToggle().setToggleState(session.renderSettings.tensorSeparationEnabled,
+                                                           juce::dontSendNotification);
+  controlDeck_->getTensorSeparationToggle().setEnabled(session.aiStemsEnabled);
+  controlDeck_->setSeparationControlsVisible(session.aiStemsEnabled);
   controlDeck_->getBatchRecursiveToggle().setToggleState(session.batchRecursiveEnabled, juce::dontSendNotification);
   controlDeck_->getRendererChainToggle().setToggleState(
       session.renderSettings.rendererChainEnabled,
@@ -2100,6 +2285,7 @@ void MainLayout::syncSessionUiSelections() {
   auto& session = sessionManager_.session();
   session.residualBlend = controlDeck_->getResidualBlendSlider().getValue();
   session.aiStemsEnabled = controlDeck_->getSeparatedStemsToggle().getToggleState();
+  session.renderSettings.tensorSeparationEnabled = controlDeck_->getTensorSeparationToggle().getToggleState();
   session.batchRecursiveEnabled = controlDeck_->getBatchRecursiveToggle().getToggleState();
 
   if (const auto renderer = selectionState_.rendererIdForCombo(controlDeck_->getRendererBox().getSelectedId()); renderer.has_value()) {
@@ -2217,4 +2403,151 @@ std::vector<renderers::ExternalRendererConfig> MainLayout::loadConfiguredExterna
   return automix::app::detail::loadConfiguredExternalRenderers(onError);
 }
 
+
+
+void MainLayout::offerGpuRuntimeIfUseful() {
+  if (gpuRuntimeOffered_ || gpuRuntimeInstalling_) {
+    return;
+  }
+  if (!ai::runtimeReportsProvider("cuda") || !ai::GpuRuntimePack::shouldOffer(kGpuRuntimeMinimumAdapterBytes)) {
+    return;
+  }
+  gpuRuntimeOffered_ = true;
+  const auto megabytes = ai::GpuRuntimePack::downloadBytes() / (1024 * 1024);
+  const juce::String message =
+      "Your NVIDIA GPU can run the vocal model about 8x faster than the CPU.\n\n"
+      "This needs NVIDIA's CUDA libraries (CUDA runtime, cuBLAS, cuFFT, cuDNN): a one-time download of about " +
+      juce::String(static_cast<juce::int64>(megabytes)) +
+      " MB from NVIDIA's packages on pypi.org, installed for your user only. They are NVIDIA software under "
+      "NVIDIA's own licence terms and are not part of AutoMixMaster.\n\n"
+      "Without them, separation keeps working on the CPU.";
+  juce::AlertWindow::showOkCancelBox(
+      juce::AlertWindow::QuestionIcon, "Enable GPU acceleration?", message, "Download", "Not now", nullptr,
+      juce::ModalCallbackFunction::create([safe = juce::Component::SafePointer<MainLayout>(this)](int result) {
+        if (safe != nullptr && result == 1) {
+          safe->installGpuRuntime();
+        }
+      }));
+}
+
+void MainLayout::installGpuRuntime() {
+  gpuRuntimeInstalling_ = true;
+  taskOrchestrator_->appendHistory("Downloading the GPU runtime (NVIDIA CUDA libraries)...");
+  juce::Thread::launch([safe = juce::Component::SafePointer<MainLayout>(this), cancel = gpuRuntimeCancel_] {
+    int lastDecile = -1;
+    const auto result = ai::GpuRuntimePack::install(
+        ai::GpuRuntimePack::defaultRoot(), [&](std::uint64_t done, std::uint64_t total) {
+          const int percent = total > 0 ? static_cast<int>(done * 100 / total) : 0;
+          if (percent / 10 != lastDecile) {
+            lastDecile = percent / 10;
+            juce::MessageManager::callAsync([safe, percent] {
+              if (safe != nullptr) {
+                safe->taskOrchestrator_->appendHistory("GPU runtime download " + juce::String(percent) + "%");
+              }
+            });
+          }
+          return !cancel->load();
+        });
+    juce::MessageManager::callAsync([safe, result] {
+      if (safe == nullptr) {
+        return;
+      }
+      safe->gpuRuntimeInstalling_ = false;
+      safe->taskOrchestrator_->appendHistory(juce::String(result.message));
+      if (result.success) {
+        ai::invalidateTensorProviderProbeCache();
+        safe->taskOrchestrator_->appendHistory("GPU acceleration is ready.");
+        safe->upgradeVocalModelForGpu();
+      }
+    });
+  });
+}
+
+juce::String MainLayout::gpuRuntimeStatusText() const {
+  namespace pack = ai::GpuRuntimePack;
+  if (gpuRuntimeInstalling_) {
+    return "GPU acceleration: downloading NVIDIA CUDA libraries...";
+  }
+  if (pack::isInstalled(pack::defaultRoot())) {
+    return "GPU acceleration: installed (NVIDIA CUDA libraries)";
+  }
+  const auto adapter = pack::largestNvidiaAdapter();
+  if (!adapter.has_value()) {
+    return "GPU acceleration: needs an NVIDIA GPU (separation runs on the CPU)";
+  }
+  if (adapter->driverMajor.value_or(0) < pack::kMinimumDriverMajor) {
+    return "GPU acceleration: update the NVIDIA driver to " + juce::String(pack::kMinimumDriverMajor) +
+           " or newer (found " +
+           (adapter->driverMajor.has_value() ? juce::String(*adapter->driverMajor) : juce::String("unknown")) + ")";
+  }
+  if (adapter->dedicatedBytes < kGpuRuntimeMinimumAdapterBytes) {
+    return "GPU acceleration: the vocal model needs a 12 GB NVIDIA GPU (found " +
+           juce::String(static_cast<juce::int64>(adapter->dedicatedBytes / (1024 * 1024 * 1024))) + " GB)";
+  }
+  if (!ai::runtimeReportsProvider("cuda")) {
+    return "GPU acceleration: not included in this build of AutoMixMaster";
+  }
+  return "GPU acceleration: available for your NVIDIA GPU (one-time download)";
+}
+
+juce::String MainLayout::gpuRuntimeButtonText() const {
+  namespace pack = ai::GpuRuntimePack;
+  if (gpuRuntimeInstalling_) {
+    return {};
+  }
+  if (pack::isInstalled(pack::defaultRoot())) {
+    return "Remove";
+  }
+  if (ai::runtimeReportsProvider("cuda") && pack::shouldOffer(kGpuRuntimeMinimumAdapterBytes)) {
+    return "Install (~" + juce::String(static_cast<juce::int64>(pack::downloadBytes() / (1024 * 1024 * 1024) + 1)) +
+           " GB)";
+  }
+  return {};
+}
+
+void MainLayout::onGpuRuntimeButton() {
+  namespace pack = ai::GpuRuntimePack;
+  if (pack::isInstalled(pack::defaultRoot())) {
+    juce::AlertWindow::showAsync(
+        juce::MessageBoxOptions::makeOptionsOkCancel(
+            juce::MessageBoxIconType::WarningIcon,
+            "Remove GPU runtime?",
+            "This deletes the downloaded NVIDIA libraries. The vocal model will run on the CPU until you install them "
+            "again.",
+            "Remove",
+            "Cancel"),
+        [safe = juce::Component::SafePointer<MainLayout>(this)](const int result) {
+          if (result == 0 || safe == nullptr) {
+            return;
+          }
+          namespace pack = ai::GpuRuntimePack;
+          const auto removed = pack::uninstall();
+          ai::invalidateTensorProviderProbeCache();
+          safe->taskOrchestrator_->appendHistory(juce::String(removed.message));
+        });
+    return;
+  }
+  gpuRuntimeOffered_ = true;  // asked explicitly; no need to offer again this run
+  installGpuRuntime();
+}
+
+void MainLayout::upgradeVocalModelForGpu() {
+  // Runs off the message thread: a re-install is a ~650 MB download.
+  juce::Thread::launch([safe = juce::Component::SafePointer<MainLayout>(this),
+                        hubRoot = modelController_->modelHubRoot()] {
+    const auto upgraded = ai::upgradeBsRoformerForGpu(hubRoot);
+    if (!upgraded.has_value()) {
+      return;
+    }
+    juce::MessageManager::callAsync([safe, upgraded] {
+      if (safe != nullptr) {
+        safe->taskOrchestrator_->appendHistory(
+            juce::String(upgraded->success ? upgraded->message : "Vocal model GPU upgrade failed: " + upgraded->message));
+        if (upgraded->success) {
+          safe->refreshModelPacks();  // the scanned pack still names the deleted quantized file
+        }
+      }
+    });
+  });
+}
 } // namespace automix::app

@@ -69,6 +69,7 @@ class ModelController {
   const std::vector<ai::HubModelInfo>& discoveredModels() const;
   std::set<std::string> installedModelIds() const;
   void setModelHubRoot(const std::filesystem::path& root);
+  [[nodiscard]] const std::filesystem::path& modelHubRoot() const { return modelHubRoot_; }
 
  private:
   ai::ModelManager& modelManager_;

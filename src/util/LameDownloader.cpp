@@ -19,6 +19,7 @@
 #include <juce_core/juce_core.h>
 
 #include "util/FileUtils.h"
+#include "util/Sha256.h"
 #include "util/StringUtils.h"
 
 namespace automix::util {
@@ -38,11 +39,28 @@ enum class SourceType {
   Ghcr,
 };
 
+// Every source is an archive that ends up executed, so each one carries the
+// SHA-256 of the exact file it must deliver. A source with no hash is refused.
+// For Ghcr the hash is also the address: Homebrew bottles are stored as blobs
+// named by their own SHA-256, so the pinned bottle is fetched directly.
 struct DownloadSource {
   SourceType type = SourceType::Zip;
   std::string url;
-  std::string ghcrOs;
-  std::string ghcrArch;
+  std::string sha256;
+};
+
+const std::string kGhcrBlobBaseUrl = "https://ghcr.io/v2/homebrew/core/lame/blobs/sha256:";
+
+// The pin list on the default branch, kept current by tools/update_lame_pins.py.
+// It lets installed copies follow upstream LAME updates without a release. It
+// can only name files on the hosts below, so changing it is not enough to make
+// the app run something else: the named host must also serve the matching file.
+constexpr const char* kPinManifestUrl =
+    "https://raw.githubusercontent.com/soficis/AutoMixMaster/master/assets/lame-pins.json";
+constexpr int kPinManifestTimeoutMs = 8000;
+constexpr const char* kAllowedDownloadPrefixes[] = {
+    "https://www.rarewares.org/files/mp3/",
+    "https://deb.debian.org/debian/pool/main/l/lame/",
 };
 
 struct TempDirectory {
@@ -152,63 +170,119 @@ std::string platformKey() {
 #endif
 }
 
-std::vector<DownloadSource> platformSources() {
-  const auto version = readEnvironment("AUTOMIX_LAME_VERSION").value_or(kDefaultLameVersion);
-  if (const auto manualUrl = readEnvironment("AUTOMIX_LAME_DOWNLOAD_URL"); manualUrl.has_value()) {
-    const auto lower = toLower(*manualUrl);
-    if (lower.ends_with(".zip")) {
-      return {{SourceType::Zip, *manualUrl, "", ""}};
-    }
-    if (lower.ends_with(".deb")) {
-      return {{SourceType::Debian, *manualUrl, "", ""}};
-    }
-    return {{SourceType::DirectBinary, *manualUrl, "", ""}};
-  }
-
-  const auto key = platformKey();
-  if (key == "win32-x64") {
+// Sources for `key` at `version`. The hashes are only valid for the default
+// version; platformSources() replaces them when the version is overridden.
+// Hash origins: Debian's package index for the .deb files, the Homebrew bottle
+// index for the Ghcr blobs. rarewares.org publishes no hashes, so the two ZIP
+// pins were taken from the files as served on 2026-10-05.
+// Only bottles whose encoder runs on its own are usable: the 3.100 macOS ones
+// do. Linux bottles never do (their loader path is a Homebrew placeholder), and
+// neither do the 4.0 macOS ones (they need Homebrew's libmpg123).
+std::vector<DownloadSource> sourcesForPlatform(const std::string& key, const std::string& version) {
+  const std::string rarewares = "https://www.rarewares.org/files/mp3/lame" + version;
+  const std::string debian = "https://deb.debian.org/debian/pool/main/l/lame/lame_" + version + "-6_";
+  if (key == "win32-x64" || key == "win32-arm64") {
+    // There is no ARM64 build to pin; Windows on ARM runs the x64 one.
     return {
-        {SourceType::Zip, "https://www.rarewares.org/files/mp3/lame" + version + ".1-x64.zip", "", ""},
+        {SourceType::Zip, rarewares + ".1-x64.zip", "9a9c815203316e5203847e93100c6acf0d5d7a5be7744c9018825ded037052e7"},
     };
   }
   if (key == "win32-ia32") {
     return {
-        {SourceType::Zip, "https://www.rarewares.org/files/mp3/lame" + version + ".1-win32.zip", "", ""},
-    };
-  }
-  if (key == "win32-arm64") {
-    return {
-        {SourceType::Zip, "https://www.rarewares.org/files/mp3/LAME-" + version + "-Win-ARM64.zip", "", ""},
+        {SourceType::Zip, rarewares + ".1-win32.zip", "2518e1138953c235fb2bfcefbc38883dd04538d6ae0a19692562576ba37bafec"},
     };
   }
   if (key == "linux-x64") {
     return {
-        {SourceType::Debian, "https://deb.debian.org/debian/pool/main/l/lame/lame_" + version + "-6_amd64.deb", "", ""},
-        {SourceType::Ghcr, "", "linux", "amd64"},
+        {SourceType::Debian, debian + "amd64.deb", "786ba06d2f222661e1f09b610de7b18c60f411a373d4fd3f595ec890f062089e"},
     };
   }
   if (key == "linux-arm64") {
     return {
-        {SourceType::Debian, "https://deb.debian.org/debian/pool/main/l/lame/lame_" + version + "-6_arm64.deb", "", ""},
-        {SourceType::Ghcr, "", "linux", "arm64"},
+        {SourceType::Debian, debian + "arm64.deb", "aba5023ffde46709e4bccc9e1c10142a7d77f2884d2a9af84cab6a28f8792bd2"},
     };
   }
   if (key == "linux-arm") {
     return {
-        {SourceType::Debian, "https://deb.debian.org/debian/pool/main/l/lame/lame_" + version + "-6_armhf.deb", "", ""},
+        {SourceType::Debian, debian + "armhf.deb", "f77e72665a30bae6d83ca3719845309a2db12b1adf27c422415c4a12930ea76b"},
     };
   }
   if (key == "darwin-x64") {
     return {
-        {SourceType::Ghcr, "", "darwin", "amd64"},
+        {SourceType::Ghcr, "", "737751faa513a68ac2499bb5cc607bc366e15dab8ff3bff5443567a455af5c3f"},
     };
   }
   if (key == "darwin-arm64") {
     return {
-        {SourceType::Ghcr, "", "darwin", "arm64"},
+        {SourceType::Ghcr, "", "2ff2c6ad3cfd26e1ba53230631e2f04734a4638c344cce50ff0b8fc36b45c403"},
     };
   }
   return {};
+}
+
+std::optional<nlohmann::json> fetchJson(const std::string& url,
+                                        const std::string& extraHeaders,
+                                        std::string* detail,
+                                        int timeoutMs = 45000);
+
+// Sources for this platform from the published pin list, or none when it cannot
+// be fetched or does not validate.
+std::vector<DownloadSource> publishedSources() {
+  const auto manifest = fetchJson(kPinManifestUrl, "", nullptr, kPinManifestTimeoutMs);
+  if (!manifest.has_value()) {
+    return {};
+  }
+
+  std::vector<DownloadSource> sources;
+  for (const auto& pin : LameDownloader::parsePinManifest(manifest->dump(), nullptr)) {
+    if (pin.platformKey != platformKey()) {
+      continue;
+    }
+    const auto type = pin.type == "zip" ? SourceType::Zip : pin.type == "deb" ? SourceType::Debian : SourceType::Ghcr;
+    sources.push_back({type, type == SourceType::Ghcr ? std::string() : pin.url, pin.sha256});
+  }
+  return sources;
+}
+
+// AUTOMIX_LAME_DOWNLOAD_URL and AUTOMIX_LAME_VERSION point at files the built-in
+// hashes do not cover, so they only work together with AUTOMIX_LAME_DOWNLOAD_SHA256.
+// With `allowPublished`, the published pin list is tried first and the built-in
+// pins stay as the fallback (offline, list unreachable, or a newer build that
+// does not run on this machine).
+std::vector<DownloadSource> platformSources(const bool allowPublished = false) {
+  const auto manualSha = toLower(readEnvironment("AUTOMIX_LAME_DOWNLOAD_SHA256").value_or(""));
+  if (const auto manualUrl = readEnvironment("AUTOMIX_LAME_DOWNLOAD_URL"); manualUrl.has_value()) {
+    const auto lower = toLower(*manualUrl);
+    if (lower.ends_with(".zip")) {
+      return {{SourceType::Zip, *manualUrl, manualSha}};
+    }
+    if (lower.ends_with(".deb")) {
+      return {{SourceType::Debian, *manualUrl, manualSha}};
+    }
+    return {{SourceType::DirectBinary, *manualUrl, manualSha}};
+  }
+
+  const auto version = readEnvironment("AUTOMIX_LAME_VERSION").value_or(kDefaultLameVersion);
+  auto sources = sourcesForPlatform(platformKey(), version);
+  if (version != kDefaultLameVersion) {
+    for (auto& source : sources) {
+      source.sha256 = manualSha;
+    }
+    return sources;
+  }
+
+  if (allowPublished && !flagEnabled("AUTOMIX_LAME_SKIP_PIN_UPDATE")) {
+    auto published = publishedSources();
+    for (auto& source : sources) {
+      const bool known = std::any_of(published.begin(), published.end(),
+                                     [&source](const DownloadSource& other) { return other.sha256 == source.sha256; });
+      if (!known) {
+        published.push_back(std::move(source));
+      }
+    }
+    return published;
+  }
+  return sources;
 }
 
 bool runProcess(const juce::StringArray& command,
@@ -306,13 +380,34 @@ bool downloadToFile(const std::string& url,
   return true;
 }
 
+// Downloads a source and refuses it unless it matches its hash. Nothing from the
+// file is extracted or run before this returns true.
+bool downloadVerified(const std::string& url,
+                      const std::string& sha256,
+                      const std::filesystem::path& outputPath,
+                      const std::string& extraHeaders,
+                      std::string* detail) {
+  if (!isSha256Hex(sha256)) {
+    if (detail != nullptr) {
+      *detail = "No SHA-256 is pinned for this download (set AUTOMIX_LAME_DOWNLOAD_SHA256 when overriding "
+                "the URL or version): " + url;
+    }
+    return false;
+  }
+  if (!downloadToFile(url, outputPath, extraHeaders, detail)) {
+    return false;
+  }
+  return LameDownloader::verifyDownload(outputPath, sha256, detail);
+}
+
 std::optional<nlohmann::json> fetchJson(const std::string& url,
                                         const std::string& extraHeaders,
-                                        std::string* detail) {
+                                        std::string* detail,
+                                        const int timeoutMs) {
   int statusCode = 0;
   const auto baseOptions =
       juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
-          .withConnectionTimeoutMs(45000)
+          .withConnectionTimeoutMs(timeoutMs)
           .withNumRedirectsToFollow(8)
           .withStatusCode(&statusCode);
   const auto input = juce::URL(url).createInputStream(
@@ -561,7 +656,7 @@ bool copyBinaryToCache(const std::filesystem::path& source, const std::filesyste
 bool installFromZip(const DownloadSource& source, const std::filesystem::path& targetBinary, std::string* detail) {
   TempDirectory temp("automix_lame_zip");
   const auto archivePath = temp.path / "lame.zip";
-  if (!downloadToFile(source.url, archivePath, "", detail)) {
+  if (!downloadVerified(source.url, source.sha256, archivePath, "", detail)) {
     return false;
   }
 
@@ -630,7 +725,7 @@ bool installFromDebian(const DownloadSource& source, const std::filesystem::path
 #else
   TempDirectory temp("automix_lame_deb");
   const auto debPath = temp.path / "lame.deb";
-  if (!downloadToFile(source.url, debPath, "", detail)) {
+  if (!downloadVerified(source.url, source.sha256, debPath, "", detail)) {
     return false;
   }
 
@@ -681,8 +776,6 @@ bool installFromDebian(const DownloadSource& source, const std::filesystem::path
 }
 
 bool installFromGhcr(const DownloadSource& source, const std::filesystem::path& targetBinary, std::string* detail) {
-  const auto version = readEnvironment("AUTOMIX_LAME_VERSION").value_or(kDefaultLameVersion);
-
   const auto tokenJson = fetchJson("https://ghcr.io/token?service=ghcr.io&scope=repository:homebrew/core/lame:pull", "", detail);
   if (!tokenJson.has_value() || !tokenJson->contains("token")) {
     if (detail != nullptr && detail->empty()) {
@@ -699,67 +792,13 @@ bool installFromGhcr(const DownloadSource& source, const std::filesystem::path& 
     return false;
   }
 
-  const std::string authHeader = "Authorization: Bearer " + token + "\n";
-  const auto manifestList = fetchJson(
-      "https://ghcr.io/v2/homebrew/core/lame/manifests/" + version,
-      authHeader + "Accept: application/vnd.oci.image.index.v1+json\n",
-      detail);
-  if (!manifestList.has_value() || !manifestList->contains("manifests")) {
-    if (detail != nullptr && detail->empty()) {
-      *detail = "Failed to fetch GHCR manifest list.";
-    }
-    return false;
-  }
-
-  std::string manifestDigest;
-  for (const auto& manifest : (*manifestList)["manifests"]) {
-    const auto platform = manifest.value("platform", nlohmann::json::object());
-    if (platform.value("os", "") == source.ghcrOs && platform.value("architecture", "") == source.ghcrArch) {
-      manifestDigest = manifest.value("digest", "");
-      break;
-    }
-  }
-  if (manifestDigest.empty()) {
-    if (detail != nullptr) {
-      *detail = "No GHCR manifest found for " + source.ghcrOs + "/" + source.ghcrArch;
-    }
-    return false;
-  }
-
-  const auto manifest = fetchJson(
-      "https://ghcr.io/v2/homebrew/core/lame/manifests/" + manifestDigest,
-      authHeader + "Accept: application/vnd.oci.image.manifest.v1+json\n",
-      detail);
-  if (!manifest.has_value() || !manifest->contains("layers")) {
-    if (detail != nullptr && detail->empty()) {
-      *detail = "Failed to fetch GHCR image manifest.";
-    }
-    return false;
-  }
-
-  std::string layerDigest;
-  std::string mediaType;
-  for (const auto& layer : (*manifest)["layers"]) {
-    mediaType = layer.value("mediaType", "");
-    if (mediaType.find("tar") != std::string::npos) {
-      layerDigest = layer.value("digest", "");
-      break;
-    }
-  }
-  if (layerDigest.empty()) {
-    if (detail != nullptr) {
-      *detail = "No tar layer found in GHCR image manifest.";
-    }
-    return false;
-  }
-
   TempDirectory temp("automix_lame_ghcr");
-  const bool gzipLayer = mediaType.find("gzip") != std::string::npos;
-  const auto layerPath = temp.path / (gzipLayer ? "layer.tar.gz" : "layer.tar");
-  if (!downloadToFile("https://ghcr.io/v2/homebrew/core/lame/blobs/" + layerDigest,
-                      layerPath,
-                      authHeader + "Accept: application/octet-stream\n",
-                      detail)) {
+  const auto layerPath = temp.path / "layer.tar.gz";
+  if (!downloadVerified(kGhcrBlobBaseUrl + source.sha256,
+                        source.sha256,
+                        layerPath,
+                        "Authorization: Bearer " + token + "\nAccept: application/octet-stream\n",
+                        detail)) {
     return false;
   }
 
@@ -773,7 +812,7 @@ bool installFromGhcr(const DownloadSource& source, const std::filesystem::path& 
     return false;
   }
 
-  if (!extractTarArchive(layerPath, extractDir, gzipLayer ? "z" : "", "", detail)) {
+  if (!extractTarArchive(layerPath, extractDir, "z", "", detail)) {
     return false;
   }
 
@@ -795,9 +834,113 @@ std::filesystem::path internalCacheBinaryPath() {
   return appData / "AutoMixMaster" / "codecs" / "lame" / key / binaryName();
 }
 
+// The cached binary is only trusted while this file, written after a verified
+// install, still holds the binary's own hash. A binary cached before downloads
+// were verified has no such file and is fetched again.
+std::filesystem::path cacheMarkerPath(const std::filesystem::path& binary) {
+  return std::filesystem::path(binary.string() + ".sha256");
+}
+
+void writeCacheMarker(const std::filesystem::path& binary) {
+  std::ofstream marker(cacheMarkerPath(binary), std::ios::binary | std::ios::trunc);
+  marker << fileSha256(binary);
+}
+
 } // namespace
 
 std::filesystem::path LameDownloader::cacheBinaryPath() { return internalCacheBinaryPath(); }
+
+bool LameDownloader::cachedBinaryIsVerified() {
+  const auto binary = cacheBinaryPath();
+  if (!isRegularFile(binary)) {
+    return false;
+  }
+  std::ifstream marker(cacheMarkerPath(binary), std::ios::binary);
+  std::string recorded;
+  marker >> recorded;
+  return isSha256Hex(recorded) && recorded == fileSha256(binary);
+}
+
+std::vector<LameDownloader::PinnedSource> LameDownloader::pinnedSources() {
+  std::vector<PinnedSource> pins;
+  for (const char* key : {"win32-x64", "win32-ia32", "win32-arm64", "linux-x64", "linux-arm64", "linux-arm",
+                          "darwin-x64", "darwin-arm64"}) {
+    for (const auto& source : sourcesForPlatform(key, kDefaultLameVersion)) {
+      const char* type = source.type == SourceType::Zip ? "zip" : source.type == SourceType::Debian ? "deb" : "ghcr";
+      pins.push_back({key, type, source.type == SourceType::Ghcr ? kGhcrBlobBaseUrl + source.sha256 : source.url,
+                      source.sha256});
+    }
+  }
+  return pins;
+}
+
+std::vector<LameDownloader::PinnedSource> LameDownloader::parsePinManifest(const std::string& jsonText,
+                                                                           std::string* detail) {
+  const auto reject = [detail](const std::string& reason) {
+    if (detail != nullptr) {
+      *detail = "LAME pin list rejected: " + reason;
+    }
+    return std::vector<PinnedSource>{};
+  };
+
+  const auto json = nlohmann::json::parse(jsonText, nullptr, false);
+  if (!json.is_object() || json.value("schema", 0) != 1 || !json.contains("sources") || !json["sources"].is_array()) {
+    return reject("not a schema 1 pin list.");
+  }
+
+  std::vector<PinnedSource> pins;
+  for (const auto& entry : json["sources"]) {
+    if (!entry.is_object() || !entry.value("platform", nlohmann::json()).is_string() ||
+        !entry.value("type", nlohmann::json()).is_string() || !entry.value("sha256", nlohmann::json()).is_string() ||
+        !entry.value("url", nlohmann::json("")).is_string()) {
+      return reject("an entry has missing or non-text fields.");
+    }
+
+    PinnedSource pin;
+    pin.platformKey = entry["platform"].get<std::string>();
+    pin.type = entry["type"].get<std::string>();
+    pin.sha256 = toLower(entry["sha256"].get<std::string>());
+    if (!isSha256Hex(pin.sha256)) {
+      return reject("an entry has no valid SHA-256.");
+    }
+
+    if (pin.type == "ghcr") {
+      pin.url = kGhcrBlobBaseUrl + pin.sha256;
+    } else if (pin.type == "zip" || pin.type == "deb") {
+      pin.url = entry.value("url", "");
+      const bool allowedHost = std::any_of(std::begin(kAllowedDownloadPrefixes), std::end(kAllowedDownloadPrefixes),
+                                           [&pin](const char* prefix) { return pin.url.rfind(prefix, 0) == 0; });
+      const auto fileName = pin.url.substr(pin.url.find_last_of('/') + 1);
+      const bool plainFile = !fileName.empty() && fileName.ends_with("." + pin.type) &&
+                             pin.url.find_first_of("?#\\%") == std::string::npos &&
+                             pin.url.find("..") == std::string::npos;
+      if (!allowedHost || !plainFile) {
+        return reject("an entry points outside the known download locations: " + pin.url);
+      }
+    } else {
+      return reject("unknown source type '" + pin.type + "'.");
+    }
+    pins.push_back(std::move(pin));
+  }
+  return pins;
+}
+
+bool LameDownloader::verifyDownload(const std::filesystem::path& file,
+                                    const std::string& expectedSha256,
+                                    std::string* detail) {
+  const auto actual = fileSha256(file);
+  if (isSha256Hex(expectedSha256) && actual == toLower(expectedSha256)) {
+    return true;
+  }
+
+  std::error_code error;
+  std::filesystem::remove(file, error);
+  if (detail != nullptr) {
+    *detail = "SHA-256 mismatch for " + file.filename().string() + " (expected " + expectedSha256 + ", got " +
+              (actual.empty() ? "unreadable file" : actual) + "); the download was discarded.";
+  }
+  return false;
+}
 
 bool LameDownloader::isSupportedOnCurrentPlatform() { return !platformSources().empty(); }
 
@@ -807,7 +950,7 @@ LameDownloader::DownloadResult LameDownloader::ensureAvailable(const bool forceD
 
   DownloadResult result;
   const auto targetBinary = cacheBinaryPath();
-  if (!forceDownload && !flagEnabled("AUTOMIX_LAME_FORCE_DOWNLOAD") && isRegularFile(targetBinary)) {
+  if (!forceDownload && !flagEnabled("AUTOMIX_LAME_FORCE_DOWNLOAD") && cachedBinaryIsVerified()) {
     std::string detail;
     if (ensureExecutable(targetBinary, &detail)) {
       result.success = true;
@@ -822,7 +965,7 @@ LameDownloader::DownloadResult LameDownloader::ensureAvailable(const bool forceD
     return result;
   }
 
-  const auto sources = platformSources();
+  const auto sources = platformSources(true);
   if (sources.empty()) {
     result.detail = "No fallback LAME downloader source configured for this platform.";
     return result;
@@ -837,7 +980,7 @@ LameDownloader::DownloadResult LameDownloader::ensureAvailable(const bool forceD
       case SourceType::DirectBinary: {
         TempDirectory temp("automix_lame_direct");
         const auto downloadedPath = temp.path / binaryName();
-        if (downloadToFile(source.url, downloadedPath, "", &attemptDetail)) {
+        if (downloadVerified(source.url, source.sha256, downloadedPath, "", &attemptDetail)) {
           installed = copyBinaryToCache(downloadedPath, targetBinary, &attemptDetail);
         }
         break;
@@ -854,6 +997,7 @@ LameDownloader::DownloadResult LameDownloader::ensureAvailable(const bool forceD
     }
 
     if (installed) {
+      writeCacheMarker(targetBinary);
       result.success = true;
       result.executablePath = targetBinary;
       result.detail = "Downloaded fallback LAME binary to " + targetBinary.string();

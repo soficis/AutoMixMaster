@@ -21,13 +21,13 @@ struct TimelineState {
 };
 
 struct Session {
-  int schemaVersion = 2;
+  int schemaVersion = 3;  // 3: PhaseLimiter opt-in (see JsonSerialization.cpp)
   std::string sessionName;
   std::optional<std::string> originalMixPath;
   double residualBlend = 0.0;
   bool aiStemsEnabled = false;
   bool batchRecursiveEnabled = false;
-  MasterPreset selectedMasterPreset = MasterPreset::UdioOptimized;
+  MasterPreset selectedMasterPreset = MasterPreset::DefaultStreaming;
   MasterPreset selectedPlatformPreset = MasterPreset::YouTube;
   std::vector<Stem> stems;
   std::vector<Bus> buses;

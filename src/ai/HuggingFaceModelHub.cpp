@@ -13,8 +13,14 @@
 #include <juce_core/juce_core.h>
 #include <nlohmann/json.hpp>
 
+#include "ai/BsRoformerPack.h"
+#include "ai/UmxPack.h"
+#include "ai/GpuMemory.h"
 #include "ai/ItoMasterAdapter.h"
 #include "ai/ModelCatalogValidator.h"
+#include "ai/ModelStorage.h"
+#include "ai/OnnxExternalData.h"
+#include "ai/OnnxTensorInference.h"
 #include "util/Sha256.h"
 #include "util/StringUtils.h"
 
@@ -453,6 +459,78 @@ void appendInstallLog(const std::filesystem::path& root,
   out << event.dump() << "\n";
 }
 
+bool bsRoformerGpuBuildQualifies() {
+  // Probes whether CUDA tensor inference is usable on this machine, and
+  // checks whether device memory is sufficient for the ~10 GiB fp32 model.
+  return tensorProviderUsable("cuda") &&
+         gpuFitsModel(queryCudaDeviceMemory(), kBsRoformerFp32GpuMemoryMb * 1024 * 1024);
+}
+
+std::optional<HubInstallResult> upgradeBsRoformerForGpu(const std::filesystem::path& destinationRoot) {
+  std::error_code error;
+  if (!std::filesystem::is_directory(destinationRoot, error) || error) {
+    return std::nullopt;
+  }
+  for (const auto& entry : std::filesystem::directory_iterator(destinationRoot, error)) {
+    const auto hubMetadataPath = entry.path() / "modelhub.json";
+    if (!entry.is_directory(error) || !std::filesystem::is_regular_file(hubMetadataPath, error)) {
+      continue;
+    }
+    nlohmann::json hubMetadata;
+    nlohmann::json manifest;
+    try {
+      std::ifstream hubIn(hubMetadataPath);
+      hubMetadata = nlohmann::json::parse(hubIn);
+      std::ifstream manifestIn(entry.path() / "model.json");
+      manifest = nlohmann::json::parse(manifestIn);
+    } catch (...) {
+      continue;
+    }
+    if (hubMetadata.value("repoId", "") != kBsRoformerRepoId ||
+        manifest.value("model_file", "") != kBsRoformerQuantizedFile) {
+      continue;
+    }
+    if (!bsRoformerGpuBuildQualifies()) {
+      return std::nullopt;
+    }
+    HubInstallOptions options;
+    options.destinationRoot = destinationRoot;
+    options.overwrite = true;
+    options.downloadReadme = false;
+    auto result = HuggingFaceModelHub().installModel(kBsRoformerRepoId, options);
+    if (result.success && result.primaryFilePath.filename() != kBsRoformerQuantizedFile) {
+      // The pack keeps its id and directory; only the superseded CPU build goes.
+      std::filesystem::remove(entry.path() / kBsRoformerQuantizedFile, error);
+      result.message = "Vocal model switched to its GPU build.";
+    }
+    return result;
+  }
+  return std::nullopt;
+}
+
+std::string primaryFileForRepo(const std::string& repoId,
+                               const std::vector<std::string>& files,
+                               bool* hasOnnxOut,
+                               const bool preferGpuBuild) {
+  auto primary = pickPrimaryFile(files, hasOnnxOut);
+  if (repoId == kBsRoformerRepoId) {
+    // Pinned by name (see kBsRoformerQuantizedFile / kBsRoformerFp32File). The
+    // fp32 graph is only chosen together with its sidecar; without both, and
+    // without the quantized file, the entry becomes undiscoverable instead of
+    // installing an unloadable graph.
+    const auto has = [&files](const std::string& name) {
+      return std::find(files.begin(), files.end(), name) != files.end();
+    };
+    const std::string fp32 = kBsRoformerFp32File;
+    if (preferGpuBuild && has(fp32) && has(fp32 + ".data")) {
+      primary = fp32;
+    } else {
+      primary = has(kBsRoformerQuantizedFile) ? kBsRoformerQuantizedFile : "";
+    }
+  }
+  return primary;
+}
+
 std::vector<std::string> curatedModelIds() {
   return {
       "rysertio/Demucs-onnx",
@@ -468,16 +546,33 @@ std::vector<std::string> curatedModelIds() {
       "StemSplitio/htdemucs-ft-onnx",
       "StemSplitio/htdemucs-6s-onnx",
       "kramp/ito-master-onnx",
+      "xycld/BS-RoFormer-ONNX",  // == kBsRoformerRepoId; a literal because licensing tests parse this list
+      "MixDirective/open-unmix-umxhq-vocals-onnx",  // == kUmxVocalsRepoId; literal for the same reason
   };
+}
+
+std::filesystem::path localAssetPath(const std::filesystem::path& installPath, const std::string& repoPath) {
+  const auto name = std::filesystem::path(repoPath).filename();
+  if (name.empty() || name == "." || name == "..") {
+    return installPath;
+  }
+  return installPath / name;
 }
 
 // Artifacts that must accompany the primary model file to form a complete pack
 // (the ITO-Master mastering route consumes all three as one model pack).
-std::vector<std::string> auxiliaryAssetsForRepo(const std::string& repoId) {
+std::vector<std::string> auxiliaryAssetsFor(const std::string& repoId,
+                                            const std::string& primaryFile,
+                                            const std::vector<std::string>& files) {
+  std::vector<std::string> assets;
   if (repoId == kItoMasterRepoId) {
-    return {kItoMasterPredictorFile, kItoMasterConfigFile};
+    assets = {kItoMasterPredictorFile, kItoMasterConfigFile};
   }
-  return {};
+  const auto sidecar = primaryFile + ".data";
+  if (!primaryFile.empty() && std::find(files.begin(), files.end(), sidecar) != files.end()) {
+    assets.push_back(sidecar);
+  }
+  return assets;
 }
 
 std::vector<std::string> HuggingFaceModelHub::defaultRecommendedSearchTerms() {
@@ -516,6 +611,13 @@ std::string HuggingFaceModelHub::resolveToken(const std::string& explicitToken) 
   }
 
   return "";
+}
+
+void applyCuratedPin(HubModelInfo& info) {
+  if (info.repoId == kUmxVocalsRepoId) {
+    info.revision = kUmxVocalsRevision;
+    info.fileSha256[kUmxVocalsFile] = kUmxVocalsSha256;
+  }
 }
 
 std::optional<HubModelInfo> HuggingFaceModelHub::modelInfo(const std::string& modelIdOrRepoId,
@@ -586,7 +688,11 @@ std::optional<HubModelInfo> HuggingFaceModelHub::modelInfo(const std::string& mo
     }
   }
 
-  info.primaryFile = pickPrimaryFile(info.files, &info.hasOnnx);
+  applyCuratedPin(info);
+
+  // Only repos with a GPU variant pay for the probe.
+  const bool preferGpuBuild = info.repoId == kBsRoformerRepoId && bsRoformerGpuBuildQualifies();
+  info.primaryFile = primaryFileForRepo(info.repoId, info.files, &info.hasOnnx, preferGpuBuild);
   info.useCase = HuggingFaceModelHub::inferUseCase(info.repoId, info.tags, "");
   const auto compatibility = validateCatalogModel(info);
   info.compatible = compatibility.compatible;
@@ -751,10 +857,10 @@ HubInstallResult HuggingFaceModelHub::installModel(const std::string& modelIdOrR
   }
 
   result.taskScope = compatibility.taskScope;
-  const auto destinationRoot = options.destinationRoot.empty() ? std::filesystem::path("assets/modelhub") : options.destinationRoot;
+  const auto destinationRoot = options.destinationRoot.empty() ? defaultModelHubRoot() : options.destinationRoot;
   const auto installKey = sanitizeRepoId(info->modelId.empty() ? info->repoId : info->modelId);
   const auto installPath = destinationRoot / installKey;
-  const auto primaryPath = installPath / std::filesystem::path(info->primaryFile).filename();
+  const auto primaryPath = localAssetPath(installPath, info->primaryFile);
   result.installPath = installPath;
   result.primaryFilePath = primaryPath;
   result.revision = info->revision.empty() ? "main" : info->revision;
@@ -804,8 +910,9 @@ HubInstallResult HuggingFaceModelHub::installModel(const std::string& modelIdOrR
   // Fetch auxiliary artifacts so the pack is complete on disk (e.g. the
   // ITO-Master pack needs mastering_tcn.onnx + config.json alongside the
   // primary fxencoder.onnx). Each is SHA-256 verified when the repo exposes it.
-  for (const auto& auxiliaryAsset : auxiliaryAssetsForRepo(info->repoId)) {
-    const auto auxiliaryPath = installPath / auxiliaryAsset;
+  for (const auto& auxiliaryAsset : auxiliaryAssetsFor(info->repoId, info->primaryFile, info->files)) {
+    const auto auxiliaryPath = localAssetPath(installPath, auxiliaryAsset);
+    const auto auxiliaryName = auxiliaryPath.filename().string();
     const auto auxiliaryUrl = "https://huggingface.co/" + info->repoId + "/resolve/" + revision + "/" +
                               escapePathPreservingSlash(auxiliaryAsset);
     if (!downloadToFile(auxiliaryUrl, auxiliaryPath, effectiveToken, &detail)) {
@@ -827,8 +934,36 @@ HubInstallResult HuggingFaceModelHub::installModel(const std::string& modelIdOrR
         return result;
       }
     }
-    result.downloadedFiles.push_back(auxiliaryAsset);
-    result.auxiliaryFiles.push_back(auxiliaryAsset);
+    result.downloadedFiles.push_back(auxiliaryName);
+    result.auxiliaryFiles.push_back(auxiliaryName);
+  }
+
+  // ONNX Runtime cannot load some external-weight exports at all (shape
+  // inference cannot read external initializers), so "<primary>.data" is
+  // folded into the primary model in place and the sidecar dropped. The pack
+  // keeps its file name, so the already-installed check above still matches.
+  const auto sidecarName = primaryPath.filename().string() + ".data";
+  if (const auto sidecarIt = std::find(result.auxiliaryFiles.begin(), result.auxiliaryFiles.end(), sidecarName);
+      sidecarIt != result.auxiliaryFiles.end()) {
+    auto inlinedPath = primaryPath;
+    inlinedPath += ".inlined";
+    const auto inlined = inlineExternalData(primaryPath, inlinedPath);
+    if (!inlined.success) {
+      std::filesystem::remove(primaryPath, error);
+      std::filesystem::remove(installPath / sidecarName, error);
+      result.message = "Could not make " + primaryPath.filename().string() + " self-contained: " + inlined.error;
+      appendInstallLog(destinationRoot, info.value(), result);
+      return result;
+    }
+    std::filesystem::rename(inlinedPath, primaryPath, error);
+    if (error) {
+      result.message = "Could not replace " + primaryPath.filename().string() + " with its inlined form: " +
+                       error.message();
+      appendInstallLog(destinationRoot, info.value(), result);
+      return result;
+    }
+    std::filesystem::remove(installPath / sidecarName, error);
+    result.auxiliaryFiles.erase(sidecarIt);
   }
 
   if (options.downloadReadme) {
@@ -869,8 +1004,24 @@ HubInstallResult HuggingFaceModelHub::installModel(const std::string& modelIdOrR
   result.metadataPath = installPath / "modelhub.json";
   writeJson(result.metadataPath, metadata);
 
+  std::optional<TensorContract> tensorContract;
+  if (info->repoId == kBsRoformerRepoId || info->repoId == kUmxVocalsRepoId) {
+    std::string probeError;
+    const auto catalogContract =
+        info->repoId == kBsRoformerRepoId ? bsRoformerCatalogContract() : umxVocalsCatalogContract();
+    tensorContract = resolveInstalledTensorContract(catalogContract, primaryPath, probeError);
+    if (!tensorContract.has_value()) {
+      std::filesystem::remove(primaryPath, error);
+      result.message = "Downloaded model does not match its tensor contract: " + probeError;
+      appendInstallLog(destinationRoot, info.value(), result);
+      return result;
+    }
+  }
+
   std::string manifestError;
-  if (!writeTurnkeyModelPackManifest(installPath, info.value(), result, compatibility, &manifestError)) {
+  if (!writeTurnkeyModelPackManifest(installPath, info.value(), result, compatibility,
+                                     tensorContract.has_value() ? &tensorContract.value() : nullptr,
+                                     &manifestError)) {
     std::filesystem::remove(primaryPath, error);
     result.message = "Failed writing turnkey model pack metadata: " + manifestError;
     appendInstallLog(destinationRoot, info.value(), result);

@@ -49,7 +49,8 @@ bool isRendererAvailable(const std::string& rendererId) {
     return true;
   }
   if (rendererId == kPhaseLimiterRendererId) {
-    return PhaseLimiterDiscovery{}.find().has_value();
+    const auto found = PhaseLimiterDiscovery{}.find();
+    return found.has_value() && isCompleteInstall(*found);
   }
   if (rendererId == kFfmpegRendererId) {
     return FfmpegDiscovery{}.find().has_value();
@@ -128,6 +129,11 @@ std::vector<std::string> resolveLogicalAllChain(const domain::RenderSettings& se
 
   for (const auto& rendererId : canonicalMasterOrder) {
     if (rendererId == primaryRenderer) {
+      continue;
+    }
+    // PhaseLimiter is opt-in: it joins the chain only as the selected primary
+    // renderer (added above), never as an automatic stage.
+    if (rendererId == kPhaseLimiterRendererId) {
       continue;
     }
     if (!isRendererAvailable(rendererId)) {

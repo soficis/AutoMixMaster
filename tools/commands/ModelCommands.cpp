@@ -2,14 +2,21 @@
 #include "commands/DevToolsUtils.h"
 
 #include <algorithm>
+#include <chrono>
 #include <fstream>
 #include <iostream>
 #include <unordered_set>
 
 #include "ai/FeatureSchema.h"
+#include "ai/GpuProvider.h"
+#include "ai/GpuRuntimePack.h"
 #include "ai/HuggingFaceModelHub.h"
 #include "ai/ModelPackLoader.h"
+#include "ai/ModelStorage.h"
 #include "ai/OnnxModelInference.h"
+#include "ai/OnnxTensorInference.h"
+#include "ai/OrtRuntime.h"
+#include "ai/StemSeparator.h"
 #include "renderers/ExternalLimiterRenderer.h"
 #include "util/LameDownloader.h"
 
@@ -395,7 +402,7 @@ int commandModelInstall(const CommandArgs& args) {
   }
 
   automix::ai::HubInstallOptions options;
-  options.destinationRoot = argValue(args, "--dest").value_or("assets/modelhub");
+  options.destinationRoot = argValue(args, "--dest").value_or(automix::ai::defaultModelHubRoot().string());
   options.overwrite = hasFlag(args, "--force");
   options.downloadReadme = !hasFlag(args, "--no-readme");
   if (const auto tokenEnvArg = argValue(args, "--token-env"); tokenEnvArg.has_value()) {
@@ -435,7 +442,7 @@ int commandModelInstall(const CommandArgs& args) {
 }
 
 int commandModelHealth(const CommandArgs& args) {
-  const std::filesystem::path root = argValue(args, "--root").value_or("assets/modelhub");
+  const std::filesystem::path root = argValue(args, "--root").value_or(automix::ai::defaultModelHubRoot().string());
   const auto registryPath = root / "install_registry.json";
   const auto registry = loadJsonFile(registryPath);
   if (!registry.has_value() || !registry->is_array()) {
@@ -510,6 +517,457 @@ int commandModelHealth(const CommandArgs& args) {
   return failed == 0 ? 0 : 1;
 }
 
+// separate --mix <file> --out <dir> [--pack <dir>] [--tensor] [--provider auto|cpu|cuda] [--cancel-after-ms N] [--json]
+// Runs StemSeparator exactly as single-mix import does, outside the UI.
+int commandSeparate(const std::vector<std::string>& args) {
+  const auto mixArg = argValue(args, "--mix");
+  const auto outArg = argValue(args, "--out");
+  if (!mixArg.has_value() || !outArg.has_value()) {
+    std::cerr << "Usage: separate --mix <file> --out <dir> [--pack <dir>] [--tensor] [--provider auto|cpu|cuda] [--cancel-after-ms N] [--json]\n";
+    return 2;
+  }
+
+  automix::ai::StemSeparator separator(argValue(args, "--pack").value_or("assets/models/stem-separator"));
+  automix::ai::StemSeparator::SeparationOptions options;
+  options.useTensorModel = hasFlag(args, "--tensor");
+  options.executionProvider = argValue(args, "--provider").value_or("auto");
+  const bool jsonOutput = hasFlag(args, "--json");
+  // --cancel-after-ms N: request cancellation N ms after start, to measure how
+  // quickly a running separation actually stops.
+  const auto started = std::chrono::steady_clock::now();
+  if (const auto cancelAfter = parseIntArg(args, "--cancel-after-ms"); cancelAfter.has_value()) {
+    const auto deadline = started + std::chrono::milliseconds(*cancelAfter);
+    options.cancelRequested = [deadline] { return std::chrono::steady_clock::now() >= deadline; };
+  }
+  if (options.useTensorModel && !jsonOutput) {
+    options.tensorProgress = [](const int done, const int total) {
+      std::cout << "  chunk " << done << "/" << total << "\n" << std::flush;
+    };
+  }
+
+  const auto result = separator.separate(*mixArg, *outArg, options);
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+
+  nlohmann::json stems = nlohmann::json::array();
+  for (const auto& stem : result.stems) {
+    stems.push_back({{"name", stem.name}, {"path", stem.filePath}, {"role", automix::domain::toString(stem.role)}});
+  }
+  const nlohmann::json payload = {
+      {"success", result.success},
+      {"usedModel", result.usedModel},
+      {"cancelled", result.cancelled},
+      {"seconds", seconds},
+      {"stems", stems},
+      {"energyLeakage", result.qaMetrics.energyLeakage},
+      {"residualDistortion", result.qaMetrics.residualDistortion},
+      {"transientRetention", result.qaMetrics.transientRetention},
+      {"log", result.logMessage},
+  };
+  if (jsonOutput) {
+    std::cout << payload.dump(2) << "\n";
+  } else {
+    std::cout << "Separation: success=" << (result.success ? "yes" : "no")
+              << " usedModel=" << (result.usedModel ? "yes" : "no") << " seconds=" << seconds << "\n";
+    for (const auto& stem : result.stems) {
+      std::cout << "  " << automix::domain::toString(stem.role) << " -> " << stem.filePath << "\n";
+    }
+    std::cout << "  " << result.logMessage << "\n";
+  }
+  return result.success ? 0 : 1;
+}
+
+// gpu-runtime status|install|remove|upgrade-models [--root <dir>] [--hub <dir>]
+// The per-user NVIDIA CUDA libraries the CUDA execution provider loads.
+int commandGpuRuntime(const std::vector<std::string>& args) {
+  namespace pack = automix::ai::GpuRuntimePack;
+  const auto has = [&args](const char* word) { return std::find(args.begin(), args.end(), word) != args.end(); };
+  const std::string action = has("install")          ? "install"
+                             : has("remove")         ? "remove"
+                             : has("upgrade-models") ? "upgrade-models"
+                             : (has("status") || args.size() <= 1) ? "status"
+                                                                    : "";
+  const std::filesystem::path root = argValue(args, "--root").value_or(pack::defaultRoot().string());
+  if (action == "status") {
+    const auto adapter = pack::largestNvidiaAdapter();
+    const auto driver = adapter.has_value() && adapter->driverMajor.has_value()
+                            ? std::to_string(*adapter->driverMajor) + "." +
+                                  (*adapter->driverMinor < 10 ? "0" : "") + std::to_string(*adapter->driverMinor)
+                            : std::string("unknown");
+    std::cout << "GPU runtime " << pack::version() << " at " << root.string() << "\n"
+              << "  installed: " << (pack::isInstalled(root) ? "yes" : "no") << "\n"
+              << "  largest NVIDIA adapter: "
+              << (adapter.has_value() ? std::to_string(adapter->dedicatedBytes / (1024 * 1024)) + " MiB, driver " + driver
+                                      : std::string("none"))
+              << " (CUDA 13 needs >= " << pack::kMinimumDriverMajor << ")\n"
+              << "  runtime build has CUDA: " << (automix::ai::runtimeReportsProvider("cuda") ? "yes" : "no") << "\n"
+              << "  preload: " << (pack::preload(root) ? "ok" : "not loaded") << "\n";
+    std::string provider;
+    const bool gpu = automix::ai::gpuTensorSessionAvailable(&provider);
+    std::cout << "  GPU tensor session: " << (gpu ? provider : std::string("unavailable")) << "\n";
+    std::cout << "  ORT diagnostics: " << automix::ai::OrtRuntime::instance().diagnostics() << "\n";
+    return 0;
+  }
+  if (action == "install") {
+    int lastDecile = -1;
+    const auto result = pack::install(root, [&](std::uint64_t done, std::uint64_t total) {
+      const int percent = total > 0 ? static_cast<int>(done * 100 / total) : 0;
+      if (percent / 10 != lastDecile) {
+        lastDecile = percent / 10;
+        std::cout << "  " << percent << "%\n" << std::flush;
+      }
+      return true;
+    });
+    std::cout << result.message << "\n";
+    if (result.success) {
+      automix::ai::invalidateTensorProviderProbeCache();
+    }
+    return result.success ? 0 : 1;
+  }
+  if (action == "remove") {
+    const auto removed = pack::uninstall(root);
+    automix::ai::invalidateTensorProviderProbeCache();
+    std::cout << removed.message << "\n";
+    return removed.removedNow ? 0 : 3;
+  }
+  if (action == "upgrade-models") {
+    const std::filesystem::path hub = argValue(args, "--hub").value_or(automix::ai::defaultModelHubRoot().string());
+    const auto upgraded = automix::ai::upgradeBsRoformerForGpu(hub);
+    std::cout << (upgraded.has_value() ? upgraded->message : std::string("Nothing to upgrade.")) << "\n";
+    return !upgraded.has_value() || upgraded->success ? 0 : 1;
+  }
+  std::cerr << "Usage: gpu-runtime status|install|remove|upgrade-models [--root <dir>] [--hub <dir>]\n";
+  return 2;
+}
+
+// model bench --provider <name> [--pack <dir>] [--runs N] [--warmup N] [--json] [--out <file>]
+//             [--skip-cpu-baseline]
+// Tensor packs print one progress line per run to stderr. --skip-cpu-baseline skips the CPU
+// reference (no parity check, no speedup); `--provider cpu` runs the CPU model once, not twice.
+// Exit codes: 0 ok, 1 pack load failure, 3 model load/execution failure,
+//             4 the model ran on a different provider than the one requested,
+//             5 one or more inference calls failed (latencies and parity are invalid).
+int commandModelBench(const CommandArgs& args) {
+  const auto packArg = argValue(args, "--pack").value_or("assets/models/demo-mix-v1");
+  const auto providerArg = argValue(args, "--provider").value_or("auto");
+  const int warmupRuns = std::clamp(parseIntArg(args, "--warmup").value_or(2), 0, 50);
+  const int timedRuns = std::clamp(parseIntArg(args, "--runs").value_or(10), 1, 1000);
+  const bool jsonOutput = hasFlag(args, "--json");
+  const bool skipCpuBaseline = hasFlag(args, "--skip-cpu-baseline");
+
+  const std::filesystem::path packDir(packArg);
+  automix::ai::ModelPackLoader loader;
+  const auto maybePack = loader.load(packDir);
+  if (!maybePack.has_value()) {
+    std::cerr << "Model benchmark failed: could not load model pack at " << packDir.string() << "\n";
+    return 1;
+  }
+  const auto& pack = maybePack.value();
+
+  std::vector<double> provLatencies;
+  std::vector<double> cpuLatencies;
+  std::string actualProvider = "unknown";
+  std::string providerBackendDiagnostics;
+  double maxDelta = 0.0;
+  const bool isTensor = pack.tensorContract.has_value();
+  // A run that throws inside ORT still returns quickly with usedModel=false; its
+  // latency is meaningless, so every call is checked and any failure voids the bench.
+  int failedRuns = 0;
+  bool parityChecked = false;
+  std::string firstFailure;
+  const auto checkRun = [&](const auto& result) {
+    if (!result.usedModel) {
+      if (failedRuns == 0) firstFailure = result.logMessage;
+      ++failedRuns;
+    }
+  };
+
+  const bool requestedIsCpu =
+      automix::ai::gpu::canonicalProviderName(providerArg) == automix::ai::gpu::kProviderCpu;
+
+  // The CPU reference feeds parity and speedup. Requesting cpu makes the reference the measurement.
+  const bool runCpuBaseline = !skipCpuBaseline || requestedIsCpu;
+
+  if (isTensor) {
+    const auto timedRun = [&](auto& inference, const auto& bindings, const char* label, int index, int total,
+                              std::vector<double>& latencies) {
+      const auto start = std::chrono::steady_clock::now();
+      auto result = inference.run(bindings);
+      const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+      checkRun(result);
+      latencies.push_back(ms);
+      // stderr keeps --json stdout parseable.
+      std::cerr << "[bench] " << label << " " << index << "/" << total << ": " << ms << " ms" << std::endl;
+      return result;
+    };
+    const auto makeBindings = [](const automix::ai::OnnxTensorInference& inference) {
+      std::vector<automix::ai::TensorBinding> bindings;
+      for (const auto& spec : inference.inputSpecs()) {
+        size_t count = automix::ai::elementCount(spec).value_or(1024);
+        bindings.push_back(automix::ai::TensorBinding{
+            .expected = spec,
+            .data = std::vector<float>(count, 0.1f),
+        });
+      }
+      return bindings;
+    };
+
+    std::vector<automix::ai::TensorBinding> bindings;
+    automix::ai::TensorInferenceResult cpuResult;
+    automix::ai::OnnxTensorInference cpuInference;
+    if (runCpuBaseline) {
+      cpuInference.setTensorContract(pack.tensorContract);
+      cpuInference.setExecutionProvider("cpu");
+      if (!cpuInference.loadModel(pack.rootPath / pack.modelFile)) {
+        std::cerr << "ERROR: could not load tensor model on CPU: " << cpuInference.backendDiagnostics() << "\n";
+        return 3;
+      }
+      bindings = makeBindings(cpuInference);
+      for (int i = 0; i < warmupRuns; ++i) {
+        checkRun(cpuInference.run(bindings));
+        std::cerr << "[bench] cpu warmup " << (i + 1) << "/" << warmupRuns << " done" << std::endl;
+      }
+      for (int i = 0; i < timedRuns; ++i) {
+        cpuResult = timedRun(cpuInference, bindings, "cpu", i + 1, timedRuns, cpuLatencies);
+      }
+    }
+
+    if (requestedIsCpu) {
+      actualProvider = "cpu";
+      providerBackendDiagnostics = cpuInference.backendDiagnostics();
+      provLatencies = cpuLatencies;
+    } else {
+      automix::ai::OnnxTensorInference provInference;
+      provInference.setTensorContract(pack.tensorContract);
+      provInference.setExecutionProvider(providerArg);
+      // The bench deliberately ignores the pack's allow-list so it measures the requested provider.
+      provInference.setGpuProviderAllowList({});
+      if (!provInference.loadModel(pack.rootPath / pack.modelFile)) {
+        std::cerr << "ERROR: could not load tensor model with provider '" << providerArg
+                  << "': " << provInference.backendDiagnostics() << "\n";
+        return 3;
+      }
+      actualProvider = provInference.activeExecutionProvider();
+      providerBackendDiagnostics = provInference.backendDiagnostics();
+      if (bindings.empty()) {
+        bindings = makeBindings(provInference);
+      }
+
+      for (int i = 0; i < warmupRuns; ++i) {
+        checkRun(provInference.run(bindings));
+        std::cerr << "[bench] " << actualProvider << " warmup " << (i + 1) << "/" << warmupRuns << " done"
+                  << std::endl;
+      }
+      automix::ai::TensorInferenceResult provResult;
+      for (int i = 0; i < timedRuns; ++i) {
+        provResult = timedRun(provInference, bindings, actualProvider.c_str(), i + 1, timedRuns, provLatencies);
+      }
+
+      for (size_t i = 0; i < cpuResult.outputs.size() && i < provResult.outputs.size(); ++i) {
+        const auto& cOut = cpuResult.outputs[i];
+        const auto& pOut = provResult.outputs[i];
+        const size_t sz = std::min(cOut.data.size(), pOut.data.size());
+        for (size_t j = 0; j < sz; ++j) {
+          double diff = std::abs(static_cast<double>(cOut.data[j]) - static_cast<double>(pOut.data[j]));
+          if (diff > maxDelta) maxDelta = diff;
+        }
+      }
+    }
+    parityChecked = runCpuBaseline;
+  } else {
+    automix::ai::OnnxModelInference cpuInference;
+    cpuInference.setExecutionProviderPreference("cpu");
+    if (!cpuInference.loadModel(pack.rootPath / pack.modelFile)) {
+      std::cerr << "ERROR: could not load model on CPU: " << cpuInference.backendDiagnostics() << "\n";
+      return 3;
+    }
+    const size_t featureCount = pack.inputFeatureCount.value_or(automix::ai::FeatureSchemaV1::featureCount());
+    const automix::ai::InferenceRequest request{
+        .task = taskFromModelType(pack.type),
+        .features = deterministicFeatures(featureCount),
+    };
+
+    const auto cpuProbe = cpuInference.run(request);
+    if (!cpuProbe.usedModel || !cpuInference.usingNativeSession()) {
+      std::cerr << "ERROR: model did not execute (deterministic fallback); nothing measured\n";
+      return 3;
+    }
+
+    for (int i = 0; i < warmupRuns; ++i) {
+      checkRun(cpuInference.run(request));
+    }
+    automix::ai::InferenceResult cpuResult;
+    for (int i = 0; i < timedRuns; ++i) {
+      const auto start = std::chrono::steady_clock::now();
+      cpuResult = cpuInference.run(request);
+      const auto end = std::chrono::steady_clock::now();
+      checkRun(cpuResult);
+      cpuLatencies.push_back(std::chrono::duration<double, std::milli>(end - start).count());
+    }
+
+    automix::ai::OnnxModelInference provInference;
+    provInference.setExecutionProviderPreference(providerArg);
+    if (!provInference.loadModel(pack.rootPath / pack.modelFile)) {
+      std::cerr << "ERROR: could not load model with provider '" << providerArg
+                << "': " << provInference.backendDiagnostics() << "\n";
+      return 3;
+    }
+    actualProvider = provInference.activeExecutionProvider();
+    providerBackendDiagnostics = provInference.backendDiagnostics();
+
+    const auto provProbe = provInference.run(request);
+    if (!provProbe.usedModel || !provInference.usingNativeSession()) {
+      std::cerr << "ERROR: model did not execute (deterministic fallback); nothing measured\n";
+      return 3;
+    }
+
+    for (int i = 0; i < warmupRuns; ++i) {
+      checkRun(provInference.run(request));
+    }
+    automix::ai::InferenceResult provResult;
+    for (int i = 0; i < timedRuns; ++i) {
+      const auto start = std::chrono::steady_clock::now();
+      provResult = provInference.run(request);
+      const auto end = std::chrono::steady_clock::now();
+      checkRun(provResult);
+      provLatencies.push_back(std::chrono::duration<double, std::milli>(end - start).count());
+    }
+
+    for (const auto& [k, v] : cpuResult.outputs) {
+      auto it = provResult.outputs.find(k);
+      if (it != provResult.outputs.end()) {
+        double diff = std::abs(static_cast<double>(v) - static_cast<double>(it->second));
+        if (diff > maxDelta) maxDelta = diff;
+      }
+    }
+  }
+
+  auto computeMedian = [](std::vector<double> v) -> double {
+    if (v.empty()) return 0.0;
+    std::sort(v.begin(), v.end());
+    if (v.size() % 2 == 1) return v[v.size() / 2];
+    return 0.5 * (v[v.size() / 2 - 1] + v[v.size() / 2]);
+  };
+  const double medianMs = computeMedian(provLatencies);
+  const double cpuMedianMs = computeMedian(cpuLatencies);
+  const double minMs = provLatencies.empty() ? 0.0 : *std::min_element(provLatencies.begin(), provLatencies.end());
+  const double maxMs = provLatencies.empty() ? 0.0 : *std::max_element(provLatencies.begin(), provLatencies.end());
+
+  const bool providerMatches = automix::ai::gpu::benchProviderMatches(providerArg, actualProvider);
+  const bool allRunsSucceeded = failedRuns == 0;
+  if (!isTensor) parityChecked = true;
+  const bool shouldReportSpeedup = allRunsSucceeded && parityChecked &&
+      (automix::ai::gpu::canonicalProviderName(actualProvider) != automix::ai::gpu::kProviderCpu) && providerMatches;
+  const double p90Ms = automix::ai::gpu::nearestRankPercentile(provLatencies, 0.9);
+  const double cpuP90Ms = automix::ai::gpu::nearestRankPercentile(cpuLatencies, 0.9);
+  const auto canonicalRequested = automix::ai::gpu::canonicalProviderName(providerArg);
+  const bool outsideAllowList =
+      canonicalRequested != "auto" && canonicalRequested != automix::ai::gpu::kProviderCpu && !pack.gpuProviders.empty() &&
+      std::none_of(pack.gpuProviders.begin(), pack.gpuProviders.end(), [&](const std::string& allowed) {
+        return automix::ai::gpu::canonicalProviderName(allowed) == canonicalRequested;
+      });
+  const std::optional<double> speedup = shouldReportSpeedup && (medianMs > 1e-6)
+                                            ? std::optional<double>(cpuMedianMs / medianMs)
+                                            : std::nullopt;
+
+  const auto ortDiagnostics = automix::ai::OrtRuntime::instance().diagnostics();
+
+  nlohmann::json payload = {
+      {"model", pack.id},
+      {"requestedProvider", providerArg},
+      {"actualProvider", actualProvider},
+      {isTensor ? "loaded" : "usedModel", true},
+      {"diagnostics", ortDiagnostics},
+      {"warmupRuns", warmupRuns},
+      {"timedRuns", timedRuns},
+      {"medianLatencyMs", medianMs},
+      {"minLatencyMs", minMs},
+      {"maxLatencyMs", maxMs},
+      {"parityChecked", parityChecked},
+      {"latenciesMs", provLatencies},
+      {"passedParity", allRunsSucceeded && parityChecked && maxDelta < 1e-3},
+      {"failedRuns", failedRuns},
+      {"providerMatches", providerMatches},
+      {"packAllowList", pack.gpuProviders},
+      {"p90LatencyMs", p90Ms},
+  };
+  if (parityChecked) {
+    payload["maxDeltaVsCpu"] = maxDelta;
+    payload["cpuMedianLatencyMs"] = cpuMedianMs;
+    payload["cpuP90LatencyMs"] = cpuP90Ms;
+  }
+
+  if (speedup.has_value()) {
+    payload["speedupVsCpu"] = *speedup;
+  }
+
+  if (const auto outArg = argValue(args, "--out"); outArg.has_value()) {
+    writeJsonFile(*outArg, payload);
+    std::cout << "Model benchmark report: " << *outArg << "\n";
+  }
+
+  if (jsonOutput) {
+    std::cout << payload.dump(2) << "\n";
+  } else {
+    std::cout << "Model benchmark: " << pack.id << "\n";
+    std::cout << "  Requested provider: " << providerArg << "\n";
+    std::cout << "  Actual provider: " << actualProvider << "\n";
+    std::cout << "  " << (isTensor ? "Loaded" : "Used real model") << ": true\n";
+    std::cout << "  ORT diagnostics: " << ortDiagnostics << "\n";
+    std::cout << "  Warm-up runs: " << warmupRuns << "\n";
+    std::cout << "  Timed runs: " << timedRuns << "\n";
+    std::cout << "  Median latency: " << medianMs << " ms (min: " << minMs << " ms, max: " << maxMs << " ms)\n";
+    std::cout << "  p90: " << p90Ms << " ms\n";
+    if (parityChecked) {
+      std::cout << "  CPU median latency: " << cpuMedianMs << " ms\n";
+    } else {
+      std::cout << "  CPU baseline: skipped (no parity check, no speedup)\n";
+    }
+    std::cout << "  Provider match: " << (providerMatches ? "yes" : "no") << "\n";
+    if (outsideAllowList) {
+      std::cout << "  Note: '" << providerArg << "' is outside this pack's allow-list; measured anyway\n";
+    }
+    if (speedup.has_value()) {
+      std::cout << "  Speedup vs CPU: " << *speedup << "x\n";
+    }
+    if (parityChecked) {
+     std::cout << "  Max |Δ| vs CPU: " << maxDelta << "\n";
+    }
+    std::cout << "  Failed runs: " << failedRuns << "\n";
+  }
+
+  if (!allRunsSucceeded) {
+    std::cerr << "ERROR: " << failedRuns << " inference call(s) failed on '" << actualProvider
+              << "'; latencies and parity are invalid. First failure: " << firstFailure << "\n";
+    return 5;
+  }
+
+  if (!providerMatches) {
+    std::cerr << "ERROR: requested provider '" << providerArg << "' but the model ran on '" << actualProvider << "'. "
+              << providerBackendDiagnostics << "\n";
+    return 4;
+  }
+
+  return 0;
+}
+
+int commandModel(const CommandArgs& args) {
+  if (args.size() > 1) {
+    const std::string& sub = args[1];
+    CommandArgs subArgs;
+    subArgs.push_back(sub);
+    for (size_t i = 2; i < args.size(); ++i) {
+      subArgs.push_back(args[i]);
+    }
+    if (sub == "bench") return commandModelBench(subArgs);
+    if (sub == "browse") return commandModelBrowse(subArgs);
+    if (sub == "install") return commandModelInstall(subArgs);
+    if (sub == "health") return commandModelHealth(subArgs);
+  }
+  std::cerr << "Usage: model bench|browse|install|health [options]\n";
+  return 2;
+}
+
 } // namespace
 
 void registerModelCommands(automix::devtools::CommandRegistry& registry) {
@@ -521,7 +979,11 @@ void registerModelCommands(automix::devtools::CommandRegistry& registry) {
   registry.add("validate-modelpack", commandValidateModelPack);
   registry.add("validate-external-limiter", commandValidateExternalLimiter);
   registry.add("external-limiter-compat", commandExternalLimiterCompat);
+  registry.add("model", commandModel);
+  registry.add("model-bench", commandModelBench);
   registry.add("model-browse", commandModelBrowse);
   registry.add("model-install", commandModelInstall);
   registry.add("model-health", commandModelHealth);
+  registry.add("separate", commandSeparate);
+  registry.add("gpu-runtime", commandGpuRuntime);
 }

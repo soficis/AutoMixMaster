@@ -7,8 +7,15 @@
 
 #include <nlohmann/json.hpp>
 
+#include "ai/BsRoformerPack.h"
+#include "ai/UmxPack.h"
 #include "ai/ItoMasterAdapter.h"
+#include "ai/OnnxTensorInference.h"
 #include "util/StringUtils.h"
+
+#ifndef AUTOMIX_HAS_NATIVE_ORT
+#define AUTOMIX_HAS_NATIVE_ORT 0
+#endif
 
 namespace automix::ai {
 namespace {
@@ -123,6 +130,10 @@ std::string inferTaskScope(const HubModelInfo& model) {
   if (isKnownTaskScope(model.taskScope)) {
     return model.taskScope;
   }
+  if (model.repoId == kUmxVocalsRepoId) {
+    // Pinned: the publisher's name ("MixDirective") would otherwise match the "mix" token.
+    return "separation";
+  }
 
   std::string joined = toLower(model.useCase);
   joined += "|" + toLower(model.repoId);
@@ -168,10 +179,40 @@ std::string normalizeModelIdForPack(const std::string& modelId) {
   return sanitizePackId(toLower(modelId));
 }
 
+std::optional<TensorContract> resolveInstalledTensorContract(const TensorContract& catalogContract,
+                                                             const std::filesystem::path& modelPath,
+                                                             std::string& errorOut) {
+#if AUTOMIX_HAS_NATIVE_ORT
+  OnnxTensorInference inference;
+  inference.setTensorContract(catalogContract);
+  if (!inference.loadModel(modelPath)) {
+    errorOut = inference.backendDiagnostics();
+    return std::nullopt;
+  }
+  // loadModel() ran checkTensorContract(), so the probed and declared lists
+  // agree in count and position.
+  auto installed = catalogContract;
+  const auto inputs = inference.inputSpecs();
+  const auto outputs = inference.outputSpecs();
+  for (std::size_t i = 0; i < installed.inputs.size() && i < inputs.size(); ++i) {
+    installed.inputs[i].name = inputs[i].name;
+  }
+  for (std::size_t i = 0; i < installed.outputs.size() && i < outputs.size(); ++i) {
+    installed.outputs[i].name = outputs[i].name;
+  }
+  return installed;
+#else
+  (void)modelPath;
+  (void)errorOut;
+  return catalogContract;
+#endif
+}
+
 bool writeTurnkeyModelPackManifest(const std::filesystem::path& installPath,
                                    const HubModelInfo& model,
                                    const HubInstallResult& installResult,
                                    const ModelCompatibilityResult& compatibility,
+                                   const TensorContract* tensorContract,
                                    std::string* errorOut) {
   if (!compatibility.compatible) {
     if (errorOut != nullptr) {
@@ -223,10 +264,26 @@ bool writeTurnkeyModelPackManifest(const std::filesystem::path& installPath,
       {"output_names", nlohmann::json::array()},
   };
 
+  if (tensorContract != nullptr) {
+    manifest["tensor_contract"] = tensorContractToJson(*tensorContract);
+  }
+
   if (model.repoId == kItoMasterRepoId) {
     manifest["intended_use"] =
         std::string("Experimental ITO-Master AI mastering route (non-default, off by default). ") +
         "License: " + kItoMasterLicense + ". Attribution: " + kItoMasterAttribution;
+  }
+  if (model.repoId == kBsRoformerRepoId) {
+    const bool fp32 = modelFileName == kBsRoformerFp32File;
+    manifest["intended_use"] = fp32 ? kBsRoformerFp32IntendedUse : kBsRoformerIntendedUse;
+    manifest["gpu_providers"] = bsRoformerGpuProviders();
+    if (fp32) {
+      manifest["gpu_memory_mb"] = kBsRoformerFp32GpuMemoryMb;
+    }
+  }
+
+  if (model.repoId == kUmxVocalsRepoId) {
+    manifest["intended_use"] = kUmxVocalsIntendedUse;
   }
 
   const auto manifestPath = installPath / "model.json";

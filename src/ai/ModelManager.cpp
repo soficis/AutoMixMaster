@@ -1,4 +1,5 @@
 #include "ai/ModelManager.h"
+#include "ai/ModelStorage.h"
 
 #include <algorithm>
 #include <cctype>
@@ -17,6 +18,7 @@ using ::automix::util::toLower;
 
 std::vector<std::filesystem::path> defaultRoots() {
   return {
+      defaultModelHubRoot(),  // per-user downloads (see ModelStorage.h)
       "ModelPacks",
       "modelhub",
       "assets/modelhub",

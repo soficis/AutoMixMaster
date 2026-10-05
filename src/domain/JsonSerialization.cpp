@@ -81,6 +81,7 @@ void to_json(Json& j, const RenderSettings& value) {
            {"mp3VbrQuality", value.mp3VbrQuality},
            {"processingThreads", value.processingThreads},
            {"preferHardwareAcceleration", value.preferHardwareAcceleration},
+           {"tensorSeparationEnabled", value.tensorSeparationEnabled},
            {"metadataPolicy", value.metadataPolicy},
            {"metadataTemplate", value.metadataTemplate},
            {"rendererName", value.rendererName},
@@ -111,6 +112,8 @@ void from_json(const Json& j, RenderSettings& value) {
   value.mp3VbrQuality = std::clamp(j.value("mp3VbrQuality", 4), 0, 9);
   value.processingThreads = std::max(0, j.value("processingThreads", 0));
   value.preferHardwareAcceleration = j.value("preferHardwareAcceleration", true);
+  // Absent in sessions saved before the toggle existed; must stay off for them.
+  value.tensorSeparationEnabled = j.value("tensorSeparationEnabled", false);
   value.metadataPolicy = j.value("metadataPolicy", "copy_all");
   if (value.metadataPolicy != "copy_all" &&
       value.metadataPolicy != "copy_common" &&
@@ -120,7 +123,7 @@ void from_json(const Json& j, RenderSettings& value) {
     value.metadataPolicy = "copy_all";
   }
   value.metadataTemplate = j.value("metadataTemplate", std::map<std::string, std::string>{});
-  value.rendererName = j.value("rendererName", "PhaseLimiter");
+  value.rendererName = j.value("rendererName", "BuiltIn");
   value.rendererChainEnabled = j.value("rendererChainEnabled", false);
   value.rendererChainMode = j.value("rendererChainMode", "logical_all");
   if (value.rendererChainMode != "logical_all" && value.rendererChainMode != "master_then_rsgain") {
@@ -308,6 +311,8 @@ void from_json(const Json& j, Session& value) {
   value.residualBlend = std::clamp(j.value("residualBlend", 0.0), 0.0, 10.0);
   value.aiStemsEnabled = j.value("aiStemsEnabled", false);
   value.batchRecursiveEnabled = j.value("batchRecursiveEnabled", false);
+  // Session files saved before this field existed were mastered with Udio Optimized, so keep that
+  // fallback for them; new sessions get Default Streaming from the Session struct default instead.
   value.selectedMasterPreset = masterPresetFromString(j.value("selectedMasterPreset", "udio_optimized"));
   value.selectedPlatformPreset = masterPresetFromString(j.value("selectedPlatformPreset", "youtube"));
   value.stems = j.value("stems", std::vector<Stem>{});
@@ -336,6 +341,16 @@ void from_json(const Json& j, Session& value) {
     value.renderSettings = j.at("renderSettings").get<RenderSettings>();
   } else {
     value.renderSettings = RenderSettings{};
+  }
+  // Schema 3 made PhaseLimiter opt-in. Earlier sessions stored "PhaseLimiter"
+  // as the default rather than a choice, and every such render fell back to
+  // BuiltIn (the renderer never ran correctly before schema 3), so BuiltIn is
+  // exactly what those sessions have been producing.
+  if (value.schemaVersion < 3) {
+    if (value.renderSettings.rendererName == "PhaseLimiter") {
+      value.renderSettings.rendererName = "BuiltIn";
+    }
+    value.schemaVersion = 3;
   }
 
   if (j.contains("mixPlan") && !j.at("mixPlan").is_null()) {

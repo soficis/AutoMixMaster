@@ -1,0 +1,38 @@
+name: Repository Hygiene & Security
+
+on:
+  push:
+    branches: [master, main, "feat/**"]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+concurrency:
+  group: hygiene-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hygiene:
+    name: Repository Hygiene & Secret Scan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Check repository hygiene & forbidden paths
+        run: |
+          python tools/check_repo_hygiene.py
+          python tools/check_repo_hygiene.py --check-workflows
+          python -m unittest tests/tools/test_check_repo_hygiene.py -v
+
+      - name: Run Gitleaks secret detection
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

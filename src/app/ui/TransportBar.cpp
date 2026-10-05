@@ -1,5 +1,7 @@
 #include "app/ui/TransportBar.h"
 
+#include "app/style/AutoMixLookAndFeel.h"
+
 #include <cmath>
 #include <sstream>
 
@@ -18,6 +20,20 @@ TransportBar::TransportBar() {
   addAndMakeVisible(timeLabel_);
   addAndMakeVisible(volumeSlider_);
   addAndMakeVisible(loopToggle_);
+
+  for (juce::Button* btn : {static_cast<juce::Button*>(&skipStartButton_), static_cast<juce::Button*>(&playPauseButton_),
+                            static_cast<juce::Button*>(&stopButton_), static_cast<juce::Button*>(&skipEndButton_),
+                            static_cast<juce::Button*>(&shortcutsButton_)})
+    setButtonVariant(*btn, buttonVariant::secondary);
+
+  // Accessibility titles
+  skipStartButton_.setTitle("Skip to start");
+  playPauseButton_.setTitle("Play");
+  stopButton_.setTitle("Stop");
+  skipEndButton_.setTitle("Skip to end");
+  shortcutsButton_.setTitle("Keyboard shortcuts");
+  loopToggle_.setTitle("Loop");
+  volumeSlider_.setTitle("Volume");
 
   // Tooltips
   skipStartButton_.setTooltip("Skip to Start (Home)");
@@ -108,6 +124,13 @@ void TransportBar::resized() {
 
   // Center: time display
   timeLabel_.setBounds(area);
+}
+
+void TransportBar::setHasMedia(bool hasMedia) {
+  skipStartButton_.setEnabled(hasMedia);
+  playPauseButton_.setEnabled(hasMedia);
+  stopButton_.setEnabled(hasMedia);
+  skipEndButton_.setEnabled(hasMedia);
 }
 
 void TransportBar::setPlaying(bool playing) {

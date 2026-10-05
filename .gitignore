@@ -108,6 +108,10 @@ personal/
 config.ini
 .github/codex_agents.md
 CLAUDE.md
+**/CLAUDE.md
+AGENTS.md
+**/AGENTS.md
+diff_output.txt
 
 # === Documentation (all docs except README) ===
 docs/*
@@ -122,20 +126,26 @@ docs/*
 ccache/
 .omo/
 .omo/**
-!/.omo/
 
-# === Model Hub Downloaded Weights ===
+# === Model Hub Downloaded Weights & Hub Assets ===
+assets/**/modelhub/
+assets/**/modelhub/**
 assets/**/modelhub/**/*.onnx
 assets/**/modelhub/**/*.pt
 assets/**/modelhub/**/*.bin
 assets/**/modelhub/**/*.safetensors
+assets/phaselimiter/assets/
 
 # === Tracked licensing audit ===
 # Must stay last: git honours the LAST matching pattern, so the docs/* line
 # re-ignores the whole directory (undoing the case-insensitive !README*.md
-# match above) and the two negations then re-include only these files.
+# match above) and the negation then re-includes only this file.
 docs/*
-!docs/model-licensing-audit.md
 !docs/model-licensing-audit.json
 
 
+
+# README screenshots that are captured but not embedded
+assets/screenshots/model-hub.png
+assets/screenshots/settings.png
+assets/screenshots/shortcuts.png

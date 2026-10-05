@@ -13,7 +13,7 @@ TEST_CASE("Project profile defaults are available", "[profile]") {
 
   const auto foundDefault = automix::domain::findProjectProfile(defaults, "default");
   REQUIRE(foundDefault.has_value());
-  REQUIRE(foundDefault->rendererName == "PhaseLimiter");
+  REQUIRE(foundDefault->rendererName == "BuiltIn");  // PhaseLimiter is opt-in
 }
 
 TEST_CASE("Project profile loader merges asset profiles with defaults", "[profile]") {

@@ -31,6 +31,17 @@
 
 namespace automix::app {
 
+/// Next step of the quit flow (pure decision, unit-tested; the prompts themselves are modal UI).
+enum class QuitStep { QuitNow, ConfirmRunningTask, PromptSave };
+
+/// A running task must be confirmed once before anything else; after that (or with no task) a
+/// modified session gets the Save prompt and an unmodified one quits immediately.
+inline QuitStep nextQuitStep(bool taskRunning, bool taskQuitConfirmed, bool modified) {
+  if (taskRunning && !taskQuitConfirmed)
+    return QuitStep::ConfirmRunningTask;
+  return modified ? QuitStep::PromptSave : QuitStep::QuitNow;
+}
+
 // ── Keyboard shortcut table (single source of truth) ────────────────────
 // Command ids start at 1000 (0 is reserved as "no command" by JUCE).
 
@@ -145,6 +156,11 @@ public:
   void resized() override;
   bool keyPressed(const juce::KeyPress& key) override;
 
+  /// Runs quitNow immediately when no task is running and the session is unchanged (returns true);
+  /// otherwise confirms quitting over a running task and/or asks Save / Don't Save / Cancel and
+  /// returns false.
+  bool requestQuit(std::function<void()> quitNow);
+
 private:
   // Timer / Listener overrides
   void timerCallback() override;
@@ -172,7 +188,12 @@ private:
   void onAutoMixMaster(); // Pipeline: Mix -> Master -> Export
   void onBatch();
   void onExport();
-  void onSaveSession();
+  void onSaveSession(std::function<void(bool)> done = {});
+  void finishPendingSave(bool success);
+  void refreshSessionTitle();
+  bool requestQuitStep(std::function<void()> quitNow, bool taskQuitConfirmed);
+  void refreshStemDependentUi();
+  void setSessionDisplayName(const juce::String& name);
   void onLoadSession();
   void onModelsDialog();
   void onSettings();
@@ -257,6 +278,13 @@ private:
   std::unique_ptr<AudioPreviewManager> previewManager_;
   SessionManager sessionManager_;
 
+  // Unsaved-changes tracking (message thread only).
+  juce::String sessionDisplayName_{"Untitled Session"};
+  bool sessionShownModified_ = false;
+  int modifiedCheckTicks_ = 0;
+  bool quitPromptOpen_ = false;
+  std::function<void(bool)> pendingSaveCompletion_;
+
   // State
   std::vector<analysis::StemAnalysisEntry> analysisEntries_;
   std::vector<renderers::RendererInfo> rendererInfos_;
@@ -281,6 +309,22 @@ private:
   // Stores the folder path to export into after mastering completes.
   std::string pendingPipelineExportFolder_;
   bool pendingAutoMixAfterSeparationImport_ = false;
+
+  // GPU runtime pack (NVIDIA CUDA libraries, downloaded on demand). Offered at
+  // most once per run; the cancel flag is shared with the download thread so
+  // closing the window stops it without a dangling pointer.
+  void offerGpuRuntimeIfUseful();
+  void installGpuRuntime();
+  void upgradeVocalModelForGpu();
+  void onGpuRuntimeButton();
+  juce::String gpuRuntimeStatusText() const;
+  juce::String gpuRuntimeButtonText() const;
+  // The fp32 vocal model needs 10 GiB of device memory plus desktop headroom;
+  // offering ~1 GB of CUDA libraries to a smaller card would buy nothing.
+  static constexpr std::uint64_t kGpuRuntimeMinimumAdapterBytes = (10240ull + 1536ull) * 1024 * 1024;
+  bool gpuRuntimeOffered_ = false;
+  bool gpuRuntimeInstalling_ = false;
+  std::shared_ptr<std::atomic_bool> gpuRuntimeCancel_ = std::make_shared<std::atomic_bool>(false);
   bool skipNextAutoMixSeparationCheck_ = false;
 
   // Controllers

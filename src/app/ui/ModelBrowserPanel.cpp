@@ -264,12 +264,12 @@ ModelBrowserPanel::ModelBrowserPanel() {
                     "Repository: " + juce::String(selected->repoId) + "\n"
                     "License: " + juce::String(licenseId.empty() ? juce::String("not declared by the publisher") : juce::String(licenseId));
         if (!licenseUrl.empty()) {
-          dialogMsg += "\nLicense terms: " + juce::String(licenseUrl);
+          dialogMsg += "\nLicense terms: " + juce::String(std::string(licenseUrl));
         }
         if (!selected->revision.empty()) {
           dialogMsg += "\nRevision: " + juce::String(selected->revision);
         }
-        dialogMsg += "\n\n" + juce::String(ai::ModelLicensePolicy::consentReason(licenseId)) +
+        dialogMsg += "\n\n" + juce::String(std::string(ai::ModelLicensePolicy::consentReason(licenseId))) +
                      "\n\nModel weights are downloaded at runtime from the publisher and are NOT part of the "
                      "GPL-licensed AutoMixMaster distribution. Your acknowledgement is recorded against this "
                      "model and applies to your own use of the downloaded weights.\n\n"

@@ -80,7 +80,7 @@ TEST_CASE("TaskCenterPanel batch ETA row state transitions", "[ui][taskcenter][e
   juce::ScopedJuceInitialiser_GUI juceInit;
 
   automix::app::TaskCenterPanel panel;
-  const juce::String emDash(static_cast<juce::juce_wchar>(0x2014));
+  const auto emDash = juce::String::charToString(static_cast<juce::juce_wchar>(0x2014));
 
   SECTION("no batch items shows dash") {
     REQUIRE(panel.batchEtaText() == emDash);
@@ -231,4 +231,53 @@ TEST_CASE("confirmClear gates destructive clear on dialog result and non-empty s
     REQUIRE_FALSE(confirmClear(0, true));
     REQUIRE_FALSE(confirmClear(0, false));
   }
+}
+
+TEST_CASE("TaskCenterPanel shows the batch strip only for a batch", "[ui][taskcenter][batch]") {
+  juce::ScopedJuceInitialiser_GUI juceInit;
+
+  automix::app::TaskCenterPanel panel;
+  panel.setSize(900, 400);
+  REQUIRE_FALSE(panel.isBatchStripVisible());
+  const int idleHeight = panel.getPreferredHeight();
+
+  automix::engine::BatchQueueRunner::ProgressDetail detail;
+  detail.totalCount = 3;
+  panel.setBatchProgress(detail, 0.0);
+  REQUIRE(panel.isBatchStripVisible());
+  REQUIRE(panel.getPreferredHeight() > idleHeight);
+
+  automix::engine::BatchQueueRunner::ProgressDetail cleared;
+  panel.setBatchProgress(cleared, 0.0);
+  REQUIRE_FALSE(panel.isBatchStripVisible());
+}
+
+TEST_CASE("TaskCenterPanel log is hidden by default and shown on failure", "[ui][taskcenter][log]") {
+  juce::ScopedJuceInitialiser_GUI juceInit;
+
+  automix::app::TaskCenterPanel panel;
+  panel.setSize(900, 400);
+  auto* editor = findHistoryEditor(panel);
+  REQUIRE(editor != nullptr);
+  REQUIRE_FALSE(panel.isLogVisible());
+  REQUIRE_FALSE(editor->isVisible());
+  const int collapsedHeight = panel.getPreferredHeight();
+
+  panel.setTaskState(automix::app::TaskState::Failed);
+  REQUIRE(panel.isLogVisible());
+  REQUIRE(editor->isVisible());
+  REQUIRE(panel.getPreferredHeight() == collapsedHeight + 4 + 160);
+}
+
+TEST_CASE("TaskCenterPanel hides the percent label while idle", "[ui][taskcenter]") {
+  juce::ScopedJuceInitialiser_GUI juceInit;
+
+  automix::app::TaskCenterPanel panel;
+  REQUIRE_FALSE(panel.isProgressPercentVisible());
+
+  panel.setTaskState(automix::app::TaskState::Running);
+  REQUIRE(panel.isProgressPercentVisible());
+
+  panel.setTaskState(automix::app::TaskState::Idle);
+  REQUIRE_FALSE(panel.isProgressPercentVisible());
 }

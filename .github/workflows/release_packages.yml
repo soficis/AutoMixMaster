@@ -19,6 +19,11 @@ on:
         required: false
         default: false
         type: boolean
+      dry_run:
+        description: Build and verify all packages but do not publish a release
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -30,35 +35,28 @@ concurrency:
 jobs:
   linux-packages:
     name: Linux (${{ matrix.arch }})
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: x64
-            emulated: false
+            runner: ubuntu-24.04
           - arch: arm64
-            emulated: true
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      # Persist compiler output so emulated arm64 rebuilds (failure retries)
-      # do not recompile the whole tree under QEMU.
       - name: Cache ccache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .ccache
           key: ccache-linux-${{ matrix.arch }}-${{ github.sha }}
           restore-keys: |
             ccache-linux-${{ matrix.arch }}-
 
-      - name: Set up QEMU for arm64 emulation
-        if: matrix.emulated
-        uses: docker/setup-qemu-action@v3
-
       - name: Install build dependencies
-        if: ${{ !matrix.emulated }}
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -69,38 +67,10 @@ jobs:
             libglu1-mesa-dev mesa-common-dev libcurl4-openssl-dev \
             dpkg-dev fakeroot flatpak flatpak-builder
 
-      # Public ubuntu-24.04-arm64 runners are frequently starved for 10h+,
-      # so arm64 packages are built on the x64 runner inside an emulated
-      # arm64v8/ubuntu:24.04 container (docker/setup-qemu-action registers
-      # binfmt_misc, docker run --platform linux/arm64 executes native arm64
-      # binaries under QEMU user-mode emulation).
       - name: Build .deb + AppImage
-        if: ${{ !matrix.emulated }}
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: bash ./tools/package_linux.sh
-
-      - name: Build .deb + AppImage (arm64, QEMU-emulated)
-        if: matrix.emulated
-        run: |
-          docker run --rm --platform linux/arm64 \
-            -v "${{ github.workspace }}:/workspace" \
-            -w /workspace \
-            -e CCACHE_DIR=/workspace/.ccache \
-            -e AUTOMIX_QEMU_EMULATED=1 \
-            arm64v8/ubuntu:24.04 \
-            bash -c 'set -euo pipefail; \
-              apt-get update && apt-get install -y --no-install-recommends \
-                build-essential cmake ninja-build pkg-config curl git ca-certificates \
-                ccache unzip file xz-utils \
-                libasound2-dev libjack-jackd2-dev libfreetype6-dev libfontconfig1-dev \
-                libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev \
-                libxrandr-dev libxrender-dev libwebkit2gtk-4.1-dev libgtk-3-dev \
-                libglu1-mesa-dev mesa-common-dev libcurl4-openssl-dev \
-                dpkg-dev fakeroot; \
-              bash ./tools/package_linux.sh'
-          sudo chown -R "$(id -u):$(id -g)" dist
-          if [[ -d .ccache ]]; then sudo chown -R "$(id -u):$(id -g)" .ccache; fi
 
       - name: Verify Flatpak prefetch wiring
         run: |
@@ -111,34 +81,29 @@ jobs:
       # Flatpak sandbox builds can fail if CMake FetchContent tries live GitHub clone.
       # Keep manifest prefetch sources + FETCHCONTENT_SOURCE_DIR_* overrides in sync.
       - name: Build Flatpak bundle
-        if: ${{ !matrix.emulated }}
+        env:
+          FLATPAK_ARCH: ${{ matrix.arch == 'arm64' && 'aarch64' || 'x86_64' }}
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: bash ./tools/build_flatpak.sh
-
-      - name: Build Flatpak bundle (arm64, QEMU-emulated)
-        if: matrix.emulated
-        run: |
-          docker run --rm --platform linux/arm64 \
-            -v "${{ github.workspace }}:/workspace" \
-            -w /workspace \
-            -e AUTOMIX_FLATPAK_DISABLE_SANDBOX=1 \
-            arm64v8/ubuntu:24.04 \
-            bash -c 'set -euo pipefail; \
-              apt-get update && apt-get install -y --no-install-recommends \
-                flatpak flatpak-builder git ca-certificates; \
-              bash ./tools/build_flatpak.sh'
-          sudo chown -R "$(id -u):$(id -g)" dist
 
       - name: Collect Linux release assets
         run: |
           mkdir -p dist/release/linux
           cp dist/linux/*.deb dist/release/linux/
           cp dist/linux/*.AppImage dist/release/linux/
-          cp dist/linux/*.sha256 dist/release/linux/ || true
+          cp dist/linux/*.sha256 dist/release/linux/
           cp dist/flatpak/AutoMixMaster.flatpak "dist/release/linux/AutoMixMaster-linux-${{ matrix.arch }}.flatpak"
           (cd dist/release/linux && sha256sum * > "SHA256SUMS-linux-${{ matrix.arch }}.txt")
 
+      - name: Assert Linux release packages exist
+        run: |
+          test -s "dist/release/linux/AutoMixMaster-linux-${{ matrix.arch }}.flatpak"
+          for f in dist/release/linux/*.deb dist/release/linux/*.AppImage; do
+            test -s "$f"
+          done
+
       - name: Upload Linux assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-linux-${{ matrix.arch }}
           path: dist/release/linux/*
@@ -157,40 +122,45 @@ jobs:
             vs_platform: ARM64
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Configure
+      - name: Install dependencies (Windows)
         shell: pwsh
         run: |
-          # Auto-detect the installed Visual Studio generator
-          $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          if (Test-Path $vsWhere) {
-            $vsVersion = & $vsWhere -latest -property catalog_productLineVersion
-            Write-Host "Detected Visual Studio $vsVersion"
+          choco install ffmpeg --no-progress
+          $ffmpegDir = "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin"
+          if (Test-Path $ffmpegDir) {
+            echo "$ffmpegDir" >> $env:GITHUB_PATH
           }
-          cmake -S . -B build_windows_${{ matrix.arch }} -A ${{ matrix.vs_platform }} -DBUILD_TESTING=OFF -DBUILD_TOOLS=OFF
 
-      - name: Build
-        run: cmake --build build_windows_${{ matrix.arch }} --config Release --target AutoMixMasterApp --parallel 3
-
-      - name: Package Windows zip
+      - name: Build & Package Windows x64 (CUDA + WebGPU)
+        if: matrix.arch == 'x64'
         shell: pwsh
         run: |
+          powershell -ExecutionPolicy Bypass -File packaging/windows/build-release.ps1 -OutputDir "dist/release/windows"
+
+      - name: Build & Package Windows arm64 (WebGPU)
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          cmake -S . -B build_windows_arm64 -A ARM64 -DCMAKE_SYSTEM_PROCESSOR=ARM64 -DENABLE_ONNX=ON -DAUTOMIX_FETCH_ORT=ON -DAUTOMIX_ORT_FLAVOR=cpu -DBUILD_TESTING=OFF -DBUILD_TOOLS=OFF
+          cmake --build build_windows_arm64 --config Release --target AutoMixMasterApp --parallel 3
           $releaseRoot = "dist/release/windows"
-          $packageDir = "$releaseRoot/AutoMixMaster-windows-${{ matrix.arch }}"
+          $packageDir = "$releaseRoot/AutoMixMaster-windows-arm64"
           New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
 
           $exeCandidates = @(
-            "build_windows_${{ matrix.arch }}/AutoMixMasterApp_artefacts/Release/AutoMixMaster.exe",
-            "build_windows_${{ matrix.arch }}/AutoMixMasterApp_artefacts/Release/Standalone/AutoMixMaster.exe",
-            "build_windows_${{ matrix.arch }}/AutoMixMasterApp_artefacts/AutoMixMaster.exe"
+            "build_windows_arm64/AutoMixMasterApp_artefacts/Release/AutoMixMaster.exe",
+            "build_windows_arm64/AutoMixMasterApp_artefacts/Release/Standalone/AutoMixMaster.exe",
+            "build_windows_arm64/AutoMixMasterApp_artefacts/AutoMixMaster.exe"
           )
           $exePath = $exeCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $exePath) { throw "AutoMixMaster.exe not found in build outputs!" }
-          Copy-Item $exePath "$packageDir/AutoMixMaster.exe" -Force
+          $exeDir = Split-Path -Parent $exePath
+          Copy-Item "$exeDir/*" "$packageDir/" -Recurse -Force
           Copy-Item "assets" "$packageDir/assets" -Recurse -Force
 
-          $zipName = "AutoMixMaster-windows-${{ matrix.arch }}.zip"
+          $zipName = "AutoMixMaster-windows-arm64.zip"
           $zipPath = "$releaseRoot/$zipName"
           if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
           Compress-Archive -Path "$packageDir/*" -DestinationPath $zipPath -CompressionLevel Optimal
@@ -199,12 +169,12 @@ jobs:
           "$hash  $zipName" | Set-Content "$zipPath.sha256"
 
       - name: Upload Windows assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-windows-${{ matrix.arch }}
           path: |
-            dist/release/windows/AutoMixMaster-windows-${{ matrix.arch }}.zip
-            dist/release/windows/AutoMixMaster-windows-${{ matrix.arch }}.zip.sha256
+            dist/release/windows/*.zip
+            dist/release/windows/*.sha256
           if-no-files-found: error
 
   macos-package:
@@ -217,23 +187,34 @@ jobs:
           - arch: x64
             runner: macos-15
             cmake_arch: x86_64
+            enable_onnx: "OFF"
           - arch: arm64
             runner: macos-15
             cmake_arch: arm64
+            enable_onnx: "ON"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Configure
         run: >
           cmake -S . -B build_macos_${{ matrix.arch }}
           -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_OSX_ARCHITECTURES=${{ matrix.cmake_arch }}
+          -DENABLE_ONNX=${{ matrix.enable_onnx }}
+          -DAUTOMIX_FETCH_ORT=${{ matrix.enable_onnx }}
+          -DAUTOMIX_ORT_FLAVOR=cpu
           -DBUILD_TESTING=OFF
           -DBUILD_TOOLS=OFF
 
       - name: Build
         run: cmake --build build_macos_${{ matrix.arch }} --target AutoMixMasterApp --parallel 3
+
+      - name: Ad-hoc codesign bundled dylibs
+        if: matrix.arch == 'arm64'
+        run: |
+          APP_BUNDLE="$(find build_macos_${{ matrix.arch }} -maxdepth 6 -type d -name 'AutoMixMaster.app' | head -n 1)"
+          bash ./packaging/macos/codesign-bundled-dylibs.sh "$APP_BUNDLE"
 
       - name: Package macOS zip
         run: |
@@ -250,7 +231,7 @@ jobs:
           shasum -a 256 "$ZIP_PATH" > "${ZIP_PATH}.sha256"
 
       - name: Upload macOS assets
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-macos-${{ matrix.arch }}
           path: |
@@ -260,7 +241,7 @@ jobs:
 
   publish-release-assets:
     name: Publish assets to GitHub Release
-    if: ${{ (github.event_name == 'release' || github.event_name == 'workflow_dispatch') && always() }}
+    if: ${{ (github.event_name == 'release' || github.event_name == 'workflow_dispatch') && !(github.event_name == 'workflow_dispatch' && inputs.dry_run) && always() }}
     runs-on: ubuntu-24.04
     needs:
       - linux-packages
@@ -268,7 +249,7 @@ jobs:
       - macos-package
     steps:
       - name: Download all packaged artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: release-*
           merge-multiple: true
@@ -332,7 +313,7 @@ jobs:
           fi
 
       - name: Publish assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ steps.release-meta.outputs.tag }}
           name: ${{ steps.release-meta.outputs.name }}
@@ -340,3 +321,37 @@ jobs:
           files: release-assets/*
           fail_on_unmatched_files: true
           overwrite_files: true
+
+  dry-run-summary:
+    name: Dry run summary (nothing published)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    needs:
+      - linux-packages
+      - windows-package
+      - macos-package
+    steps:
+      - name: Download all packaged artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Verify the assets the publish job would upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(release-assets/*)
+          if (( ${#assets[@]} == 0 )); then
+            echo "No release artifacts were found in release-assets/." >&2
+            exit 1
+          fi
+          ls -la release-assets
+          for f in "${assets[@]}"; do
+            test -s "$f"
+          done
+          echo "Dry run: ${#assets[@]} assets verified; no release or tag was created."

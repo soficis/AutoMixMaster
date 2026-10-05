@@ -1,0 +1,20 @@
+// generated/renderers/PhaseLimiterPins.h
+// Generated from src/renderers/PhaseLimiterPins.h.in by CMake. Do not edit.
+
+#pragma once
+
+#include <cstddef>
+
+namespace automix::renderers {
+
+struct PinRow {
+  const char* platformKey;
+  const char* url;
+  const char* sha256;
+};
+
+inline constexpr PinRow kPhaseLimiterPins[] = {
+@AUTOMIX_PHASELIMITER_PIN_ROWS@
+};
+
+} // namespace automix::renderers

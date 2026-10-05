@@ -38,6 +38,14 @@ option(ENABLE_CLANG_TIDY "Enable clang-tidy analysis while compiling" OFF)
 option(BUILD_TESTING "Build tests" ON)
 option(BUILD_TOOLS "Build developer tools" ON)
 
+# Linux has no native HTTPS client in JUCE: without libcurl, JUCE falls back to a raw-socket client that cannot
+# speak TLS, so model/tool downloads fail. Windows (WinINet) and macOS (NSURLSession) must keep JUCE_USE_CURL=0.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(AUTOMIX_JUCE_USE_CURL 1)
+else()
+  set(AUTOMIX_JUCE_USE_CURL 0)
+endif()
+
 if(DISTRIBUTION_MODE STREQUAL "PROPRIETARY" AND ENABLE_GPL_BUNDLED_LIMITERS)
   message(WARNING "ENABLE_GPL_BUNDLED_LIMITERS is disabled in PROPRIETARY mode.")
   set(ENABLE_GPL_BUNDLED_LIMITERS OFF CACHE BOOL "Enable bundled GPL limiters (OSS mode only)" FORCE)
@@ -108,6 +116,7 @@ add_library(automix_core
   src/analysis/ArtifactRiskEstimator.cpp
   src/analysis/StemHealthAssistant.cpp
   src/analysis/StemAnalyzer.cpp
+  src/analysis/SpectrogramFrontEnd.cpp
   src/automix/HeuristicAutoMixStrategy.cpp
   src/automaster/HeuristicAutoMasterStrategy.cpp
   src/automaster/ItoMasterStrategy.cpp
@@ -144,33 +153,73 @@ add_library(automix_core
   src/ai/GpuCapabilityDetector.cpp
   src/ai/StemSeparator.cpp
   src/ai/StemRoleClassifierAI.cpp
+  src/ai/TensorTypes.cpp
+  src/ai/SeparationRunner.cpp
+  src/ai/OnnxTensorInference.cpp
+  src/ai/OrtRuntime.cpp
+  src/ai/OnnxExternalData.cpp
+  src/ai/GpuMemory.cpp
+  src/ai/GpuRuntimePack.cpp
+  src/ai/ModelStorage.cpp
   src/util/StringUtils.cpp
   src/util/LameDownloader.cpp
   src/util/MetadataPolicy.cpp
   src/util/WavWriter.cpp
 )
 
-target_include_directories(automix_core PUBLIC src)
+target_include_directories(automix_core PUBLIC src "${CMAKE_BINARY_DIR}/generated")
+
+include(cmake/PhaseLimiterPins.cmake)
+automix_generate_phaselimiter_pins_header()
+
+if(WIN32)
+  # GpuRuntimePack reads adapter memory through DXGI to decide whether to offer CUDA.
+  target_link_libraries(automix_core PRIVATE dxgi)
+endif()
 
 set(AUTOMIX_HAS_NATIVE_ORT OFF)
 set(AUTOMIX_HAS_EP_PLUGIN OFF)
 set(AUTOMIX_HAS_EP_CONTEXT OFF)
+option(AUTOMIX_FETCH_ORT "Automatically fetch pinned ONNX Runtime release archive" OFF)
+set(AUTOMIX_ORT_VERSION "1.30.0" CACHE STRING "ONNX Runtime version to fetch")
+set(AUTOMIX_ORT_FLAVOR "cpu" CACHE STRING "ONNX Runtime flavor (cpu or cuda)")
+
 if(ENABLE_ONNX)
-  find_path(ONNXRUNTIME_INCLUDE_DIR
-    NAMES onnxruntime_cxx_api.h
-    PATH_SUFFIXES onnxruntime/core/session
-  )
-  find_library(ONNXRUNTIME_LIBRARY NAMES onnxruntime)
-  if(ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY)
+  if(AUTOMIX_FETCH_ORT)
+    include(cmake/FetchOnnxRuntime.cmake)
     target_include_directories(automix_core PUBLIC ${ONNXRUNTIME_INCLUDE_DIR})
-    target_link_libraries(automix_core PUBLIC ${ONNXRUNTIME_LIBRARY})
+    if(TARGET onnxruntime::onnxruntime)
+      target_link_libraries(automix_core PUBLIC onnxruntime::onnxruntime)
+    else()
+      target_link_libraries(automix_core PUBLIC ${ONNXRUNTIME_LIBRARY})
+    endif()
     set(AUTOMIX_HAS_NATIVE_ORT ON)
+  else()
+    find_path(ONNXRUNTIME_INCLUDE_DIR
+      NAMES onnxruntime_cxx_api.h
+      PATH_SUFFIXES onnxruntime/core/session
+    )
+    find_library(ONNXRUNTIME_LIBRARY NAMES onnxruntime)
+    if(ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY)
+      target_include_directories(automix_core PUBLIC ${ONNXRUNTIME_INCLUDE_DIR})
+      target_link_libraries(automix_core PUBLIC ${ONNXRUNTIME_LIBRARY})
+      set(AUTOMIX_HAS_NATIVE_ORT ON)
+      message(WARNING "Using unpinned external ONNX Runtime. Recommended: configure with -DAUTOMIX_FETCH_ORT=ON")
+    endif()
+  endif()
+
+  if(AUTOMIX_HAS_NATIVE_ORT)
+    target_compile_definitions(automix_core PUBLIC AUTOMIX_ORT_EXPECTED_VERSION="${AUTOMIX_ORT_VERSION}")
 
     # Feature-detect the optional APIs rather than parsing a version string out of
     # the headers. ONNX Runtime does not expose a reliable single version macro, and
     # a header either declares an entry point or it does not, which is exact where a
     # parsed version is only a guess.
-    file(GLOB _ort_api_headers "${ONNXRUNTIME_INCLUDE_DIR}/onnxruntime/core/session/onnxruntime_c*_api.h")
+    # The official release archives ship a flat include/ directory; source-tree
+    # installs nest the same headers under onnxruntime/core/session/.
+    file(GLOB _ort_api_headers
+      "${ONNXRUNTIME_INCLUDE_DIR}/onnxruntime_c*_api.h"
+      "${ONNXRUNTIME_INCLUDE_DIR}/onnxruntime/core/session/onnxruntime_c*_api.h")
     foreach(_ort_header IN LISTS _ort_api_headers)
       file(STRINGS "${_ort_header}" _ort_header_text)
       if(_ort_header_text MATCHES "RegisterExecutionProviderLibrary")
@@ -197,6 +246,114 @@ if(ENABLE_ONNX)
   endif()
 endif()
 
+set(AUTOMIX_WEBGPU_PLUGIN_DIR "" CACHE PATH "Directory holding the ONNX Runtime WebGPU plugin EP (onnxruntime_providers_webgpu + dxcompiler/dxil on Windows)")
+
+set(AUTOMIX_ORT_RUNTIME_FILES "")
+if(AUTOMIX_HAS_NATIVE_ORT)
+  get_filename_component(_ort_lib_dir "${ONNXRUNTIME_LIBRARY}" DIRECTORY)
+  if(WIN32)
+    foreach(_core_dll onnxruntime.dll onnxruntime_providers_shared.dll onnxruntime_providers_cuda.dll)
+      if(EXISTS "${_ort_lib_dir}/${_core_dll}")
+        list(APPEND AUTOMIX_ORT_RUNTIME_FILES "${_ort_lib_dir}/${_core_dll}")
+      endif()
+    endforeach()
+    if(AUTOMIX_WEBGPU_PLUGIN_DIR)
+      foreach(_webgpu_dll onnxruntime_providers_webgpu.dll dxcompiler.dll dxil.dll)
+        set(_webgpu_file "${AUTOMIX_WEBGPU_PLUGIN_DIR}/${_webgpu_dll}")
+        if(EXISTS "${_webgpu_file}")
+          list(APPEND AUTOMIX_ORT_RUNTIME_FILES "${_webgpu_file}")
+        else()
+          message(WARNING "WebGPU plugin file missing: ${_webgpu_file}")
+        endif()
+      endforeach()
+    endif()
+  elseif(APPLE)
+    file(GLOB _ort_dylibs LIST_DIRECTORIES false "${_ort_lib_dir}/libonnxruntime*.dylib")
+    foreach(_dylib IN LISTS _ort_dylibs)
+      if(NOT _dylib MATCHES "providers_tensorrt")
+        list(APPEND AUTOMIX_ORT_RUNTIME_FILES "${_dylib}")
+      endif()
+    endforeach()
+    if(AUTOMIX_WEBGPU_PLUGIN_DIR)
+      set(_webgpu_dylib "${AUTOMIX_WEBGPU_PLUGIN_DIR}/libonnxruntime_providers_webgpu.dylib")
+      if(EXISTS "${_webgpu_dylib}")
+        list(APPEND AUTOMIX_ORT_RUNTIME_FILES "${_webgpu_dylib}")
+      endif()
+    endif()
+  elseif(UNIX)
+    file(GLOB _ort_sos LIST_DIRECTORIES false "${_ort_lib_dir}/libonnxruntime*.so*")
+    foreach(_so IN LISTS _ort_sos)
+      if(NOT _so MATCHES "providers_tensorrt")
+        list(APPEND AUTOMIX_ORT_RUNTIME_FILES "${_so}")
+      endif()
+    endforeach()
+    if(AUTOMIX_WEBGPU_PLUGIN_DIR)
+      set(_webgpu_so "${AUTOMIX_WEBGPU_PLUGIN_DIR}/libonnxruntime_providers_webgpu.so")
+      if(EXISTS "${_webgpu_so}")
+        list(APPEND AUTOMIX_ORT_RUNTIME_FILES "${_webgpu_so}")
+      else()
+        message(WARNING "WebGPU plugin file missing: ${_webgpu_so}")
+      endif()
+    endif()
+  endif()
+endif()
+
+function(automix_stage_ort TARGET_NAME)
+  if(NOT AUTOMIX_HAS_NATIVE_ORT OR NOT AUTOMIX_ORT_RUNTIME_FILES)
+    return()
+  endif()
+  if(WIN32)
+    set(_staging_files ${AUTOMIX_ORT_RUNTIME_FILES})
+    if(AUTOMIX_CUDA_RUNTIME_DIR)
+      file(GLOB _automix_cuda_dlls "${AUTOMIX_CUDA_RUNTIME_DIR}/*.dll")
+      list(APPEND _staging_files ${_automix_cuda_dlls})
+    endif()
+    add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_staging_files} "$<TARGET_FILE_DIR:${TARGET_NAME}>"
+      VERBATIM)
+  elseif(APPLE)
+    get_target_property(_is_bundle ${TARGET_NAME} MACOSX_BUNDLE)
+    if(_is_bundle)
+      add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${TARGET_NAME}>/../Frameworks"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${AUTOMIX_ORT_RUNTIME_FILES} "$<TARGET_FILE_DIR:${TARGET_NAME}>/../Frameworks"
+        VERBATIM)
+    else()
+      add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${TARGET_NAME}>/lib"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${AUTOMIX_ORT_RUNTIME_FILES} "$<TARGET_FILE_DIR:${TARGET_NAME}>/lib"
+        VERBATIM)
+    endif()
+  elseif(UNIX)
+    add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${TARGET_NAME}>/lib"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${AUTOMIX_ORT_RUNTIME_FILES} "$<TARGET_FILE_DIR:${TARGET_NAME}>/lib"
+      VERBATIM)
+  endif()
+endfunction()
+
+function(automix_set_rpath TARGET_NAME)
+  if(APPLE)
+    get_target_property(_is_bundle ${TARGET_NAME} MACOSX_BUNDLE)
+    if(_is_bundle)
+      set_target_properties(${TARGET_NAME} PROPERTIES
+        BUILD_RPATH "@executable_path/../Frameworks"
+        INSTALL_RPATH "@executable_path/../Frameworks"
+      )
+    else()
+      set_target_properties(${TARGET_NAME} PROPERTIES
+        BUILD_RPATH "@loader_path/lib"
+        INSTALL_RPATH "@loader_path/lib"
+      )
+    endif()
+  elseif(UNIX AND NOT APPLE)
+    set_target_properties(${TARGET_NAME} PROPERTIES
+      BUILD_RPATH "$ORIGIN/lib"
+      INSTALL_RPATH "$ORIGIN/lib"
+    )
+  endif()
+endfunction()
+
 target_link_libraries(automix_core
   PUBLIC
     nlohmann_json::nlohmann_json
@@ -204,6 +361,11 @@ target_link_libraries(automix_core
     juce::juce_audio_formats
     juce::juce_dsp
 )
+
+if(AUTOMIX_JUCE_USE_CURL)
+  find_package(CURL REQUIRED)
+  target_link_libraries(automix_core PUBLIC CURL::libcurl)
+endif()
 
 set(LIBEBUR128_BACKEND_AVAILABLE OFF)
 if(ENABLE_LIBEBUR128)
@@ -230,7 +392,7 @@ target_compile_definitions(automix_core
     SESSION_SCHEMA_VERSION=2
     DISTRIBUTION_MODE_${DISTRIBUTION_MODE}=1
     JUCE_WEB_BROWSER=0
-    JUCE_USE_CURL=0
+    JUCE_USE_CURL=${AUTOMIX_JUCE_USE_CURL}
     $<$<BOOL:${ENABLE_PHASELIMITER}>:ENABLE_PHASELIMITER=1>
     $<$<BOOL:${ENABLE_ONNX}>:ENABLE_ONNX=1>
     $<$<BOOL:${ENABLE_RTNEURAL}>:ENABLE_RTNEURAL=1>
@@ -268,7 +430,13 @@ if(ENABLE_SANITIZERS)
   endif()
 endif()
 
+set(_automix_needs_curl FALSE)
+if(AUTOMIX_JUCE_USE_CURL)
+  set(_automix_needs_curl TRUE)
+endif()
+
 juce_add_gui_app(AutoMixMasterApp
+  NEEDS_CURL ${_automix_needs_curl}
   PRODUCT_NAME "AutoMixMaster"
   COMPANY_NAME "AutoMixMaster"
   ICON_BIG "assets/icon.png"
@@ -316,19 +484,30 @@ target_link_libraries(AutoMixMasterApp
 
 target_compile_definitions(AutoMixMasterApp PRIVATE
   JUCE_WEB_BROWSER=0
-  JUCE_USE_CURL=0
+  JUCE_USE_CURL=${AUTOMIX_JUCE_USE_CURL}
 )
 
-if(EXISTS "${CMAKE_SOURCE_DIR}/assets/phaselimiter")
-  add_custom_command(TARGET AutoMixMasterApp POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:AutoMixMasterApp>/assets"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            "${CMAKE_SOURCE_DIR}/assets/phaselimiter"
-            "$<TARGET_FILE_DIR:AutoMixMasterApp>/assets/phaselimiter"
-    COMMENT "Copying bundled PhaseLimiter assets next to AutoMixMaster executable"
-    VERBATIM
-  )
+# Pinned PhaseLimiter fetching and staging
+# Defaults ON whenever assets/phaselimiter/bin has no native binary for the platform key.
+include(cmake/FetchPhaseLimiter.cmake)
+automix_phaselimiter_platform_key(_automix_host_pl_key)
+if(_automix_host_pl_key STREQUAL "windows-x64")
+  set(_automix_native_bin_name "phase_limiter.exe")
+else()
+  set(_automix_native_bin_name "phase_limiter")
 endif()
+
+if(EXISTS "${CMAKE_SOURCE_DIR}/assets/phaselimiter/bin/${_automix_native_bin_name}")
+  set(AUTOMIX_FETCH_PHASELIMITER_DEFAULT OFF)
+else()
+  set(AUTOMIX_FETCH_PHASELIMITER_DEFAULT ON)
+endif()
+option(AUTOMIX_FETCH_PHASELIMITER "Fetch and stage pinned PhaseLimiter release archive" ${AUTOMIX_FETCH_PHASELIMITER_DEFAULT})
+
+if(AUTOMIX_FETCH_PHASELIMITER)
+  include(cmake/FetchPhaseLimiter.cmake)
+endif()
+
 
 if(EXISTS "${CMAKE_SOURCE_DIR}/assets/limiters")
   add_custom_command(TARGET AutoMixMasterApp POST_BUILD
@@ -371,7 +550,11 @@ if(BUILD_TESTING)
     tests/unit/TestMain.cpp
     tests/unit/ControllerTests.cpp
     tests/unit/TaskCenterPanelTests.cpp
+    tests/unit/ControlDeckTests.cpp
+    tests/unit/UiDecisionTests.cpp
     tests/unit/SessionSerializationTests.cpp
+    tests/unit/LameDownloaderTests.cpp
+    src/app/ui/SessionManager.cpp
     tests/unit/AudioIoTests.cpp
     tests/unit/AnalysisTests.cpp
     tests/unit/StemOriginSafetyTests.cpp
@@ -401,6 +584,7 @@ if(BUILD_TESTING)
     tests/unit/OfflineRenderPipelineTests.cpp
     tests/unit/OnnxModelInferenceTests.cpp
     tests/unit/StemSeparatorTests.cpp
+    tests/unit/TensorInferenceTests.cpp
     tests/unit/ModelBenchmarkTests.cpp
     tests/unit/GpuBenchmarkTests.cpp
     tests/regression/RegressionHarness.cpp
@@ -410,6 +594,9 @@ if(BUILD_TESTING)
     tests/integration/PipelineIntegrationTests.cpp
     src/app/ui/TaskCenterPanel.cpp
     src/app/style/AutoMixLookAndFeel.cpp
+    src/app/ui/ControlDeck.cpp
+    src/app/ui/StemPanel.cpp
+    src/app/ui/GlowMeters.cpp
     src/app/controllers/ModelController.cpp
     src/app/controllers/ImportController.cpp
     src/app/controllers/ExportController.cpp
@@ -420,7 +607,7 @@ if(BUILD_TESTING)
     src/app/controllers/OriginalMixController.cpp
   )
 
-  target_include_directories(automix_tests PRIVATE src tests/regression tests/integration)
+  target_include_directories(automix_tests PRIVATE src tests/regression tests/integration tools)
   target_link_libraries(automix_tests PRIVATE automix_core Catch2::Catch2WithMain juce::juce_gui_extra)
   target_compile_definitions(automix_tests PRIVATE
     AUTOMIX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -452,4 +639,167 @@ if(BUILD_TESTING)
   include(CTest)
   include(${Catch2_SOURCE_DIR}/extras/Catch.cmake)
   catch_discover_tests(automix_tests)
+  add_test(NAME cmake_phaselimiter_arch COMMAND ${CMAKE_COMMAND} -P ${CMAKE_SOURCE_DIR}/tests/cmake/phaselimiter_arch_test.cmake)
+  add_test(NAME cmake_phaselimiter_install_guard COMMAND ${CMAKE_COMMAND} -P ${CMAKE_SOURCE_DIR}/tests/cmake/phaselimiter_install_guard_test.cmake)
+  set_tests_properties(cmake_phaselimiter_install_guard PROPERTIES LABELS "slow")
 endif()
+
+# Stage ONNX Runtime (and, optionally, CUDA/cuDNN) DLLs beside each executable,
+# and configure rpath for Linux ($ORIGIN/lib) and macOS (@executable_path/../Frameworks, @loader_path/lib).
+set(AUTOMIX_CUDA_RUNTIME_DIR "" CACHE PATH "Folder of CUDA runtime + cuDNN DLLs staged next to executables (optional)")
+
+automix_stage_ort(AutoMixMasterApp)
+if(COMMAND automix_stage_phaselimiter)
+  automix_stage_phaselimiter(AutoMixMasterApp)
+endif()
+automix_set_rpath(AutoMixMasterApp)
+
+if(TARGET automix_dev_tools)
+  automix_stage_ort(automix_dev_tools)
+  if(COMMAND automix_stage_phaselimiter)
+    automix_stage_phaselimiter(automix_dev_tools)
+  endif()
+  automix_set_rpath(automix_dev_tools)
+endif()
+
+if(TARGET automix_tests)
+  automix_stage_ort(automix_tests)
+  if(COMMAND automix_stage_phaselimiter)
+    automix_stage_phaselimiter(automix_tests)
+  endif()
+  automix_set_rpath(automix_tests)
+endif()
+
+if(TARGET automix_regression_cli)
+  automix_stage_ort(automix_regression_cli)
+  if(COMMAND automix_stage_phaselimiter)
+    automix_stage_phaselimiter(automix_regression_cli)
+  endif()
+  automix_set_rpath(automix_regression_cli)
+endif()
+
+# ── Release packaging (Cross-platform portable package via CPack) ─────────────
+# cmake --install <build> --config Release --component application --prefix <dir>
+# or: cpack -C Release. Only the "application" component is packaged.
+install(TARGETS AutoMixMasterApp
+  RUNTIME DESTINATION . COMPONENT application
+  BUNDLE DESTINATION . COMPONENT application
+  RESOURCE DESTINATION . COMPONENT application
+)
+
+if(AUTOMIX_HAS_NATIVE_ORT AND AUTOMIX_ORT_RUNTIME_FILES)
+  if(WIN32)
+    install(FILES ${AUTOMIX_ORT_RUNTIME_FILES} DESTINATION . COMPONENT application)
+  elseif(APPLE)
+    install(FILES ${AUTOMIX_ORT_RUNTIME_FILES} DESTINATION "AutoMixMaster.app/Contents/Frameworks" COMPONENT application)
+  elseif(UNIX)
+    install(FILES ${AUTOMIX_ORT_RUNTIME_FILES} DESTINATION lib COMPONENT application)
+  endif()
+endif()
+
+if(APPLE)
+  set(_automix_pl_dest "AutoMixMaster.app/Contents/MacOS/assets/phaselimiter")
+else()
+  set(_automix_pl_dest "assets/phaselimiter")
+endif()
+
+set(_automix_pl_install_root "")
+if(AUTOMIX_PHASELIMITER_ROOT)
+  set(_automix_pl_install_root "${AUTOMIX_PHASELIMITER_ROOT}")
+elseif(EXISTS "${CMAKE_SOURCE_DIR}/assets/phaselimiter")
+  set(_automix_pl_install_root "${CMAKE_SOURCE_DIR}/assets/phaselimiter")
+endif()
+
+if(_automix_pl_install_root)
+  foreach(_dir bin resource licenses)
+    if(EXISTS "${_automix_pl_install_root}/${_dir}")
+      install(DIRECTORY "${_automix_pl_install_root}/${_dir}" DESTINATION "${_automix_pl_dest}" COMPONENT application)
+    endif()
+  endforeach()
+  foreach(_file LICENSE README.md)
+    if(EXISTS "${_automix_pl_install_root}/${_file}")
+      install(FILES "${_automix_pl_install_root}/${_file}" DESTINATION "${_automix_pl_dest}" COMPONENT application)
+    endif()
+  endforeach()
+endif()
+
+# Hard guard for PhaseLimiter: fail the install if no native PhaseLimiter binary or reference file is packaged
+if(ENABLE_PHASELIMITER)
+  install(CODE "
+    set(_pl_bin_check \"\${CMAKE_INSTALL_PREFIX}/${_automix_pl_dest}/bin/${_automix_native_bin_name}\")
+    set(_pl_res_check \"\${CMAKE_INSTALL_PREFIX}/${_automix_pl_dest}/resource/mastering_reference.json\")
+    if(NOT EXISTS \"\${_pl_bin_check}\" OR NOT EXISTS \"\${_pl_res_check}\")
+      message(FATAL_ERROR \"Package has no native PhaseLimiter for ${_automix_host_pl_key}\")
+    endif()
+  " COMPONENT application)
+endif()
+if(EXISTS "${CMAKE_SOURCE_DIR}/assets/limiters")
+  install(DIRECTORY "${CMAKE_SOURCE_DIR}/assets/limiters" DESTINATION assets COMPONENT application)
+endif()
+foreach(_doc NOTICE LICENSE README.md)
+  if(EXISTS "${CMAKE_SOURCE_DIR}/${_doc}")
+    install(FILES "${CMAKE_SOURCE_DIR}/${_doc}" DESTINATION . COMPONENT application)
+  endif()
+endforeach()
+
+# macOS arm64: re-sign every bundled dylib with runtime hardened options before final packaging
+if(APPLE)
+  install(CODE [[
+    file(GLOB _framework_dylibs "${CMAKE_INSTALL_PREFIX}/AutoMixMaster.app/Contents/Frameworks/*.dylib")
+    foreach(_dylib IN LISTS _framework_dylibs)
+      execute_process(COMMAND codesign --force --options runtime --sign - "${_dylib}")
+    endforeach()
+  ]] COMPONENT application)
+endif()
+
+# Hard guard for NOTICE's promises: fail the install if a model file or an
+# NVIDIA CUDA library got into the package.
+install(CODE [[
+  file(GLOB_RECURSE _automix_forbidden
+    "${CMAKE_INSTALL_PREFIX}/*.onnx" "${CMAKE_INSTALL_PREFIX}/*.onnx.data"
+    "${CMAKE_INSTALL_PREFIX}/*cudart*.dll" "${CMAKE_INSTALL_PREFIX}/*cublas*.dll"
+    "${CMAKE_INSTALL_PREFIX}/*cudnn*.dll" "${CMAKE_INSTALL_PREFIX}/*cufft*.dll"
+    "${CMAKE_INSTALL_PREFIX}/*libcudart*.so*" "${CMAKE_INSTALL_PREFIX}/*libcublas*.so*"
+    "${CMAKE_INSTALL_PREFIX}/*libcudnn*.so*" "${CMAKE_INSTALL_PREFIX}/*libcufft*.so*"
+    "${CMAKE_INSTALL_PREFIX}/*libcudart*.dylib*" "${CMAKE_INSTALL_PREFIX}/*libcublas*.dylib*"
+    "${CMAKE_INSTALL_PREFIX}/*libcudnn*.dylib*" "${CMAKE_INSTALL_PREFIX}/*libcufft*.dylib*")
+  if(_automix_forbidden)
+    message(FATAL_ERROR "Package must not contain model weights or NVIDIA CUDA libraries: ${_automix_forbidden}")
+  endif()
+]] COMPONENT application)
+
+set(CPACK_PACKAGE_NAME "AutoMixMaster")
+set(CPACK_PACKAGE_VENDOR "AutoMixMaster")
+
+if(WIN32)
+  set(CPACK_GENERATOR ZIP)
+  if(AUTOMIX_HAS_NATIVE_ORT)
+    get_filename_component(_ort_pkg_dir "${ONNXRUNTIME_LIBRARY}" DIRECTORY)
+    if(EXISTS "${_ort_pkg_dir}/onnxruntime_providers_cuda.dll" OR AUTOMIX_ORT_FLAVOR STREQUAL "cuda")
+      set(CPACK_PACKAGE_FILE_NAME "AutoMixMaster-${PROJECT_VERSION}-win64-cuda")
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64")
+      set(CPACK_PACKAGE_FILE_NAME "AutoMixMaster-${PROJECT_VERSION}-winarm64")
+    else()
+      set(CPACK_PACKAGE_FILE_NAME "AutoMixMaster-${PROJECT_VERSION}-win64")
+    endif()
+  else()
+    set(CPACK_PACKAGE_FILE_NAME "AutoMixMaster-${PROJECT_VERSION}-win64")
+  endif()
+elseif(APPLE)
+  set(CPACK_GENERATOR TGZ)
+  set(CPACK_PACKAGE_FILE_NAME "AutoMixMaster-${PROJECT_VERSION}-macos-arm64")
+elseif(UNIX)
+  set(CPACK_GENERATOR TGZ)
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64")
+    set(CPACK_PACKAGE_FILE_NAME "AutoMixMaster-${PROJECT_VERSION}-linux-arm64")
+  else()
+    set(CPACK_PACKAGE_FILE_NAME "AutoMixMaster-${PROJECT_VERSION}-linux-x64")
+  endif()
+endif()
+
+set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY ON)
+set(CPACK_COMPONENTS_ALL application)
+set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
+set(CPACK_COMPONENTS_GROUPING ALL_COMPONENTS_IN_ONE)
+include(CPack)
+

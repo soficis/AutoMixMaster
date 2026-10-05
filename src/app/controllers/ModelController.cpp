@@ -1,5 +1,7 @@
 #include "app/controllers/ModelController.h"
 
+#include "ai/ModelStorage.h"
+
 #include <algorithm>
 #include <cctype>
 #include <fstream>
@@ -16,7 +18,7 @@ namespace automix::app {
 namespace {
 
 std::filesystem::path defaultModelHubRoot() {
-  return std::filesystem::path("assets") / "modelhub";
+  return ai::defaultModelHubRoot();
 }
 
 nlohmann::json loadJsonIfPresent(const std::filesystem::path& path) {
@@ -843,10 +845,21 @@ void ModelController::uninstallModel(const std::string& modelId, std::atomic_boo
             detail = "Model is not currently installed.";
           } else {
             std::error_code error;
-            if (!installPath.empty() && std::filesystem::exists(installPath, error)) {
+            // The path comes from install_registry.json: only ever delete inside
+            // the hub, whatever that file says.
+            // A stale entry whose directory is already gone (e.g. an unmigrated
+            // legacy path) is only unregistered, so it cannot get stuck.
+            const bool outsideHub = !installPath.empty() && !ai::isInsideDirectory(installPath, hubRoot) &&
+                                    std::filesystem::exists(installPath, error);
+            error.clear();
+            if (outsideHub) {
+              detail = "Refusing to remove '" + installPath.string() + "': it is outside the model hub " + hubRoot.string();
+            } else if (!installPath.empty() && std::filesystem::exists(installPath, error)) {
               std::filesystem::remove_all(installPath, error);
             }
-            if (error) {
+            if (outsideHub) {
+              // leave the registry entry: nothing was removed
+            } else if (error) {
               detail = "Failed removing install directory: " + installPath.string();
             } else {
               registry.erase(matchIt);

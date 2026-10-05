@@ -14,7 +14,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include "ai/GpuMemory.h"
+#include "ai/ModelPackLoader.h"
 #include "ai/OnnxModelInference.h"
+#include "ai/OnnxTensorInference.h"
+#include "ai/SeparationRunner.h"
 #include "domain/StemOrigin.h"
 #include "domain/StemRole.h"
 #include "engine/AudioFileIO.h"
@@ -590,7 +594,7 @@ OverlapAddResult runModelBackedOverlapAdd(const engine::AudioBuffer& mixBuffer,
     return result;
   }
 
-  result.stems.reserve(result.stemCount);
+  result.stems.reserve(static_cast<size_t>(result.stemCount));
   for (int index = 0; index < result.stemCount; ++index) {
     result.stems.emplace_back(channels, samples, mixBuffer.getSampleRate());
   }
@@ -982,6 +986,142 @@ void writeQaBundle(const std::filesystem::path& path,
   out << qa.dump(2);
 }
 
+// A tensor pack at `modelRoot`, or nullopt with the reason. Never throws: a
+// malformed manifest is a reason to fall back, not a failed import.
+std::optional<ModelPack> loadTensorPack(const std::filesystem::path& modelRoot, std::string& reasonOut) {
+  try {
+    auto pack = ModelPackLoader().load(modelRoot);
+    if (!pack.has_value()) {
+      reasonOut = "no model pack manifest at " + modelRoot.string();
+      return std::nullopt;
+    }
+    if (!pack->tensorContract.has_value()) {
+      reasonOut = "model pack '" + pack->id + "' has no tensor_contract";
+      return std::nullopt;
+    }
+    std::error_code error;
+    if (pack->modelFile.empty() || !std::filesystem::is_regular_file(modelRoot / pack->modelFile, error) || error) {
+      reasonOut = "model pack '" + pack->id + "' is missing its model file '" + pack->modelFile + "'";
+      return std::nullopt;
+    }
+    return pack;
+  } catch (const std::exception& exception) {
+    reasonOut = std::string("model pack manifest could not be read: ") + exception.what();
+    return std::nullopt;
+  }
+}
+
+domain::StemRole roleForTensorStem(const std::string& name) {
+  if (name == "vocals") {
+    return domain::StemRole::Vocals;
+  }
+  if (name == "instrumental") {
+    return domain::StemRole::Music;
+  }
+  return domain::StemRole::Unknown;
+}
+
+// Runs the tensor pack end to end and writes one WAV per stem. On any failure
+// returns success == false with the reason and leaves no stems in the result;
+// the caller then takes the existing path.
+StemSeparator::SeparationResult runTensorSeparation(const std::filesystem::path& modelRoot,
+                                                    const engine::AudioBuffer& mix,
+                                                    const std::filesystem::path& outputDir,
+                                                    const StemSeparator::SeparationOptions& options) {
+  StemSeparator::SeparationResult result;
+  std::string reason;
+  const auto pack = loadTensorPack(modelRoot, reason);
+  if (!pack.has_value()) {
+    result.logMessage = reason;
+    return result;
+  }
+
+  auto config = runnerConfigFromContract(*pack->tensorContract, reason);
+  if (!config.has_value()) {
+    result.logMessage = "tensor_contract rejected: " + reason;
+    return result;
+  }
+  config->progressCallback = options.tensorProgress;
+  config->cancelRequested = options.cancelRequested;
+
+  // A GPU session can open and still fail mid-run (out of device memory, an
+  // unsupported kernel), so a GPU failure gets exactly one retry on CPU.
+  SeparationRunner::Result separated;
+  std::string provider;
+  std::string gpuFailure;
+  auto firstProvider = options.executionProvider;
+  if (firstProvider != "cpu" && pack->gpuMemoryMb.has_value()) {
+    // Not enough free device memory means the run would spill into shared
+    // system memory, which measured slower than running on CPU outright.
+    const auto requiredBytes = *pack->gpuMemoryMb * 1024 * 1024;
+    const auto memory = queryCudaDeviceMemory();
+    if (!gpuHasRoomNow(memory, requiredBytes)) {
+      firstProvider = "cpu";
+      gpuFailure = "GPU has " + std::to_string(memory->freeBytes / (1024 * 1024)) + " MiB free but the model needs " +
+                   std::to_string(*pack->gpuMemoryMb) + " MiB; ran on cpu. ";
+    }
+  }
+  for (const auto& requested : {firstProvider, std::string("cpu")}) {
+    OnnxTensorInference inference;
+    inference.setGpuProviderAllowList(pack->gpuProviders);
+    inference.setTensorContract(pack->tensorContract);
+    inference.setExecutionProvider(requested);
+    if (!inference.loadModel(modelRoot / pack->modelFile)) {
+      result.logMessage = gpuFailure + "tensor model did not load: " + inference.backendDiagnostics();
+      return result;
+    }
+    provider = inference.activeExecutionProvider();
+    separated = SeparationRunner::separate(mix, inference, *config);
+    if (separated.cancelled) {
+      result.cancelled = true;
+      result.logMessage = separated.logMessage;
+      return result;
+    }
+    if (separated.usedModel || provider == "cpu") {
+      break;
+    }
+    gpuFailure = "on " + provider + ": " + separated.logMessage + "; retried on cpu. ";
+  }
+  if (!separated.usedModel) {
+    result.logMessage = "tensor separation failed: " + gpuFailure + separated.logMessage;
+    return result;
+  }
+
+  util::WavWriter writer;
+  for (std::size_t index = 0; index < separated.stemAudio.size(); ++index) {
+    const auto& name = separated.stemNames[index];
+    const auto stemPath = outputDir / ("stem_" + name + ".wav");
+    writer.write(stemPath, separated.stemAudio[index], 24);
+    result.generatedFiles.push_back(stemPath);
+
+    // No separationConfidence / separationArtifactRisk: the graph reports
+    // neither, and a hardcoded number would read as a measurement.
+    domain::Stem stem;
+    stem.id = "sep_" + name;
+    stem.name = "Separated " + titleCase(name);
+    stem.filePath = stemPath.string();
+    stem.role = roleForTensorStem(name);
+    stem.origin = domain::StemOrigin::Separated;
+    stem.enabled = true;
+    result.stems.push_back(std::move(stem));
+  }
+
+  std::string residuals;
+  for (const auto& stem : pack->tensorContract->stems) {
+    if (!stem.residualOf.empty()) {
+      residuals += " '" + stem.name + "' is the residual (mix - " + stem.residualOf + "), not a second separation.";
+    }
+  }
+
+  result.success = true;
+  result.usedModel = true;
+  result.stemVariantCount = static_cast<int>(result.stems.size());
+  result.qaMetrics = computeQaMetrics(mix, separated.stemAudio);
+  result.logMessage = "Tensor separation via pack '" + pack->id + "' on " + provider + "." + residuals + " " +
+                      gpuFailure + separated.logMessage;
+  return result;
+}
+
 } // namespace
 
 StemSeparator::StemSeparator(std::filesystem::path modelRoot) : modelRoot_(std::move(modelRoot)) {}
@@ -1010,6 +1150,16 @@ bool StemSeparator::isModelAvailable() const {
   return !resolveModelPath().empty();
 }
 
+bool StemSeparator::isTensorModelAvailable() const {
+  std::string reason;
+  return loadTensorPack(modelRoot_, reason).has_value();
+}
+
+StemSeparator::SeparationResult StemSeparator::separate(const std::filesystem::path& mixPath,
+                                                        const std::filesystem::path& outputDir) const {
+  return separate(mixPath, outputDir, SeparationOptions{});
+}
+
 StemSeparator::SeparationResult StemSeparator::separate(const std::filesystem::path& mixPath,
                                                         const std::filesystem::path& outputDir,
                                                         const SeparationOptions& options) const {
@@ -1024,6 +1174,17 @@ StemSeparator::SeparationResult StemSeparator::separate(const std::filesystem::p
     }
 
     std::filesystem::create_directories(outputDir);
+
+    std::string tensorFallbackNote;
+    if (options.useTensorModel) {
+      auto tensorResult = runTensorSeparation(modelRoot_, mixBuffer, outputDir, options);
+      if (tensorResult.success || tensorResult.cancelled) {
+        // Cancelled is returned as-is: falling back would run the separation
+        // the user just stopped.
+        return tensorResult;
+      }
+      tensorFallbackNote = "Tensor separation unavailable (" + tensorResult.logMessage + "); existing separator used. ";
+    }
 
     auto variants = discoverModelVariants(modelRoot_);
     if (variants.empty()) {
@@ -1079,7 +1240,7 @@ StemSeparator::SeparationResult StemSeparator::separate(const std::filesystem::p
     result.stemVariantCount = separated.stemCount;
     result.qaMetrics = computeQaMetrics(mixBuffer, separated.stems);
     result.qaReportPath = outputDir / "separation_qa_report.json";
-    result.logMessage = separated.logMessage;
+    result.logMessage = tensorFallbackNote + separated.logMessage;
 
     writeQaBundle(result.qaReportPath, result, separated.stemRoles, separated, selectedVariant);
 

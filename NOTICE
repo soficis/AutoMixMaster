@@ -1,0 +1,185 @@
+AutoMixMaster — NOTICE
+======================
+
+This file records third-party material that AutoMixMaster can use, and the
+terms it is offered under. It is maintained by hand alongside
+docs/model-licensing-audit.json, which is the machine-readable manifest that
+tests assert against.
+
+
+1. AutoMixMaster itself
+-----------------------
+
+AutoMixMaster is licensed under the GNU General Public License, version 3
+(GPLv3). The GPLv3 notice is reproduced in the LICENSE file at the root of the
+source distribution.
+
+
+2. No model weights are distributed with this software
+-----------------------------------------------------
+
+AutoMixMaster ships NO model weights. No trained .onnx, .pt, .pth,
+.safetensors or .ckpt file is committed to the repository or bundled into a
+release build, and .gitignore excludes the model-hub install directories.
+
+The only .onnx files in the repository are the synthetic test graphs under
+tests/fixtures/tensor/ (a few hundred bytes each). They contain no trained
+weights - only fixed arithmetic such as an identity mask - and are regenerated
+by tests/fixtures/tensor/make_fixtures.py.
+
+Every model listed below is downloaded at runtime, by the user, directly from
+the publisher's own distribution point — a Hugging Face repository or a GitHub
+release. AutoMixMaster does not mirror, re-host, or redistribute any of them.
+
+This separation is deliberate and load-bearing: under GPLv3 section 5, an
+aggregate formed by a GPL-licensed program together with separately-licensed
+material is not itself a single combined work. Because the weights are never
+part of the distributed GPL work, a non-commercial or otherwise
+restrictive weight licence does not retroactively restrict the licence of the
+application, and equally does not relicense the weights. Users are
+responsible for their own compliance with each weight's terms.
+
+
+3. Attribution for the curated model catalogue
+----------------------------------------------
+
+These are the repositories AutoMixMaster offers in its curated catalog. The
+"Terms" column reproduces the license reported by the publisher's model card as
+of the audit date in docs/model-licensing-audit.json.
+
+  Repository                                              Terms          Consent
+  ------------------------------------------------------ -------------- -------
+  rysertio/Demucs-onnx                                    MIT            no
+  onnx-community/whisper-tiny.en                          MIT            no
+  onnx-community/whisper-small.en                         MIT            no
+  onnx-community/Musical-Instrument-Classification-ONNX  MIT            no
+  onnx-community/Speech-Emotion-Classification-ONNX       UNVERIFIED     YES
+  onnx-community/Musical-genres-Classification-Hubert-V1-ONNX  UNVERIFIED     YES
+  openai/whisper-tiny                                     MIT            no
+  laion/clap-htsat-unfused                                CC BY 4.0      no
+  pranjal-pravesh/PANNs_CNN14_ONNX                        MIT            no
+  StemSplitio/htdemucs-ft-onnx                            MIT            no
+  StemSplitio/htdemucs-6s-onnx                            MIT            no
+  SonyCSLParis/music2latent                              CC BY-NC 4.0   YES
+  kramp/ito-master-onnx                                   CC BY-NC 4.0   YES
+  xycld/BS-RoFormer-ONNX                                  MIT            no
+  MixDirective/open-unmix-umxhq-vocals-onnx               MIT            no
+
+  GitHub release sources, terms not yet verified:
+    smartdaze/otowake-oto                 (htdemucs_6s.onnx)
+    instant-high/Resemble-Denoiser-ONNX   (denoiser_fp16.onnx)
+
+
+4. How "Consent: YES" behaves in the application
+-----------------------------------------------
+
+A model marked "Consent: YES" is refused download and refused activation until
+the user explicitly acknowledges its terms. The acknowledgement is recorded in
+license_consents.json inside the model-hub directory, together with the model
+id, repository, license identifier, license URL, attribution string and a UTC
+timestamp.
+
+The consent decision is licence-driven rather than a fixed list: any model
+whose reported license is non-commercial (CC BY-NC, CC BY-NC-SA, and the
+like), or which declares no license at all, requires the same acknowledgement.
+An undeclared license is treated as requiring consent because permitted use
+cannot be established from it, and research-only use is the only defensible
+default until the publisher clarifies.
+
+Where a publisher's terms conflict — for example laion/clap-htsat-unfused,
+whose model card lists apache-2.0 while the LAION research repository is
+CC BY 4.0 — the more restrictive reading should be assumed until the publisher
+resolves it.
+
+
+5. Known attribution requirements
+---------------------------------
+
+  laion/clap-htsat-unfused (CC BY 4.0)
+      Attribution required. Credit LAION-AI / CLAP and link the licence:
+      https://creativecommons.org/licenses/by/4.0/
+
+  kramp/ito-master-onnx (CC BY-NC 4.0)
+      Non-commercial use only. Derived from ITO-Master by Sony
+      Research Center. Attribution required:
+      https://creativecommons.org/licenses/by-nc/4.0/
+
+  SonyCSLParis/music2latent (CC BY-NC 4.0)
+      Non-commercial use only. Attribution required:
+      https://creativecommons.org/licenses/by-nc/4.0/
+
+  xycld/BS-RoFormer-ONNX (MIT)
+      BS-RoFormer (Lu et al., arXiv 2309.02612), ONNX export by xycld.
+      https://opensource.org/license/mit
+      The catalog installs the fp32 build where a CUDA GPU session opens and
+      the uint8-quantized build otherwise; the quantized build's quality
+      relative to fp32 has not been formally measured. The fp32 export's
+      external weights are folded into one local .onnx file at install time.
+      No model file is re-hosted. The model separates vocals
+      only: the instrumental stem is the residual (mix - vocals), not a
+      second separation.
+
+  MixDirective/open-unmix-umxhq-vocals-onnx (MIT)
+      Open-Unmix UMX-HQ vocals (Stoter, Uhlich, Liutkus, Mitsufuji; (c) 2019
+      Inria), ONNX export by MixDirective.
+      https://opensource.org/license/mit
+      A 36 MB CPU-friendly alternative to BS-RoFormer for machines with little
+      memory; lower separation quality. No model file is re-hosted. The model
+      separates vocals only: the instrumental stem is the residual
+      (mix - vocals), not a second separation.
+
+
+6. Optional GPU runtime (NVIDIA CUDA libraries)
+-----------------------------------------------
+
+GPU acceleration of the vocal model uses NVIDIA's CUDA runtime, cuBLAS, cuFFT
+and cuDNN. AutoMixMaster does NOT ship or re-host them. On a machine with a
+suitable NVIDIA GPU the application offers a one-time, opt-in download of
+NVIDIA's own redistributable packages from pypi.org (pinned by SHA-256),
+installed for the current user under %LOCALAPPDATA%\AutoMixMaster\gpu-runtime.
+They are NVIDIA software, governed by NVIDIA's licence terms (the CUDA Toolkit
+EULA and the cuDNN Software License Agreement), not by this project's licence.
+Declining the download leaves every feature working on the CPU.
+
+7. Third-party build dependencies
+---------------------------------
+
+The application links against ONNX Runtime (MIT), JUCE (AGPLv3 or
+commercial), libebur128 (MIT) and nlohmann/json (MIT). Full third-party
+dependency details are listed in docs/third_party_registry.json.
+
+Note that ONNX Runtime is an OPTIONAL dependency. Builds made without it fall
+back to a deterministic adapter and model-backed features degrade to
+heuristics rather than failing.
+
+
+8. Optional external renderers: PhaseLimiter
+--------------------------------------------
+
+PhaseLimiter (https://github.com/ai-mastering/phaselimiter) is an optional
+external mastering renderer executing as a standalone child process. On Windows
+x64, it uses upstream release binaries. On Linux (x86_64, aarch64) and macOS
+(Apple Silicon, x86_64), it uses modernized portable builds
+(https://github.com/soficis/phaselimiter) release v0.2.0-native3.
+
+The PhaseLimiter portable distribution bundles third-party open-source components,
+whose full license texts are preserved under the licenses/ subdirectory:
+  - PhaseLimiter: MIT (Copyright (c) 2018-2020 Bakuage Co., Ltd.)
+  - oneTBB: Apache License 2.0 (Copyright (c) 2005-2024 Intel Corporation)
+  - PocketFFT: BSD-3-Clause (Copyright (c) 2010-2019 Max-Planck-Society)
+  - Boost: Boost Software License 1.0 (BSL-1.0)
+  - Eigen: Mozilla Public License 2.0 (MPL-2.0)
+  - Armadillo: Apache License 2.0 (Copyright 2008-2024 Conrad Sanderson and Ryan Curtin)
+  - libpng: libpng license (Copyright (c) 1995-2024 The PNG Reference Library Authors)
+  - zlib: zlib license (Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler)
+  - gflags: BSD-3-Clause (Copyright (c) 2006 Google Inc.)
+  - picojson: BSD-2-Clause (Copyright 2009-2010 Kazuho Oku)
+  - hnswlib: Apache License 2.0 (Copyright (c) 2017 Yury Malkov)
+  - libsimdpp: Boost Software License 1.0 (Copyright (c) 2011-2015 Povilas Kanapickas)
+  - OptimLib: Apache License 2.0 (Copyright (c) 2017-present Keith O'Hara)
+  - CImg: CeCILL-C (Copyright (c) David Tschumperle)
+
+Neither upstream PhaseLimiter nor the portable v0.2.0-native3 distribution links
+to or redistributes LGPL-licensed libsndfile: audio I/O uses an in-tree WAV
+implementation, and encoding/decoding relies on the user's system FFmpeg binary.
+

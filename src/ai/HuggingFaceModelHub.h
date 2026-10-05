@@ -88,8 +88,43 @@ class HuggingFaceModelHub {
                                   const std::string& fallbackQuery);
 };
 
+// Overrides the live revision and file hash with the pinned values for curated
+// repos that have them (Open-Unmix); other repos are left untouched.
+void applyCuratedPin(HubModelInfo& info);
+
 // Curated model catalogue (catalog-only discovery source). Exposed for
 // license-coverage tests and downstream hub tooling.
 std::vector<std::string> curatedModelIds();
+
+// The repo file an install downloads as the pack's model file; empty when the
+// repo offers nothing installable. Generic preference order, except for repos
+// whose correct file cannot be inferred from names (BS-RoFormer, spec D4).
+// preferGpuBuild selects a GPU-oriented variant where a repo has one.
+std::string primaryFileForRepo(const std::string& repoId,
+                               const std::vector<std::string>& files,
+                               bool* hasOnnxOut = nullptr,
+                               bool preferGpuBuild = false);
+
+// True when this machine should get BS-RoFormer's GPU (fp32) build: a CUDA
+// session opens and the device is large enough for the model.
+bool bsRoformerGpuBuildQualifies();
+
+// After GPU support appears (e.g. the GPU runtime pack was installed),
+// reinstalls a BS-RoFormer pack under `destinationRoot` that is still on its CPU
+// (quantized) build as the GPU build, and removes the superseded file. Empty
+// when there is no such pack or the machine does not qualify.
+std::optional<HubInstallResult> upgradeBsRoformerForGpu(const std::filesystem::path& destinationRoot);
+
+// Files that must be downloaded next to `primaryFile` to make a complete pack:
+// per-repo extras, plus "<primaryFile>.data" whenever the repo publishes one
+// (ONNX external weights, which the installer then inlines).
+std::vector<std::string> auxiliaryAssetsFor(const std::string& repoId,
+                                            const std::string& primaryFile,
+                                            const std::vector<std::string>& files);
+
+// Where a repo file lands on disk: always directly inside `installPath`, using
+// only the file's own name. Repo subfolders ("onnx/model.onnx") are dropped and
+// ".." segments can never escape the install directory.
+std::filesystem::path localAssetPath(const std::filesystem::path& installPath, const std::string& repoPath);
 
 } // namespace automix::ai

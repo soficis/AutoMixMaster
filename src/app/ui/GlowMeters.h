@@ -21,6 +21,9 @@ public:
   void setTruePeak(double truePeakDbtp);
   void setMomentaryLufs(double momentary);
 
+  /// Values at or below kNoSignalDb (or non-finite) read as "--".
+  static juce::String formatReadout(const juce::String& prefix, double value, const juce::String& unit);
+
 private:
   void timerCallback() override;
   void drawMeter(juce::Graphics& g, juce::Rectangle<float> bounds, float levelDb, float peakDb) const;
@@ -62,6 +65,7 @@ private:
   juce::Label momentaryLabel_;
   juce::Label lufsBarLabel_;
 
+  static constexpr double kNoSignalDb = -69.95;
   static constexpr float kMinDb = -60.0f;
   static constexpr float kMaxDb = 6.0f;
   static constexpr int kPeakHoldFrames = 40;

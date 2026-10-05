@@ -1,7 +1,9 @@
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <numbers>
 #include <optional>
@@ -13,6 +15,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <juce_events/juce_events.h>
+#include <nlohmann/json.hpp>
 
 #include "ai/ModelManager.h"
 #include "app/controllers/ExportController.h"
@@ -347,6 +350,86 @@ TEST_CASE("ModelController uninstall respects pre-set cancel", "[controllers][mo
 
   REQUIRE(waitFor([&]() { return cancelled.has_value(); }));
   REQUIRE(cancelled.value());
+}
+
+TEST_CASE("ModelController uninstall only deletes inside the model hub", "[controllers][model][uninstall]") {
+  juce::ScopedJuceInitialiser_GUI juceInit;
+
+  const auto base = uniqueTempPath("model_uninstall_guard");
+  const auto hub = base / "modelhub";
+  const auto outside = base / "precious";
+  std::filesystem::create_directories(hub / "inside-pack");
+  std::filesystem::create_directories(outside);
+  std::ofstream(hub / "inside-pack" / "model.onnx") << "x";
+  std::ofstream(outside / "keep.txt") << "keep";
+
+  const auto writeRegistry = [&](const std::filesystem::path& installPath) {
+    nlohmann::json registry = nlohmann::json::array();
+    registry.push_back({{"modelId", "victim"}, {"installPath", installPath.string()}});
+    std::ofstream(hub / "install_registry.json", std::ios::trunc) << registry.dump();
+  };
+  const auto registryEntries = [&] {
+    std::ifstream in(hub / "install_registry.json");
+    return nlohmann::json::parse(in).size();
+  };
+
+  juce::ThreadPool pool(1);
+  automix::ai::ModelManager modelManager;
+  FakeModelHubState fakeState;
+  std::optional<bool> done;
+  automix::app::ModelController::Callbacks callbacks;
+  callbacks.onUninstallComplete = [&](const bool value) { done = value; };
+  automix::app::ModelController controller(modelManager, pool, std::move(callbacks), makeFakeModelHubOps(fakeState));
+  controller.setModelHubRoot(hub);
+
+  const auto uninstall = [&] {
+    done.reset();
+    std::atomic_bool cancelFlag {false};
+    controller.uninstallModel("victim", cancelFlag);
+    REQUIRE(waitFor([&]() { return done.has_value(); }));
+    REQUIRE_FALSE(done.value());
+  };
+
+  SECTION("an existing directory outside the hub survives and stays registered") {
+    writeRegistry(outside);
+    uninstall();
+    REQUIRE(std::filesystem::exists(outside / "keep.txt"));
+    REQUIRE(registryEntries() == 1);
+  }
+
+  SECTION("a traversal path that resolves outside the hub survives") {
+    writeRegistry(hub / "inside-pack" / ".." / ".." / "precious");
+    uninstall();
+    REQUIRE(std::filesystem::exists(outside / "keep.txt"));
+    REQUIRE(registryEntries() == 1);
+  }
+
+  SECTION("a stale entry whose directory is gone is unregistered") {
+    writeRegistry(std::filesystem::path("assets") / "modelhub" / "long-gone-pack");
+    uninstall();
+    REQUIRE(registryEntries() == 0);
+  }
+
+  SECTION("a pack inside the hub is removed") {
+    writeRegistry(hub / "inside-pack");
+    uninstall();
+    REQUIRE_FALSE(std::filesystem::exists(hub / "inside-pack"));
+    REQUIRE(registryEntries() == 0);
+  }
+
+#if defined(_WIN32)
+  SECTION("a junction inside the hub pointing outside is not followed") {
+    const auto junction = hub / "junction-pack";
+    const auto command = "mklink /J \"" + junction.string() + "\" \"" + outside.string() + "\" >NUL";
+    REQUIRE(std::system(command.c_str()) == 0);
+    writeRegistry(junction);
+    uninstall();
+    REQUIRE(std::filesystem::exists(outside / "keep.txt"));
+    std::filesystem::remove(junction);  // removes the link only
+  }
+#endif
+
+  std::filesystem::remove_all(base);
 }
 
 TEST_CASE("ExportController returns cancelled result when cancel flag is pre-set", "[controllers][export][cancel]") {

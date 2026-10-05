@@ -1,8 +1,12 @@
 #pragma once
 
 #include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace automix::ai::gpu {
@@ -11,6 +15,7 @@ inline constexpr const char* kProviderCpu = "cpu";
 inline constexpr const char* kProviderAne = "ane";
 inline constexpr const char* kProviderCoreMl = "coreml";
 inline constexpr const char* kProviderCuda = "cuda";
+inline constexpr const char* kProviderWebGpu = "webgpu";
 inline constexpr const char* kProviderOpenVino = "openvino";
 inline constexpr const char* kProviderDirectMl = "directml";
 
@@ -19,6 +24,7 @@ inline const std::vector<std::string>& providerPriorityChain() {
       kProviderAne,
       kProviderCoreMl,
       kProviderCuda,
+      kProviderWebGpu,
       kProviderOpenVino,
       kProviderDirectMl,
       kProviderCpu,
@@ -36,6 +42,8 @@ inline std::string canonicalProviderName(const std::string& raw) {
     return kProviderAne;
   if (lower.find("coreml") != std::string::npos) return kProviderCoreMl;
   if (lower.find("cuda") != std::string::npos) return kProviderCuda;
+  if (lower.find("webgpu") != std::string::npos || lower.find("wgpu") != std::string::npos)
+    return kProviderWebGpu;
   if (lower.find("openvino") != std::string::npos || lower.find("vino") != std::string::npos)
     return kProviderOpenVino;
   if (lower.find("dml") != std::string::npos || lower.find("directml") != std::string::npos)
@@ -46,13 +54,32 @@ inline std::string canonicalProviderName(const std::string& raw) {
   return lower;
 }
 
+/// True when a bench run that asked for `requested` actually ran on `actual`.
+/// "auto" matches anything; an empty or "unknown" actual provider never matches a concrete request.
+inline bool benchProviderMatches(const std::string& requested, const std::string& actual) {
+  const auto wanted = canonicalProviderName(requested);
+  if (wanted == "auto") return true;
+  if (actual.empty() || actual == "unknown") return false;
+  return wanted == canonicalProviderName(actual);
+}
+
+/// Nearest-rank percentile (p in (0, 1]); returns 0.0 for an empty input.
+inline double nearestRankPercentile(std::vector<double> values, double p) {
+  if (values.empty()) return 0.0;
+  std::sort(values.begin(), values.end());
+  const auto n = static_cast<long long>(values.size());
+  auto idx = static_cast<long long>(std::ceil(p * static_cast<double>(n))) - 1;
+  idx = std::clamp<long long>(idx, 0, n - 1);
+  return values[static_cast<size_t>(idx)];
+}
+
 inline std::string platformPreferredProvider() {
 #if defined(__APPLE__) && defined(__arm64__)
   return kProviderAne;
 #elif defined(__APPLE__)
   return kProviderCoreMl;
 #elif defined(_WIN32)
-  return kProviderDirectMl;
+  return kProviderWebGpu;
 #else
   return kProviderCuda;
 #endif
@@ -71,6 +98,123 @@ inline int providerPriority(const std::string& provider) {
     return static_cast<int>(std::distance(chain.begin(), it));
   }
   return static_cast<int>(chain.size());
+}
+
+struct SessionTuning {
+  std::string hardwareTier = "standard";
+  int intraOpThreads = 0;
+  int interOpThreads = 0;
+  bool memPattern = true;
+  bool cpuArena = true;
+  bool sequentialExecution = false;
+};
+
+inline SessionTuning sessionTuning(const std::string& provider, const int hardwareThreads) {
+  SessionTuning tuning;
+  const auto normalized = canonicalProviderName(provider);
+  const int clampedThreads = std::max(1, hardwareThreads);
+  if (clampedThreads <= 4) {
+    tuning.hardwareTier = "low";
+  } else if (clampedThreads >= 12) {
+    tuning.hardwareTier = "high";
+  }
+
+  if (normalized == kProviderCuda) {
+    tuning.intraOpThreads = std::clamp(clampedThreads / 2, 1, 8);
+    tuning.interOpThreads = 1;
+    tuning.memPattern = false;
+    tuning.cpuArena = true;
+    tuning.sequentialExecution = false;
+    return tuning;
+  }
+
+  if (normalized == kProviderDirectMl) {
+    tuning.intraOpThreads = std::clamp(clampedThreads / 2, 1, 4);
+    tuning.interOpThreads = 1;
+    tuning.memPattern = false;
+    tuning.cpuArena = false;
+    tuning.sequentialExecution = true;
+    return tuning;
+  }
+
+  if (normalized == kProviderCoreMl || normalized == kProviderAne) {
+    tuning.intraOpThreads = std::clamp(clampedThreads / 2, 1, 4);
+    tuning.interOpThreads = 1;
+    tuning.memPattern = false;
+    tuning.cpuArena = false;
+    tuning.sequentialExecution = true;
+    return tuning;
+  }
+
+  tuning.intraOpThreads = std::clamp(clampedThreads, 1, 16);
+  tuning.interOpThreads = std::clamp(clampedThreads / 2, 1, 8);
+  tuning.memPattern = true;
+  tuning.cpuArena = true;
+  tuning.sequentialExecution = false;
+  return tuning;
+}
+
+// Exactly which SessionOptions calls configureSessionForProvider() makes. An empty
+// optional means "leave ONNX Runtime's default". Pure: unit-testable without ORT.
+struct SessionConfigPlan {
+  std::optional<int> intraOpThreads;
+  std::optional<int> interOpThreads;
+  std::optional<bool> sequentialExecution;
+  std::optional<bool> memPattern;
+  std::optional<bool> cpuArena;
+};
+
+// hardwareThreads > 0: full tuning (model path). <= 0: only what the provider
+// requires to open a session at all - today that is DirectML's memory-pattern-off
+// and sequential execution - so tensor sessions keep ORT's own thread defaults.
+inline SessionConfigPlan sessionConfigPlan(const std::string& provider, int hardwareThreads) {
+  SessionConfigPlan plan;
+  const auto canonical = canonicalProviderName(provider);
+  if (hardwareThreads <= 0) {
+    if (canonical == kProviderDirectMl) {
+      plan.memPattern = false;
+      plan.sequentialExecution = true;
+    }
+    return plan;
+  }
+  const auto tuning = sessionTuning(canonical, hardwareThreads);
+  plan.intraOpThreads = std::max(1, tuning.intraOpThreads);
+  plan.interOpThreads = std::max(1, tuning.interOpThreads);
+  plan.sequentialExecution = tuning.sequentialExecution;
+  plan.memPattern = tuning.memPattern;
+  plan.cpuArena = tuning.cpuArena;
+  return plan;
+}
+
+// Option maps for execution providers.
+// Valid CoreML options per coreml_options.cc@v1.30.0:55-64:
+// MLComputeUnits, ModelFormat, RequireStaticInputShapes, EnableOnSubgraphs,
+// SpecializationStrategy, ProfileComputePlan, AllowLowPrecisionAccumulationOnGPU, ModelCacheDirectory
+inline std::unordered_map<std::string, std::string> providerOptionMap(const std::string& rawProvider) {
+  std::unordered_map<std::string, std::string> options;
+  const auto canonical = canonicalProviderName(rawProvider);
+  if (canonical == kProviderDirectMl) {
+    options["device_id"] = "0";
+    return options;
+  }
+  if (canonical == kProviderCoreMl) {
+    options["ModelFormat"] = "MLProgram";
+    options["MLComputeUnits"] = "ALL";
+    return options;
+  }
+  if (canonical == kProviderAne) {
+    // Apple Neural Engine via CoreML with Neural Engine compute units.
+    // (Note: older docs suggested a unit-count key which ORT 1.30 rejects with 'Unknown option')
+    options["ModelFormat"] = "MLProgram";
+    options["MLComputeUnits"] = "CPUAndNeuralEngine";
+    return options;
+  }
+  if (canonical == kProviderOpenVino) {
+    // OpenVINO provider for Intel NPU / GPU: device_type=CPU_FP32 is a CPU device, and OpenVINO is not shipped
+    options["device_type"] = "CPU_FP32";
+    return options;
+  }
+  return options;
 }
 
 // --- Optional ONNX Runtime capabilities -------------------------------------
@@ -155,6 +299,23 @@ inline PluginEpDecision decidePluginEpAttempt(bool compiledIn,
   }
   decision.attempt = true;
   return decision;
+}
+
+inline std::string pluginLibraryFileName(const std::string& platform) {
+  auto lower = platform;
+  std::transform(lower.begin(), lower.end(), lower.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  if (lower.find("darwin") != std::string::npos || lower.find("macos") != std::string::npos ||
+      lower.find("osx") != std::string::npos) {
+    return {};
+  }
+  if (lower.find("win") != std::string::npos) {
+    return "onnxruntime_providers_webgpu.dll";
+  }
+  if (lower.find("linux") != std::string::npos || lower.find("ubuntu") != std::string::npos) {
+    return "libonnxruntime_providers_webgpu.so";
+  }
+  return {};
 }
 
 inline bool isSha256Hex64(const std::string& text) {

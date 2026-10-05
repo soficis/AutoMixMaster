@@ -1,5 +1,6 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 
+#include "ai/OrtRuntime.h"
 #include "app/style/AutoMixLookAndFeel.h"
 #include "app/ui/MainLayout.h"
 
@@ -27,6 +28,13 @@ public:
     setVisible(true);
   }
 
+  bool requestQuit(std::function<void()> quitNow) {
+    if (auto* layout = dynamic_cast<MainLayout*>(getContentComponent()))
+      return layout->requestQuit(std::move(quitNow));
+    quitNow();
+    return true;
+  }
+
   void closeButtonPressed() override {
     juce::JUCEApplication::getInstance()->systemRequestedQuit();
   }
@@ -45,9 +53,21 @@ public:
     lookAndFeel_ = std::make_unique<AutoMixLookAndFeel>();
     juce::LookAndFeel::setDefaultLookAndFeel(lookAndFeel_.get());
     mainWindow_ = std::make_unique<MainWindow>(getApplicationName());
+    // Warm up ONNX Runtime asynchronously to avoid UI stalls on adapter discovery
+    automix::ai::OrtRuntime::instance().warmUpAsync();
+  }
+
+  void systemRequestedQuit() override {
+    if (mainWindow_ == nullptr) {
+      quit();
+      return;
+    }
+    mainWindow_->requestQuit([] { juce::JUCEApplication::quit(); });
   }
 
   void shutdown() override {
+    // Let the ONNX Runtime warm-up thread finish before the window and libraries tear down.
+    automix::ai::OrtRuntime::instance().joinWarmUp();
     mainWindow_.reset();
     juce::LookAndFeel::setDefaultLookAndFeel(nullptr);
     lookAndFeel_.reset();

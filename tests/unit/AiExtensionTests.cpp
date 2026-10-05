@@ -25,6 +25,7 @@
 #include "ai/ModelManager.h"
 #include "ai/ModelPackLoader.h"
 #include "ai/ModelStrategy.h"
+#include "ai/UmxPack.h"
 #include "app/controllers/ModelController.h"
 #include "ai/ModelLicensePolicy.h"
 #include "app/ui/HeroWaveform.h"
@@ -875,7 +876,7 @@ bool waitForAsync(const std::function<bool()>& predicate, const int timeoutMs = 
 }
 
 struct ModelInstallProbe {
-  int installCalls = 0;
+  std::atomic<int> installCalls{0};
 };
 
 automix::app::ModelController::ModelHubOps makeProbeModelHubOps(ModelInstallProbe& probe) {
@@ -1007,6 +1008,25 @@ TEST_CASE("Stem separator only claims model-backed separation when a model weigh
   const auto claim = content.find("result.usedModel = true;", gateEnd);
   REQUIRE(claim != std::string::npos);
   REQUIRE(claim - gateEnd < 400);
+}
+
+TEST_CASE("Curated pin overrides the live revision and hash for Open-Unmix only", "[ai][hub]") {
+  automix::ai::HubModelInfo umx;
+  umx.repoId = automix::ai::kUmxVocalsRepoId;
+  umx.revision = "main";
+  umx.fileSha256[automix::ai::kUmxVocalsFile] = "bogus";
+  automix::ai::applyCuratedPin(umx);
+  CHECK(umx.revision == automix::ai::kUmxVocalsRevision);
+  CHECK(umx.fileSha256.at(automix::ai::kUmxVocalsFile) == automix::ai::kUmxVocalsSha256);
+
+  automix::ai::HubModelInfo other;
+  other.repoId = "xycld/BS-RoFormer-ONNX";
+  other.revision = "main";
+  other.fileSha256["model.onnx"] = "bogus";
+  automix::ai::applyCuratedPin(other);
+  CHECK(other.revision == "main");
+  CHECK(other.fileSha256.at("model.onnx") == "bogus");
+  CHECK(other.fileSha256.size() == 1);
 }
 
 TEST_CASE("Curated hub includes ITO-Master mapped to mastering-assistant with three-asset pack metadata", "[ai][licensing]") {
@@ -1220,7 +1240,7 @@ TEST_CASE("Optional ORT provider plugin and compiled-model cache policy needs no
   REQUIRE(gpu::compiledModelCacheKey("not-a-digest", "cuda", "sm_90", "driver", "1.30.0").empty());
 
   const auto& chain = gpu::providerPriorityChain();
-  REQUIRE(chain.size() == 6);
+  REQUIRE(chain.size() == 7);
   REQUIRE(chain.front() == gpu::kProviderAne);
   REQUIRE(chain.back() == gpu::kProviderCpu);
 }
@@ -1313,4 +1333,19 @@ TEST_CASE("Model strategy returns base plans unchanged when no model inference i
   REQUIRE(mixPass.dryWet == Catch::Approx(0.42));
   REQUIRE(masterPass.targetLufs == Catch::Approx(-16.0));
   REQUIRE(masterPass.decisionLog.size() == 1);
+}
+
+TEST_CASE("Linux builds enable libcurl so HTTPS downloads work", "[build-config]") {
+#if defined(__linux__)
+  REQUIRE(JUCE_USE_CURL == 1);
+#else
+  SUCCEED("JUCE_USE_CURL is only required on Linux; Windows and macOS use native HTTP stacks.");
+#endif
+}
+
+TEST_CASE("Hub assets are stored flat inside the install directory", "[ai][hub]") {
+  const std::filesystem::path installPath = std::filesystem::path("models") / "pack";
+  CHECK(automix::ai::localAssetPath(installPath, "onnx/model.onnx.data") == installPath / "model.onnx.data");
+  CHECK(automix::ai::localAssetPath(installPath, "model.onnx") == installPath / "model.onnx");
+  CHECK(automix::ai::localAssetPath(installPath, "a/b/../../x.onnx") == installPath / "x.onnx");
 }

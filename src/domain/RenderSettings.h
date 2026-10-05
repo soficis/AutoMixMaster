@@ -27,9 +27,15 @@ struct RenderSettings {
   // additionally requires the experimental toggle, CC BY-NC consent and a complete
   // pack. Never default this on.
   bool itoMasteringEnabled = false;
+  // Tensor (BS-RoFormer) stem separation on single-mix import. Not sufficient on
+  // its own: StemSeparator additionally requires an active separation pack that
+  // carries a tensor_contract and a native ONNX Runtime build. Never default this on.
+  bool tensorSeparationEnabled = false;
   std::string metadataPolicy = "copy_all";
   std::map<std::string, std::string> metadataTemplate;
-  std::string rendererName = "PhaseLimiter";
+  // PhaseLimiter is opt-in: selecting it (here or as a custom chain stage) is
+  // the only way it runs, including in the logical_all chain.
+  std::string rendererName = "BuiltIn";
   bool rendererChainEnabled = false;
   std::string rendererChainMode = "logical_all";
   std::vector<std::string> rendererChain;

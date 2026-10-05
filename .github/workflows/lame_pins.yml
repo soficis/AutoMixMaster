@@ -1,0 +1,56 @@
+name: LAME Pin Update
+
+# Keeps assets/lame-pins.json in step with upstream LAME packages. The app reads
+# that file from master, so merging the pull request this opens is what updates
+# installed copies. It is never merged automatically: a changed hash is exactly
+# what a tampered upstream would look like, so a person confirms it first.
+
+on:
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-pins:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: master
+
+      - name: Refresh pins
+        run: python3 tools/update_lame_pins.py | tee pin-changes.txt
+
+      - name: Open pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet -- assets/lame-pins.json; then
+            echo "Pins are current."
+            exit 0
+          fi
+          branch=chore/lame-pins
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$branch"
+          git add assets/lame-pins.json
+          git commit -m "chore(util): refresh LAME download pins"
+          git push --force origin "$branch"
+          {
+            echo "Upstream LAME packages changed. Merging this updates the pins every installed copy uses."
+            echo
+            echo "Check each change against its source before merging. Windows (zip) changes have no independent confirmation."
+            echo
+            echo '```'
+            cat pin-changes.txt
+            echo '```'
+          } > pr-body.md
+          gh pr view "$branch" --json state -q .state 2>/dev/null | grep -q OPEN \
+            && gh pr edit "$branch" --body-file pr-body.md \
+            || gh pr create --base master --head "$branch" --title "chore(util): refresh LAME download pins" --body-file pr-body.md

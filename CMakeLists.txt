@@ -553,6 +553,7 @@ if(BUILD_TESTING)
     tests/unit/ControlDeckTests.cpp
     tests/unit/UiDecisionTests.cpp
     tests/unit/SessionSerializationTests.cpp
+    tests/unit/LameDownloaderTests.cpp
     src/app/ui/SessionManager.cpp
     tests/unit/AudioIoTests.cpp
     tests/unit/AnalysisTests.cpp

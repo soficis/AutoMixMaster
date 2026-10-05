@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "sources": [
+    {
+      "platform": "linux-arm",
+      "type": "deb",
+      "url": "https://deb.debian.org/debian/pool/main/l/lame/lame_3.100-6+b3_armhf.deb",
+      "sha256": "b7c5a96b803db07f67b74b7611240979797fb6eab0b4705e23eb0ce639b9078e"
+    },
+    {
+      "platform": "linux-arm64",
+      "type": "deb",
+      "url": "https://deb.debian.org/debian/pool/main/l/lame/lame_3.100-6+b3_arm64.deb",
+      "sha256": "4c6c6ee693633c846de685902641dbda18ef98f73a136ebef7c09cf6ee683bcd"
+    },
+    {
+      "platform": "linux-x64",
+      "type": "deb",
+      "url": "https://deb.debian.org/debian/pool/main/l/lame/lame_3.100-6+b3_amd64.deb",
+      "sha256": "feceeb296f9df9340f6e2ce48decce73c9cd6c70e7fe959495eb89ee59bc8d47"
+    },
+    {
+      "platform": "win32-arm64",
+      "type": "zip",
+      "url": "https://www.rarewares.org/files/mp3/lame3.100.1-x64.zip",
+      "sha256": "9a9c815203316e5203847e93100c6acf0d5d7a5be7744c9018825ded037052e7"
+    },
+    {
+      "platform": "win32-ia32",
+      "type": "zip",
+      "url": "https://www.rarewares.org/files/mp3/lame3.100.1-win32.zip",
+      "sha256": "2518e1138953c235fb2bfcefbc38883dd04538d6ae0a19692562576ba37bafec"
+    },
+    {
+      "platform": "win32-x64",
+      "type": "zip",
+      "url": "https://www.rarewares.org/files/mp3/lame3.100.1-x64.zip",
+      "sha256": "9a9c815203316e5203847e93100c6acf0d5d7a5be7744c9018825ded037052e7"
+    }
+  ]
+}
